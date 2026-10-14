@@ -625,7 +625,7 @@ index 585d034d..f2c517cb 100644
          pGameTime->GameMonth->f = m_onlineTime.m_timeModel.Month;
 diff --git a/Code/client/Services/Generic/WorldItemService.cpp b/Code/client/Services/Generic/WorldItemService.cpp
 new file mode 100644
-index 00000000..d8534a17
+index 00000000..3774a467
 --- /dev/null
 +++ b/Code/client/Services/Generic/WorldItemService.cpp
 @@ -0,0 +1,314 @@
@@ -936,7 +936,7 @@ index 00000000..d8534a17
 +            l.Data.RY = pose.RY;
 +            l.Data.RZ = pose.RZ;
 +        }
-+        if ((l.WasGrabbed && !held) || (!held && l.StillTime > 1))
++        if (!held && l.StillTime > 1)
 +            Send(WorldItemAction::Release, l.Data);
 +        l.WasGrabbed = held;
 +    }
