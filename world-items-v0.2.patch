@@ -298,7 +298,7 @@ index 448a179fa9eb651bcbaeb5fb726555715924b878..3b91ae42cde5b1b7349e0d6f0b23fd50
      EventDispatcher<TESFastTravelEndEvent> fastTravelEndEvent;
  };
 diff --git a/Code/client/Games/Skyrim/TESObjectREFR.cpp b/Code/client/Games/Skyrim/TESObjectREFR.cpp
-index 9032a69a918309ee7de9949ab9cdcbe8ba41057c..cd57d83d91c7f7e51e44430356900b288a0ae2d0 100644
+index 9032a69a918309ee7de9949ab9cdcbe8ba41057c..1f07926b0ab298451fefbfe464b1d8fee68556f6 100644
 --- a/Code/client/Games/Skyrim/TESObjectREFR.cpp
 +++ b/Code/client/Games/Skyrim/TESObjectREFR.cpp
 @@ -6,6 +6,7 @@
@@ -334,7 +334,7 @@ index 9032a69a918309ee7de9949ab9cdcbe8ba41057c..cd57d83d91c7f7e51e44430356900b28
  
      POINTER_SKYRIMSE(TGetRefrByHandle, s_getRefrByHandle, 17201);
  
-@@ -369,6 +371,59 @@ ExtraDataList* TESObjectREFR::GetExtraDataList() noexcept
+@@ -369,6 +371,69 @@ ExtraDataList* TESObjectREFR::GetExtraDataList() noexcept
      return &extraData;
  }
  
@@ -381,6 +381,16 @@ index 9032a69a918309ee7de9949ab9cdcbe8ba41057c..cd57d83d91c7f7e51e44430356900b28
 +    }
 +    return ref;
 +}
++bool TESObjectREFR::SetWorldPosition(const NiPoint3& pos) const noexcept
++{
++    const void* fn = World::Get().ctx().at<PapyrusService>().Get("ObjectReference", "SetPosition");
++    if (!fn)
++        return false;
++    ScopedReferencesOverride guard;
++    PapyrusFunction<void, TESObjectREFR, float, float, float> move(fn);
++    move(this, pos.x, pos.y, pos.z);
++    return true;
++}
 +void TESObjectREFR::SetWorldMotion(bool aDynamic) const noexcept
 +{
 +    const void* fn = World::Get().ctx().at<PapyrusService>().Get("ObjectReference", "SetMotionType");
@@ -394,7 +404,7 @@ index 9032a69a918309ee7de9949ab9cdcbe8ba41057c..cd57d83d91c7f7e51e44430356900b28
  // Delete() should only be used on temporaries
  void TESObjectREFR::Delete() const noexcept
  {
-@@ -760,7 +815,8 @@ Inventory TESObjectREFR::GetInventory(std::function<bool(TESForm&)> aFilter) con
+@@ -760,7 +825,8 @@ Inventory TESObjectREFR::GetInventory(std::function<bool(TESForm&)> aFilter) con
  
      for (auto& entry : extraInventory.Entries)
      {
@@ -404,7 +414,7 @@ index 9032a69a918309ee7de9949ab9cdcbe8ba41057c..cd57d83d91c7f7e51e44430356900b28
  
          if (duplicate == std::end(minimizedExtraInventory.Entries))
          {
-@@ -1032,19 +1088,22 @@ bool TP_MAKE_THISCALL(HookPlayAnimation, void, uint32_t auiStackID, TESObjectREF
+@@ -1032,19 +1098,22 @@ bool TP_MAKE_THISCALL(HookPlayAnimation, void, uint32_t auiStackID, TESObjectREF
  
  bool TP_MAKE_THISCALL(HookActivate, TESObjectREFR, TESObjectREFR* apActivator, uint8_t aUnk1, TESBoundObject* apObjectToGet, int32_t aCount, char aDefaultProcessing)
  {
@@ -431,7 +441,7 @@ index 9032a69a918309ee7de9949ab9cdcbe8ba41057c..cd57d83d91c7f7e51e44430356900b28
      }
  
      return TiltedPhoques::ThisCall(RealActivate, apThis, apActivator, aUnk1, apObjectToGet, aCount, aDefaultProcessing);
-@@ -1071,8 +1130,9 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, TESObjectREFR, TESBoundObject* apIte
+@@ -1071,8 +1140,9 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, TESObjectREFR, TESBoundObject* apIte
      TiltedPhoques::ThisCall(RealAddInventoryItem, apThis, apItem, apExtraData, aCount, apOldOwner);
  }
  
@@ -443,7 +453,7 @@ index 9032a69a918309ee7de9949ab9cdcbe8ba41057c..cd57d83d91c7f7e51e44430356900b28
  {
      if (!ScopedInventoryOverride::IsOverriden())
      {
-@@ -1142,7 +1202,7 @@ void TP_MAKE_THISCALL(HookLockChange, TESObjectREFR)
+@@ -1142,7 +1212,7 @@ void TP_MAKE_THISCALL(HookLockChange, TESObjectREFR)
  {
      TiltedPhoques::ThisCall(RealLockChange, apThis);
      const auto* pLock = apThis->GetLock();
@@ -453,7 +463,7 @@ index 9032a69a918309ee7de9949ab9cdcbe8ba41057c..cd57d83d91c7f7e51e44430356900b28
      else
          World::Get().GetRunner().Trigger(LockChangeEvent(apThis->formID, false, 0));
 diff --git a/Code/client/Games/Skyrim/TESObjectREFR.h b/Code/client/Games/Skyrim/TESObjectREFR.h
-index 2ebd9b2195c7d4993b28bc25f1c9c0917aaa46f9..190b80ba20b097f389213b3db60711d100418e0e 100644
+index 2ebd9b2195c7d4993b28bc25f1c9c0917aaa46f9..85e1330a1434f1c439ad506456d813f6a7e86484 100644
 --- a/Code/client/Games/Skyrim/TESObjectREFR.h
 +++ b/Code/client/Games/Skyrim/TESObjectREFR.h
 @@ -91,7 +91,9 @@ struct TESObjectREFR : TESForm
@@ -467,12 +477,13 @@ index 2ebd9b2195c7d4993b28bc25f1c9c0917aaa46f9..190b80ba20b097f389213b3db60711d1
      virtual void sub_57();
      virtual void sub_58();
      virtual void sub_59();
-@@ -183,6 +185,8 @@ struct TESObjectREFR : TESForm
+@@ -183,6 +185,9 @@ struct TESObjectREFR : TESForm
  
      void RemoveAllItems() noexcept;
      Vector<uint32_t> RemoveNonQuestItems(Inventory& aCurrentInventory) noexcept;
 +    TESObjectREFR* SpawnWorldCopy(const Inventory::Entry&) const noexcept;
 +    void SetWorldMotion(bool aDynamic) const noexcept;
++    bool SetWorldPosition(const NiPoint3&) const noexcept;
      void Delete() const noexcept;
      void Disable() const noexcept;
      void Enable() const noexcept;
@@ -738,10 +749,10 @@ index a0378612faa3c2f7140620d10a5a9206c351a31d..6612b0b6a403631de84c97d383eb3af0
          else if (eventName == "sendMessage")
 diff --git a/Code/client/Services/Generic/WorldItemService.cpp b/Code/client/Services/Generic/WorldItemService.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..df80907b8a6893b31dc8508adf357186d341d16e
+index 0000000000000000000000000000000000000000..fcdefb1ca498bc4e408bd87e9d884dab0459d0ce
 --- /dev/null
 +++ b/Code/client/Services/Generic/WorldItemService.cpp
-@@ -0,0 +1,396 @@
+@@ -0,0 +1,411 @@
 +#include <Services/WorldItemService.h>
 +#include <World.h>
 +#include <Services/TransportService.h>
@@ -861,7 +872,7 @@ index 0000000000000000000000000000000000000000..df80907b8a6893b31dc8508adf357186
 +}
 +bool WorldItemService::TryPickup(TESObjectREFR* ref)
 +{
-+    if (!m_transport.IsOnline() || !Eligible(ref))
++    if (!m_transport.IsOnline() || !ref || ref->IsDeleted())
 +        return false;
 +    if (m_pendingDrops.contains(ref->formID))
 +        return true; // wait for the creation acknowledgement
@@ -869,10 +880,13 @@ index 0000000000000000000000000000000000000000..df80907b8a6893b31dc8508adf357186
 +        if (l.FormId == ref->formID)
 +        {
 +            if (!l.Data.Consumed)
++            {
++                spdlog::info("Shared item: pickup requested, item={}", id);
 +                Send(WorldItemAction::Pickup, l.Data);
++            }
 +            return true;
 +        }
-+    if (ref->IsTemporary())
++    if (!Eligible(ref) || ref->IsTemporary())
 +        return false; // unrelated, unregistered runtime spawn
 +    const auto data = Describe(ref);
 +    if (data.Item.IsQuestItem)
@@ -937,13 +951,18 @@ index 0000000000000000000000000000000000000000..df80907b8a6893b31dc8508adf357186
 +        return;
 +    l.FormId = ref->formID;
 +    const bool owned = l.Data.Owner == m_transport.GetLocalPlayerId();
-+    const bool initializeMotion = l.NewlyCreated || l.MotionOwner != l.Data.Owner;
++    const bool initializeMotion = l.NewlyCreated || (owned && l.MotionOwner != l.Data.Owner);
 +    const bool changedPose = !l.HasAppliedPose || l.AppliedPose.Cell != l.Data.Cell || Difference(l.AppliedPose, l.Data) > 0.5f;
 +    if (l.NewlyCreated || (!owned && changedPose))
 +    {
 +        ref->SetRotation(l.Data.RX, l.Data.RY, l.Data.RZ);
 +        NiPoint3 pos{glm::vec3(l.Data.X, l.Data.Y, l.Data.Z)};
-+        ref->MoveTo(cell, pos);
++        // MoveTo detaches/reinserts the reference and can break its physics and
++        // activation ray. Use it only for initial placement or a cell change.
++        if (l.NewlyCreated || ref->GetParentCellEx() != cell)
++            ref->MoveTo(cell, pos);
++        else if (!ref->SetWorldPosition(pos))
++            spdlog::warn("Shared item: SetPosition unavailable, item={}", l.Data.Id);
 +    }
 +    if (initializeMotion)
 +    {
@@ -1022,7 +1041,7 @@ index 0000000000000000000000000000000000000000..df80907b8a6893b31dc8508adf357186
 +    m_items.clear();
 +    m_pendingDrops.clear();
 +    m_observedProps.clear();
-+    m_timer = m_snapshotTimer = 0;
++    m_timer = m_snapshotTimer = m_physicsScanTimer = 0;
 +}
 +void WorldItemService::ObservePhysics()
 +{
@@ -1068,17 +1087,22 @@ index 0000000000000000000000000000000000000000..df80907b8a6893b31dc8508adf357186
 +        return;
 +    }
 +    m_timer += e.Delta;
++    m_physicsScanTimer += e.Delta;
 +    m_snapshotTimer += e.Delta;
 +    if (m_snapshotTimer >= 3)
 +    {
 +        m_snapshotTimer = 0;
 +        Send(WorldItemAction::Snapshot, {});
 +    }
-+    if (m_timer < 0.1)
++    if (m_timer < 1.0 / 30.0)
 +        return;
 +    const float dt = static_cast<float>(m_timer);
 +    m_timer = 0;
-+    ObservePhysics();
++    if (m_physicsScanTimer >= 0.1)
++    {
++        m_physicsScanTimer = 0;
++        ObservePhysics();
++    }
 +    auto* grabbed = Grabbed();
 +    bool foundGrab = false;
 +    for (auto itemIt = m_items.begin(); itemIt != m_items.end(); ++itemIt)
@@ -1119,10 +1143,12 @@ index 0000000000000000000000000000000000000000..df80907b8a6893b31dc8508adf357186
 +            continue;
 +        }
 +        const bool changed = Difference(pose, l.Data) > 0.1f;
-+        l.StillTime = changed ? 0 : l.StillTime + dt;
-+        if (held || changed)
++        l.StillTime = (held || changed) ? 0 : l.StillTime + dt;
++        l.HeartbeatTime += dt;
++        if (held || changed || l.HeartbeatTime >= 0.5f)
 +        {
 +            Send(WorldItemAction::Move, pose);
++            l.HeartbeatTime = 0;
 +            l.Data.Cell = pose.Cell;
 +            l.Data.X = pose.X;
 +            l.Data.Y = pose.Y;
@@ -1131,7 +1157,7 @@ index 0000000000000000000000000000000000000000..df80907b8a6893b31dc8508adf357186
 +            l.Data.RY = pose.RY;
 +            l.Data.RZ = pose.RZ;
 +        }
-+        if (!held && l.StillTime > 1)
++        if (!held && l.StillTime >= 30.f)
 +            Send(WorldItemAction::Release, l.Data);
 +        l.WasGrabbed = held;
 +    }
@@ -1140,10 +1166,10 @@ index 0000000000000000000000000000000000000000..df80907b8a6893b31dc8508adf357186
 +}
 diff --git a/Code/client/Services/WorldItemService.h b/Code/client/Services/WorldItemService.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..6c99a4d9ee47c502b9e59af3f18b97134a65d580
+index 0000000000000000000000000000000000000000..b0a517ddf4034bd4e5d1460b4d640284fa2d7969
 --- /dev/null
 +++ b/Code/client/Services/WorldItemService.h
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,54 @@
 +#pragma once
 +#include <Structs/WorldItemData.h>
 +#include <Games/Events.h>
@@ -1171,6 +1197,7 @@ index 0000000000000000000000000000000000000000..6c99a4d9ee47c502b9e59af3f18b9713
 +        bool HasAppliedPose{};
 +        uint32_t FormId{};
 +        float StillTime{};
++        float HeartbeatTime{};
 +        bool WasGrabbed{};
 +        uint32_t MotionOwner = 0xFFFFFFFF;
 +        bool NewlyCreated = true;
@@ -1186,7 +1213,7 @@ index 0000000000000000000000000000000000000000..6c99a4d9ee47c502b9e59af3f18b9713
 +    uint32_t m_grabbedFormId{};
 +    TESObjectREFR* Grabbed() const;
 +    BSTEventResult OnEvent(const TESGrabReleaseEvent*, const EventDispatcher<TESGrabReleaseEvent>*) override;
-+    double m_timer{}, m_snapshotTimer{};
++    double m_timer{}, m_snapshotTimer{}, m_physicsScanTimer{};
 +    entt::scoped_connection m_update, m_notify, m_drop, m_disconnect, m_cell;
 +    void OnUpdate(const UpdateEvent&);
 +    void OnNotify(const NotifyWorldItem&);
@@ -1239,7 +1266,7 @@ index b0596604b504f429648fa5072f4bac592cbe1193..05a06350c626749f977a80ae10e2a60f
      ctx().emplace<QuestService>(*this, m_dispatcher);
      ctx().emplace<PartyService>(*this, m_dispatcher, m_transport);
 diff --git a/Code/common/BuildInfo.h.in b/Code/common/BuildInfo.h.in
-index 5db8d876f831b28e1c3b326ed18721358d1f2aae..c10b5e29541ea0360cf24f4bf55eaffd3a132901 100644
+index 5db8d876f831b28e1c3b326ed18721358d1f2aae..8f4aac9827959afaf5568edcd86352bc432be67b 100644
 --- a/Code/common/BuildInfo.h.in
 +++ b/Code/common/BuildInfo.h.in
 @@ -1,4 +1,4 @@
@@ -1248,7 +1275,7 @@ index 5db8d876f831b28e1c3b326ed18721358d1f2aae..c10b5e29541ea0360cf24f4bf55eaffd
 -#define BUILD_BRANCH "${GIT_BRANCH}"
 -#define BUILD_COMMIT "${GIT_TAG}"
 +#define BUILD_BRANCH "survival-worlditems"
-+#define BUILD_COMMIT "survival-worlditems-v03-resync"
++#define BUILD_COMMIT "survival-worlditems-v04-physics"
 diff --git a/Code/common/DateTime.cpp b/Code/common/DateTime.cpp
 index b091ef6158f2859feae706298abe5c44e802ee60..bfb1eeb42605cd97c132d5dec0450ab111f03ecd 100644
 --- a/Code/common/DateTime.cpp
@@ -2378,10 +2405,10 @@ index 0000000000000000000000000000000000000000..27c10fd34026b363469a8f8cef918eeb
 +}
 diff --git a/Tests/world_items.cpp b/Tests/world_items.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..1f826732dabd98ad4eeac4eff68c94a61ee4cc62
+index 0000000000000000000000000000000000000000..954c8a11a5e832d8f70efd214ee950bf8ff3e95b
 --- /dev/null
 +++ b/Tests/world_items.cpp
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,66 @@
 +#ifdef NDEBUG
 +#undef NDEBUG
 +#endif
@@ -2423,6 +2450,19 @@ index 0000000000000000000000000000000000000000..1f826732dabd98ad4eeac4eff68c94a6
 +        }
 +        assert(granted == 1);
 +    }
++    // A resting dropped object keeps one controller for the full 30-second
++    // settling window, while pickup remains available to the other player.
++    Claim resting;
++    assert(resting.Grab(1, 100));
++    for (uint64_t now = 600; now <= 30100; now += 500)
++    {
++        assert(resting.Move(1, now));
++        assert(!resting.Grab(2, now + 1));
++    }
++    assert(resting.Release(1));
++    assert(resting.Pickup(2));
++    assert(!resting.Pickup(1));
++
 +    Pose p;
 +    assert(SharedItems::ValidPose(p));
 +    p.X = std::numeric_limits<float>::quiet_NaN();
