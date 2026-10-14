@@ -9,7 +9,7 @@ foreach ($tool in @('git','xmake','node','pnpm')) {
         throw "Missing $tool. Read README.md prerequisites first."
     }
 }
-$patch = Join-Path $PSScriptRoot 'survival-sync-v0.1.patch'
+$patch = Join-Path $PSScriptRoot 'world-items-v0.2.patch'
 $source = Join-Path $WorkDirectory 'TiltedEvolution'
 if (Test-Path $source) { throw "Choose a fresh WorkDirectory; existing checkout will not be overwritten." }
 New-Item -ItemType Directory -Force $WorkDirectory | Out-Null
@@ -23,7 +23,8 @@ try {
     Run -Program 'xmake' -Arguments @('config','--plat=windows','--arch=x64','--mode=releasedbg','--yes')
     Run -Program 'xmake' -Arguments @('-y')
     # Native encoding tests include the new request packet round trip.
-    Run -Program 'xmake' -Arguments @('run','TPTests','[encoding.survival]')
+    Run -Program 'xmake' -Arguments @('run','TPTests','[encoding.survival],[encoding.worlditems]')
+    Run -Program 'xmake' -Arguments @('run','WorldItemPolicyTests')
     Run -Program 'pnpm' -Arguments @('--prefix','Code/skyrim_ui','install')
     Run -Program 'pnpm' -Arguments @('--prefix','Code/skyrim_ui','deploy:production')
     Run -Program 'xmake' -Arguments @('install','-o','distrib')
@@ -51,7 +52,7 @@ try {
     Set-Content -Path $configPath -Value $ini -Encoding utf8
     Copy-Item -Path (Join-Path $PSScriptRoot 'README.md') -Destination (Join-Path $package 'SurvivalSync-README.md')
     Copy-Item -Path (Join-Path $PSScriptRoot 'LICENSE') -Destination (Join-Path $package 'LICENSE')
-    $zip = Join-Path $WorkDirectory 'SurvivalSync-v0.1-Windows.zip'
+    $zip = Join-Path $WorkDirectory 'SurvivalSync-WorldItems-v0.2-Windows.zip'
     Compress-Archive -Path (Join-Path $package '*') -DestinationPath $zip -Force
     Write-Host "Windows package created: $zip"
     Write-Host 'This script never changes your installed Skyrim files.'

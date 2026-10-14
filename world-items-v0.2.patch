@@ -1,0 +1,2037 @@
+diff --git a/.github/workflows/survival-windows.yml b/.github/workflows/survival-windows.yml
+new file mode 100644
+index 00000000..1f974648
+--- /dev/null
++++ b/.github/workflows/survival-windows.yml
+@@ -0,0 +1,32 @@
++name: Build Survival Sync Windows package
++
++on:
++  workflow_dispatch:
++
++permissions:
++  contents: read
++
++jobs:
++  survival-logic-tests:
++    runs-on: windows-2022
++    steps:
++      - uses: actions/checkout@v4
++      - name: Compile and run survival logic tests with MSVC
++        shell: cmd
++        run: |
++          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
++          if errorlevel 1 exit /b 1
++          cl /nologo /std:c++20 /EHsc /W4 /WX Tests\survival_time.cpp /Fe:survival-time-test.exe
++          if errorlevel 1 exit /b 1
++          survival-time-test.exe
++          if errorlevel 1 exit /b 1
++          cl /nologo /std:c++20 /EHsc /W4 /WX /I Tests\stubs /I Code Tests\date_time.cpp Code\common\DateTime.cpp /Fe:date-time-test.exe
++          if errorlevel 1 exit /b 1
++          date-time-test.exe
++          if errorlevel 1 exit /b 1
++  windows-package:
++    needs: survival-logic-tests
++    uses: ./.github/workflows/windows.yml
++    with:
++      build-mode: releasedbg
++      upload-build-for-next-job: true
+diff --git a/.github/workflows/windows.yml b/.github/workflows/windows.yml
+index 807dab47..cfe9254a 100644
+--- a/.github/workflows/windows.yml
++++ b/.github/workflows/windows.yml
+@@ -78,6 +78,9 @@ jobs:
+           xmake -y
+           echo "STR_BUILD_DIR=build/windows/${{ matrix.arch }}/${BUILD_MODE}/" >> "$GITHUB_ENV"
+ 
++      - name: Verify Survival Sync packet encoding
++        run: xmake run TPTests "[encoding.survival]"
++
+       # Create distrib
+       - name: Output distrib binaries via xmake
+         run: |
+diff --git a/Code/client/Events/WorldItemDropEvent.h b/Code/client/Events/WorldItemDropEvent.h
+new file mode 100644
+index 00000000..5afab124
+--- /dev/null
++++ b/Code/client/Events/WorldItemDropEvent.h
+@@ -0,0 +1,7 @@
++#pragma once
++#include <Structs/Inventory.h>
++struct WorldItemDropEvent
++{
++    uint32_t FormId{};
++    Inventory::Entry Item;
++};
+diff --git a/Code/client/Games/Skyrim/Actor.cpp b/Code/client/Games/Skyrim/Actor.cpp
+index c3f3d1ad..97c35819 100644
+--- a/Code/client/Games/Skyrim/Actor.cpp
++++ b/Code/client/Games/Skyrim/Actor.cpp
+@@ -14,6 +14,8 @@
+ 
+ #include <Events/HealthChangeEvent.h>
+ #include <Events/InventoryChangeEvent.h>
++#include <Events/WorldItemDropEvent.h>
++#include <Services/WorldItemService.h>
+ #include <Events/MountEvent.h>
+ #include <Events/DialogueEvent.h>
+ #include <Games/Misc/MenuTopicManager.h>
+@@ -70,7 +72,7 @@ void QueueActorInventoryChange(Actor* apActor, InventoryChangeEvent aEvent, TESO
+     aEvent.OwnershipEpoch = ownershipToken->OwnershipEpoch;
+     World::Get().GetRunner().Trigger(std::move(aEvent));
+ }
+-}
++} // namespace
+ 
+ #ifdef SAVE_STUFF
+ 
+@@ -427,8 +429,8 @@ bool TP_MAKE_THISCALL(HookRemoveSpell, Actor, MagicItem* apSpell)
+     bool result = TiltedPhoques::ThisCall(RealRemoveSpell, apThis, apSpell);
+     if (apThis->GetExtension()->IsLocalPlayer() && result)
+     {
+-        //spdlog::info(__FUNCTION__ ": spell: {}, ID: {} from local player", apSpell->GetName() , apSpell->formID);
+-       RemoveSpellEvent removalEvent;
++        // spdlog::info(__FUNCTION__ ": spell: {}, ID: {} from local player", apSpell->GetName() , apSpell->formID);
++        RemoveSpellEvent removalEvent;
+ 
+         removalEvent.TargetId = apThis->formID;
+         removalEvent.SpellId = apSpell->formID;
+@@ -625,9 +627,7 @@ void Actor::SetActorValue(uint32_t aId, float aValue) noexcept
+ 
+ void Actor::ForceActorValue(ActorValueOwner::ForceMode aMode, uint32_t aId, float aValue) noexcept
+ {
+-    float initialValue = aMode == ActorValueOwner::ForceMode::PERMANENT 
+-                         ? GetActorPermanentValue(aId)
+-                         : GetActorValue(aId);
++    float initialValue = aMode == ActorValueOwner::ForceMode::PERMANENT ? GetActorPermanentValue(aId) : GetActorValue(aId);
+ 
+     if (aValue == initialValue)
+         return;
+@@ -897,8 +897,8 @@ void Actor::FixVampireLordModel() noexcept
+     }
+ 
+     // TODO: weapon draw code does not seem to take care of this
+-    //BSFixedString weapEquip("WeapEquip");
+-    //SendAnimationEvent(&weapEquip);
++    // BSFixedString weapEquip("WeapEquip");
++    // SendAnimationEvent(&weapEquip);
+ 
+     g_forceAnimation = false;
+ }
+@@ -1080,6 +1080,11 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, Actor, TESBoundObject* apItem, Extra
+ 
+ void* TP_MAKE_THISCALL(HookPickUpObject, Actor, TESObjectREFR* apObject, int32_t aCount, bool aUnk1, float aUnk2)
+ {
++    if (apThis != PlayerCharacter::Get() && World::Get().GetTransport().IsOnline() && World::Get().ctx().at<WorldItemService>().IsTracked(apObject))
++        return nullptr;
++    if (apThis == PlayerCharacter::Get() && !ScopedInventoryOverride::IsOverriden() && World::Get().GetTransport().IsOnline() &&
++        World::Get().ctx().at<WorldItemService>().TryPickup(apObject))
++        return nullptr;
+     if (!ScopedInventoryOverride::IsOverriden())
+     {
+         auto& modSystem = World::Get().GetModSystem();
+@@ -1117,11 +1122,25 @@ void* TP_MAKE_THISCALL(HookDropObject, Actor, void* apResult, TESBoundObject* ap
+     if (apExtraData)
+         apThis->GetItemFromExtraData(item, apExtraData);
+ 
+-    QueueActorInventoryChange(apThis, InventoryChangeEvent(apThis->formID, std::move(item), true));
+-
++    const auto type = static_cast<uint8_t>(apObject->formType);
++    const bool shareable = type == 23 || type == 26 || type == 30 || type == 32 || type == 41 || type == 42 || type == 46 || type == 52;
++    const bool shared = shareable && apThis == PlayerCharacter::Get() && World::Get().GetTransport().IsOnline() && !item.IsQuestItem;
++    if (!shared)
++        QueueActorInventoryChange(apThis, InventoryChangeEvent(apThis->formID, item, true));
+     ScopedInventoryOverride _;
+-
+-    return TiltedPhoques::ThisCall(RealDropObject, apThis, apResult, apObject, apExtraData, aCount, apLocation, apRotation);
++    void* result = TiltedPhoques::ThisCall(RealDropObject, apThis, apResult, apObject, apExtraData, aCount, apLocation, apRotation);
++    if (shared)
++    {
++        auto* handle = static_cast<BSPointerHandle<TESObjectREFR>*>(apResult);
++        auto* ref = TESObjectREFR::GetByHandle(handle->handle.iBits);
++        if (ref)
++        {
++            item.Count = aCount;
++            item.ExtraWorn = item.ExtraWornLeft = false;
++            World::Get().GetRunner().Trigger(WorldItemDropEvent{ref->formID, std::move(item)});
++        }
++    }
++    return result;
+ }
+ 
+ void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLocation, NiPoint3* apRotation) noexcept
+@@ -1207,12 +1226,18 @@ void TP_MAKE_THISCALL(HookUnequipObject, Actor, void* apUnk1, TESBoundObject* ap
+     TiltedPhoques::ThisCall(RealUnequipObject, apThis, apUnk1, apObject, aUnk2, apUnk3);
+ }
+ 
+-TP_THIS_FUNCTION(TSpeakSoundFunction, bool, Actor, const char* apName, uint32_t* a3, uint32_t a4, uint32_t a5, uint32_t a6, uint64_t a7, uint64_t a8, uint64_t a9, bool a10, uint64_t a11, bool a12, bool a13, bool a14);
++TP_THIS_FUNCTION(
++    TSpeakSoundFunction, bool, Actor, const char* apName, uint32_t* a3, uint32_t a4, uint32_t a5, uint32_t a6, uint64_t a7, uint64_t a8, uint64_t a9, bool a10, uint64_t a11,
++    bool a12, bool a13, bool a14);
+ static TSpeakSoundFunction* RealSpeakSoundFunction = nullptr;
+ 
+-bool TP_MAKE_THISCALL(HookSpeakSoundFunction, Actor, const char* apName, uint32_t* a3, uint32_t a4, uint32_t a5, uint32_t a6, uint64_t a7, uint64_t a8, uint64_t a9, bool a10, uint64_t a11, bool a12, bool a13, bool a14)
++bool TP_MAKE_THISCALL(
++    HookSpeakSoundFunction, Actor, const char* apName, uint32_t* a3, uint32_t a4, uint32_t a5, uint32_t a6, uint64_t a7, uint64_t a8, uint64_t a9, bool a10, uint64_t a11, bool a12,
++    bool a13, bool a14)
+ {
+-    spdlog::debug("a3: {:X}, a4: {}, a5: {}, a6: {}, a7: {}, a8: {:X}, a9: {:X}, a10: {}, a11: {:X}, a12: {}, a13: {}, a14: {}", (uint64_t)a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14);
++    spdlog::debug(
++        "a3: {:X}, a4: {}, a5: {}, a6: {}, a7: {}, a8: {:X}, a9: {:X}, a10: {}, a11: {:X}, a12: {}, a13: {}, a14: {}", (uint64_t)a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13,
++        a14);
+ 
+     // The player having the conversation may not own this NPC. Ambient
+     // speech still comes only from the actor's simulation owner.
+@@ -1265,7 +1290,7 @@ bool TP_MAKE_THISCALL(HookIsFleeing, Actor)
+     // TODO: investigate why the flee flag is set at all on remote players sometimes.
+     if (apThis->GetExtension()->IsPlayer())
+         return false;
+-    
++
+     return TiltedPhoques::ThisCall(RealIsFleeing, apThis);
+ }
+ 
+diff --git a/Code/client/Games/Skyrim/Events/EventDispatcher.h b/Code/client/Games/Skyrim/Events/EventDispatcher.h
+index 448a179f..963d4d67 100644
+--- a/Code/client/Games/Skyrim/Events/EventDispatcher.h
++++ b/Code/client/Games/Skyrim/Events/EventDispatcher.h
+@@ -208,10 +208,24 @@ struct TESSellEvent
+ 
+ struct TESSleepStartEvent
+ {
++    float sleepStartTime;
++    float desiredSleepEndTime;
+ };
+ 
+ struct TESSleepStopEvent
+ {
++    bool interrupted;
++};
++
++struct TESWaitStartEvent
++{
++    float waitStartTime;
++    float desiredWaitEndTime;
++};
++
++struct TESWaitStopEvent
++{
++    bool interrupted;
+ };
+ 
+ struct TESSpellCastEvent
+@@ -312,7 +326,7 @@ struct EventDispatcherManager
+     EventDispatcher<TESSceneActionEvent> sceneActionEvent;
+     EventDispatcher<TESScenePhaseEvent> scenePhaseEvent;
+     EventDispatcher<TESSellEvent> sellEvent;
+-    EventDispatcher<TESSleepStartEvent> unknownDispatcher39;
++    EventDispatcher<TESSleepStartEvent> sleepStartEvent;
+     EventDispatcher<TESSleepStopEvent> sleepStopEvent;
+     EventDispatcher<TESSpellCastEvent> spellCastEvent;
+     EventDispatcher<TESPlayerBowShotEvent> unknownDispatcher42;
+@@ -323,8 +337,8 @@ struct EventDispatcherManager
+     EventDispatcher<TESTriggerEnterEvent> triggerEnterEvent;
+     EventDispatcher<TESTriggerLeaveEvent> triggerLeaveEvent;
+     EventDispatcher<TESUniqueIDChangeEvent> uniqueIDChangeEvent;
+-    EventDispatcher<UnknownEvent> unknownDispatcher50; // waitevent
+-    EventDispatcher<UnknownEvent> unknownDispatcher51; // TESWaitStopEvent
++    EventDispatcher<TESWaitStartEvent> waitStartEvent;
++    EventDispatcher<TESWaitStopEvent> waitStopEvent;
+     EventDispatcher<TESSwitchRaceCompleteEvent> switchRaceCompleteEvent;
+     EventDispatcher<TESFastTravelEndEvent> fastTravelEndEvent;
+ };
+diff --git a/Code/client/Games/Skyrim/TESObjectREFR.cpp b/Code/client/Games/Skyrim/TESObjectREFR.cpp
+index 9032a69a..af5509e6 100644
+--- a/Code/client/Games/Skyrim/TESObjectREFR.cpp
++++ b/Code/client/Games/Skyrim/TESObjectREFR.cpp
+@@ -6,6 +6,7 @@
+ #include <World.h>
+ #include <Services/PapyrusService.h>
+ #include <Events/ActivateEvent.h>
++#include <Services/WorldItemService.h>
+ #include <Events/InventoryChangeEvent.h>
+ #include <Events/ScriptAnimationEvent.h>
+ #include <Events/LockChangeEvent.h>
+@@ -74,12 +75,13 @@ void UpdateGraphDescriptorHash(Actor* apActor, BSAnimationGraphManager* apManage
+     if (cPreviousHash != 0)
+         spdlog::info("Animation graph project of actor {:X} changed, graph descriptor {} -> {}", apActor->formID, cPreviousHash, pExtension->GraphDescriptorHash);
+ }
+-}
++} // namespace
+ 
+ TP_THIS_FUNCTION(TActivate, bool, TESObjectREFR, TESObjectREFR* apActivator, uint8_t aUnk1, TESBoundObject* apObjectToGet, int32_t aCount, char aDefaultProcessing);
+ TP_THIS_FUNCTION(TAddInventoryItem, void, TESObjectREFR, TESBoundObject* apItem, ExtraDataList* apExtraData, int32_t aCount, TESObjectREFR* apOldOwner);
+ TP_THIS_FUNCTION(
+-    TRemoveInventoryItem, BSPointerHandle<TESObjectREFR>*, TESObjectREFR, BSPointerHandle<TESObjectREFR>* apResult, TESBoundObject* apItem, int32_t aCount, ITEM_REMOVE_REASON aReason, ExtraDataList* apExtraList, TESObjectREFR* apMoveToRef, const NiPoint3* apDropLoc, const NiPoint3* apRotate);
++    TRemoveInventoryItem, BSPointerHandle<TESObjectREFR>*, TESObjectREFR, BSPointerHandle<TESObjectREFR>* apResult, TESBoundObject* apItem, int32_t aCount,
++    ITEM_REMOVE_REASON aReason, ExtraDataList* apExtraList, TESObjectREFR* apMoveToRef, const NiPoint3* apDropLoc, const NiPoint3* apRotate);
+ TP_THIS_FUNCTION(TPlayAnimationAndWait, bool, void, uint32_t auiStackID, TESObjectREFR* apSelf, BSFixedString* apAnimation, BSFixedString* apEventName);
+ TP_THIS_FUNCTION(TPlayAnimation, bool, void, uint32_t auiStackID, TESObjectREFR* apSelf, BSFixedString* apEventName);
+ TP_THIS_FUNCTION(TRotate, void, TESObjectREFR, float aAngle);
+@@ -146,7 +148,7 @@ TESObjectREFR* TESObjectREFR::GetByHandle(uint32_t aHandle) noexcept
+ {
+     TESObjectREFR* pResult = nullptr;
+ 
+-    using TGetRefrByHandle = void(uint32_t & aHandle, TESObjectREFR * &apResult);
++    using TGetRefrByHandle = void(uint32_t& aHandle, TESObjectREFR*& apResult);
+ 
+     POINTER_SKYRIMSE(TGetRefrByHandle, s_getRefrByHandle, 17201);
+ 
+@@ -369,6 +371,59 @@ ExtraDataList* TESObjectREFR::GetExtraDataList() noexcept
+     return &extraData;
+ }
+ 
++TESObjectREFR* TESObjectREFR::SpawnWorldCopy(const Inventory::Entry& aItem) const noexcept
++{
++    using ObjectReference = TESObjectREFR;
++    auto& registry = World::Get().ctx().at<PapyrusService>();
++    const void* fn = registry.Get("ObjectReference", "PlaceAtMe");
++    if (!fn)
++        return nullptr;
++    PapyrusFunction<TESObjectREFR*, ObjectReference, TESForm*, int32_t, bool, bool> place(fn);
++    TESForm* base = TESForm::GetById(World::Get().GetModSystem().GetGameId(aItem.BaseId));
++    if (!base)
++        return nullptr;
++    TESObjectREFR* ref = place(this, base, 1, false, false);
++    if (!ref)
++        return nullptr;
++    if (auto* extra = GetExtraDataFromItem(aItem))
++    {
++        while (extra->data)
++        {
++            auto* node = extra->data;
++            extra->data = node->next;
++            node->next = nullptr;
++            ref->extraData.Add(node->GetType(), node);
++        }
++        if (extra->bitfield)
++            Memory::Delete(extra->bitfield);
++        Memory::Delete(extra);
++    }
++    if (aItem.Count > 1)
++    {
++        if (auto* existing = Cast<ExtraCount>(ref->extraData.GetByType(ExtraDataType::Count)))
++            existing->count = static_cast<int16_t>(aItem.Count);
++        else
++        {
++            POINTER_SKYRIMSE(void*, countVtable, 186679);
++            auto* count = Memory::Allocate<ExtraCount>();
++            std::memset(count, 0, sizeof(ExtraCount));
++            *reinterpret_cast<void**>(count) = countVtable.Get();
++            count->count = static_cast<int16_t>(aItem.Count);
++            ref->extraData.Add(ExtraDataType::Count, count);
++        }
++    }
++    return ref;
++}
++void TESObjectREFR::SetWorldMotion(bool aDynamic) const noexcept
++{
++    const void* fn = World::Get().ctx().at<PapyrusService>().Get("ObjectReference", "SetMotionType");
++    if (fn)
++    {
++        PapyrusFunction<void, TESObjectREFR, int32_t, bool> motion(fn);
++        motion(this, aDynamic ? 1 : 4, false);
++    }
++}
++
+ // Delete() should only be used on temporaries
+ void TESObjectREFR::Delete() const noexcept
+ {
+@@ -760,7 +815,8 @@ Inventory TESObjectREFR::GetInventory(std::function<bool(TESForm&)> aFilter) con
+ 
+     for (auto& entry : extraInventory.Entries)
+     {
+-        auto duplicate = std::find_if(minimizedExtraInventory.Entries.begin(), minimizedExtraInventory.Entries.end(), [entry](const Inventory::Entry& newEntry) { return newEntry.CanBeMerged(entry); });
++        auto duplicate = std::find_if(
++            minimizedExtraInventory.Entries.begin(), minimizedExtraInventory.Entries.end(), [entry](const Inventory::Entry& newEntry) { return newEntry.CanBeMerged(entry); });
+ 
+         if (duplicate == std::end(minimizedExtraInventory.Entries))
+         {
+@@ -1032,19 +1088,22 @@ bool TP_MAKE_THISCALL(HookPlayAnimation, void, uint32_t auiStackID, TESObjectREF
+ 
+ bool TP_MAKE_THISCALL(HookActivate, TESObjectREFR, TESObjectREFR* apActivator, uint8_t aUnk1, TESBoundObject* apObjectToGet, int32_t aCount, char aDefaultProcessing)
+ {
++    if (apActivator != PlayerCharacter::Get() && World::Get().GetTransport().IsOnline() && World::Get().ctx().at<WorldItemService>().IsTracked(apThis))
++        return false;
++    if (apActivator == PlayerCharacter::Get() && !ScopedActivateOverride::IsOverriden() && World::Get().GetTransport().IsOnline() &&
++        World::Get().ctx().at<WorldItemService>().TryPickup(apThis))
++        return true;
+     Actor* pActivator = Cast<Actor>(apActivator);
+ 
+     // Exclude books from activation since only reading them removes them from the cell
+-    // Note: Books are now unsynced 
++    // Note: Books are now unsynced
+     if (pActivator && apThis->baseForm->formType != FormType::Book)
+     {
+         auto openState = TESObjectREFR::kNone;
+         if (apThis->baseForm->formType == FormType::Door)
+             openState = apThis->GetOpenState();
+ 
+-        World::Get().GetRunner().Trigger(
+-            ActivateEvent(apThis, pActivator, apObjectToGet, aCount, aDefaultProcessing, aUnk1, openState)
+-        );
++        World::Get().GetRunner().Trigger(ActivateEvent(apThis, pActivator, apObjectToGet, aCount, aDefaultProcessing, aUnk1, openState));
+     }
+ 
+     return TiltedPhoques::ThisCall(RealActivate, apThis, apActivator, aUnk1, apObjectToGet, aCount, aDefaultProcessing);
+@@ -1071,8 +1130,9 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, TESObjectREFR, TESBoundObject* apIte
+     TiltedPhoques::ThisCall(RealAddInventoryItem, apThis, apItem, apExtraData, aCount, apOldOwner);
+ }
+ 
+-BSPointerHandle<TESObjectREFR>*
+-TP_MAKE_THISCALL(HookRemoveInventoryItem, TESObjectREFR, BSPointerHandle<TESObjectREFR>* apResult, TESBoundObject* apItem, int32_t aCount, ITEM_REMOVE_REASON aReason, ExtraDataList* apExtraList, TESObjectREFR* apMoveToRef, const NiPoint3* apDropLoc, const NiPoint3* apRotate)
++BSPointerHandle<TESObjectREFR>* TP_MAKE_THISCALL(
++    HookRemoveInventoryItem, TESObjectREFR, BSPointerHandle<TESObjectREFR>* apResult, TESBoundObject* apItem, int32_t aCount, ITEM_REMOVE_REASON aReason,
++    ExtraDataList* apExtraList, TESObjectREFR* apMoveToRef, const NiPoint3* apDropLoc, const NiPoint3* apRotate)
+ {
+     if (!ScopedInventoryOverride::IsOverriden())
+     {
+@@ -1142,7 +1202,7 @@ void TP_MAKE_THISCALL(HookLockChange, TESObjectREFR)
+ {
+     TiltedPhoques::ThisCall(RealLockChange, apThis);
+     const auto* pLock = apThis->GetLock();
+-    if(pLock)
++    if (pLock)
+         World::Get().GetRunner().Trigger(LockChangeEvent(apThis->formID, pLock->IsLocked(), pLock->lockLevel));
+     else
+         World::Get().GetRunner().Trigger(LockChangeEvent(apThis->formID, false, 0));
+diff --git a/Code/client/Games/Skyrim/TESObjectREFR.h b/Code/client/Games/Skyrim/TESObjectREFR.h
+index 2ebd9b21..190b80ba 100644
+--- a/Code/client/Games/Skyrim/TESObjectREFR.h
++++ b/Code/client/Games/Skyrim/TESObjectREFR.h
+@@ -91,7 +91,9 @@ struct TESObjectREFR : TESForm
+     virtual void sub_53();
+     virtual void sub_54();
+     virtual void sub_55();
+-    virtual BSPointerHandle<TESObjectREFR> RemoveItem(TESBoundObject* apItem, int32_t aCount, ITEM_REMOVE_REASON aReason, ExtraDataList* apExtraList, TESObjectREFR* apMoveToRef, const NiPoint3* apDropLoc = nullptr, const NiPoint3* apRotate = nullptr);
++    virtual BSPointerHandle<TESObjectREFR> RemoveItem(
++        TESBoundObject* apItem, int32_t aCount, ITEM_REMOVE_REASON aReason, ExtraDataList* apExtraList, TESObjectREFR* apMoveToRef, const NiPoint3* apDropLoc = nullptr,
++        const NiPoint3* apRotate = nullptr);
+     virtual void sub_57();
+     virtual void sub_58();
+     virtual void sub_59();
+@@ -183,6 +185,8 @@ struct TESObjectREFR : TESForm
+ 
+     void RemoveAllItems() noexcept;
+     Vector<uint32_t> RemoveNonQuestItems(Inventory& aCurrentInventory) noexcept;
++    TESObjectREFR* SpawnWorldCopy(const Inventory::Entry&) const noexcept;
++    void SetWorldMotion(bool aDynamic) const noexcept;
+     void Delete() const noexcept;
+     void Disable() const noexcept;
+     void Enable() const noexcept;
+diff --git a/Code/client/Services/CalendarService.h b/Code/client/Services/CalendarService.h
+index dd442b60..a9a9d7d5 100644
+--- a/Code/client/Services/CalendarService.h
++++ b/Code/client/Services/CalendarService.h
+@@ -13,14 +13,27 @@ struct TransportService;
+ /**
+  * @brief Handles time sync.
+  */
+-class CalendarService final : public BSTEventSink<TESActivateEvent>
++class CalendarService final : public BSTEventSink<TESSleepStartEvent>,
++                              public BSTEventSink<TESSleepStopEvent>,
++                              public BSTEventSink<TESWaitStartEvent>,
++                              public BSTEventSink<TESWaitStopEvent>
+ {
+ public:
+     CalendarService(World&, entt::dispatcher&, TransportService&);
++    ~CalendarService() override;
+ 
+     static bool AllowGameTick() noexcept;
+ 
++    // Sleeping and waiting are turned into a shared time skip (#467).
++    BSTEventResult OnEvent(const TESSleepStartEvent* apEvent, const EventDispatcher<TESSleepStartEvent>*) override;
++    BSTEventResult OnEvent(const TESSleepStopEvent* apEvent, const EventDispatcher<TESSleepStopEvent>*) override;
++    BSTEventResult OnEvent(const TESWaitStartEvent* apEvent, const EventDispatcher<TESWaitStartEvent>*) override;
++    BSTEventResult OnEvent(const TESWaitStopEvent* apEvent, const EventDispatcher<TESWaitStopEvent>*) override;
++
+ private:
++    void BeginTimeSkip(float aStartTimeInDays, float aDesiredEndTimeInDays, const char* apKind) noexcept;
++    void EndTimeSkip(bool aInterrupted, const char* apKind) noexcept;
++
+     void OnTimeUpdate(const ServerTimeSettings&) noexcept;
+     void HandleUpdate(const UpdateEvent&) noexcept;
+     void OnDisconnected(const DisconnectedEvent&) noexcept;
+@@ -34,11 +47,16 @@ private:
+ 
+     DateTime m_onlineTime;
+     DateTime m_offlineTime;
++    // Mirror of the server clock (date included, whatever bSyncPlayerCalendar says) to measure time jumps.
++    DateTime m_serverTime;
++    bool m_hasServerTime = false;
+     float m_fadeTimer = 0.f;
+     static bool s_gameClockLocked;
+ 
+     uint64_t m_lastTick = 0;
+     uint64_t m_lastLogTick = 0;
++    float m_pendingSkipHours = 0.f;
++    DateTime m_pendingSkipTarget;
+     World& m_world;
+     TransportService& m_transport;
+ };
+diff --git a/Code/client/Services/Generic/CalendarService.cpp b/Code/client/Services/Generic/CalendarService.cpp
+index 585d034d..f2c517cb 100644
+--- a/Code/client/Services/Generic/CalendarService.cpp
++++ b/Code/client/Services/Generic/CalendarService.cpp
+@@ -3,7 +3,11 @@
+ #include <Events/DisconnectedEvent.h>
+ #include <Events/UpdateEvent.h>
+ #include <Messages/ServerTimeSettings.h>
++#include <Messages/RequestTimeSkip.h>
++#include <Services/TransportService.h>
+ #include <World.h>
++#include <SurvivalTimePolicy.h>
++#include <cmath>
+ 
+ #include <Forms/TESObjectCELL.h>
+ #include <PlayerCharacter.h>
+@@ -19,17 +23,116 @@ bool CalendarService::AllowGameTick() noexcept
+ }
+ 
+ CalendarService::CalendarService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport)
+-    : m_world(aWorld), m_transport(aTransport)
++    : m_world(aWorld)
++    , m_transport(aTransport)
+ {
+     m_timeUpdateConnection = aDispatcher.sink<ServerTimeSettings>().connect<&CalendarService::OnTimeUpdate>(this);
+     m_updateConnection = aDispatcher.sink<UpdateEvent>().connect<&CalendarService::HandleUpdate>(this);
+     m_disconnectedConnection = aDispatcher.sink<DisconnectedEvent>().connect<&CalendarService::OnDisconnected>(this);
++
++    auto* pEventList = EventDispatcherManager::Get();
++    pEventList->sleepStartEvent.RegisterSink(this);
++    pEventList->sleepStopEvent.RegisterSink(this);
++    pEventList->waitStartEvent.RegisterSink(this);
++    pEventList->waitStopEvent.RegisterSink(this);
++}
++
++CalendarService::~CalendarService()
++{
++    auto* pEventList = EventDispatcherManager::Get();
++    pEventList->sleepStartEvent.UnRegisterSink(this);
++    pEventList->sleepStopEvent.UnRegisterSink(this);
++    pEventList->waitStartEvent.UnRegisterSink(this);
++    pEventList->waitStopEvent.UnRegisterSink(this);
++}
++
++BSTEventResult CalendarService::OnEvent(const TESSleepStartEvent* apEvent, const EventDispatcher<TESSleepStartEvent>*)
++{
++    if (apEvent)
++        BeginTimeSkip(apEvent->sleepStartTime, apEvent->desiredSleepEndTime, "sleep");
++    return BSTEventResult::kOk;
++}
++
++BSTEventResult CalendarService::OnEvent(const TESSleepStopEvent* apEvent, const EventDispatcher<TESSleepStopEvent>*)
++{
++    EndTimeSkip(apEvent && apEvent->interrupted, "sleep");
++    return BSTEventResult::kOk;
++}
++
++BSTEventResult CalendarService::OnEvent(const TESWaitStartEvent* apEvent, const EventDispatcher<TESWaitStartEvent>*)
++{
++    if (apEvent)
++        BeginTimeSkip(apEvent->waitStartTime, apEvent->desiredWaitEndTime, "wait");
++    return BSTEventResult::kOk;
++}
++
++BSTEventResult CalendarService::OnEvent(const TESWaitStopEvent* apEvent, const EventDispatcher<TESWaitStopEvent>*)
++{
++    EndTimeSkip(apEvent && apEvent->interrupted, "wait");
++    return BSTEventResult::kOk;
++}
++
++void CalendarService::BeginTimeSkip(float aStartTimeInDays, float aDesiredEndTimeInDays, const char* apKind) noexcept
++{
++    m_pendingSkipHours = 0.f;
++    if (!s_gameClockLocked || !m_transport.IsOnline() || !m_hasServerTime)
++        return;
++    const float hours = (aDesiredEndTimeInDays - aStartTimeInDays) * 24.f;
++    if (!std::isfinite(hours) || hours <= 0.f || hours > 24.01f)
++        return;
++    m_pendingSkipHours = hours;
++    m_pendingSkipTarget = m_serverTime;
++    m_pendingSkipTarget.AddHours(hours);
++
++    spdlog::info("{} started: game time {} -> {} days, {} hours requested, online {}", apKind, aStartTimeInDays, aDesiredEndTimeInDays, m_pendingSkipHours, s_gameClockLocked);
++}
++
++void CalendarService::EndTimeSkip(bool aInterrupted, const char* apKind) noexcept
++{
++    const float hours = m_pendingSkipHours;
++    m_pendingSkipHours = 0.f;
++
++    // Offline the game advanced its own clock; online the clock is driven by the server, so ask it to skip.
++    if (!s_gameClockLocked || !m_transport.IsOnline())
++        return;
++
++    if (aInterrupted || !(hours > 0.f) || hours > 24.01f)
++    {
++        spdlog::info("{} ended without a time skip: interrupted {}, hours {}", apKind, aInterrupted, hours);
++        return;
++    }
++
++    RequestTimeSkip request{};
++    request.TargetTime = m_pendingSkipTarget.m_timeModel;
++    m_transport.Send(request);
++
++    spdlog::info("{} ended: requested a shared time skip of {} hours", apKind, hours);
+ }
+ 
+ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
+ {
+-    // disable the game clock
+-    ToggleGameClock(false);
++    // A jump of the shared clock (sleep, wait, /settime) must also move GameDaysPassed, which drives script
++    // timers, the way the game itself does when the player sleeps. Regular ticks are handled in HandleUpdate.
++    // The comparison uses a mirror of the server clock, not m_onlineTime: with bSyncPlayerCalendar off the
++    // online date is the local one and a midnight crossed on the server would count as a whole extra day.
++    const DateTime newServerTime{acMessage.timeModel};
++    if (s_gameClockLocked && m_hasServerTime)
++    {
++        const double skippedDays = SurvivalTime::InDays(newServerTime.m_timeModel) - SurvivalTime::InDays(m_serverTime.m_timeModel);
++        if (skippedDays > 0.f && skippedDays <= 2.0)
++        {
++            TimeData::Get()->GameDaysPassed->f += static_cast<float>(skippedDays);
++            spdlog::info("Shared time jumped forward by {} days", skippedDays);
++        }
++    }
++    m_serverTime = newServerTime;
++    m_hasServerTime = true;
++
++    // Establish a new tick baseline so elapsed time already included in this packet is not counted twice.
++    m_lastTick = m_world.GetTick();
++    // Capture offline state only when entering online mode.
++    if (!s_gameClockLocked)
++        ToggleGameClock(false);
+     m_onlineTime.m_timeModel.TimeScale = acMessage.timeModel.TimeScale;
+     m_onlineTime.m_timeModel.Time = acMessage.timeModel.Time;
+ 
+@@ -49,6 +152,9 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
+ 
+ void CalendarService::OnDisconnected(const DisconnectedEvent&) noexcept
+ {
++    m_hasServerTime = false;
++    m_lastTick = 0;
++    m_pendingSkipHours = 0.f;
+     // signal a time transition
+     m_fadeTimer = 0.f;
+     ToggleGameClock(true);
+@@ -101,6 +207,7 @@ void CalendarService::HandleUpdate(const UpdateEvent& aEvent) noexcept
+         m_lastTick = now;
+ 
+         m_onlineTime.Update(delta);
++        m_serverTime.Update(delta);
+         pGameTime->TimeScale->f = m_onlineTime.m_timeModel.TimeScale;
+         pGameTime->GameDay->f = m_onlineTime.m_timeModel.Day;
+         pGameTime->GameMonth->f = m_onlineTime.m_timeModel.Month;
+diff --git a/Code/client/Services/Generic/WorldItemService.cpp b/Code/client/Services/Generic/WorldItemService.cpp
+new file mode 100644
+index 00000000..d8534a17
+--- /dev/null
++++ b/Code/client/Services/Generic/WorldItemService.cpp
+@@ -0,0 +1,314 @@
++#include <Services/WorldItemService.h>
++#include <World.h>
++#include <Services/TransportService.h>
++#include <Events/UpdateEvent.h>
++#include <Events/DisconnectedEvent.h>
++#include <Events/CellChangeEvent.h>
++#include <Events/WorldItemDropEvent.h>
++#include <Messages/RequestWorldItem.h>
++#include <Messages/NotifyWorldItem.h>
++#include <Games/Overrides.h>
++#include <PlayerCharacter.h>
++#include <Forms/TESObjectCELL.h>
++#include <Forms/TESWorldSpace.h>
++#include <WorldItemPolicy.h>
++#include <cmath>
++namespace
++{
++bool Eligible(TESObjectREFR* ref)
++{
++    if (!ref || !ref->baseForm || ref->IsDeleted() || ref->IsDisabled() || ref->extraData.HasQuestObjectAlias())
++        return false;
++    switch (static_cast<uint8_t>(ref->baseForm->formType))
++    {
++    case 23:
++    case 26:
++    case 30:
++    case 32:
++    case 41:
++    case 42:
++    case 46:
++    case 52: return true;
++    default: return false;
++    }
++}
++TESObjectREFR* Grabbed()
++{
++    auto* p = PlayerCharacter::Get();
++    if (!p)
++        return nullptr;
++    // AE 1.6.629+ layout, matching the PlayerCharacter layout in this base.
++    // CommonLibSSE-NG PlayerCharacter::GetGrabbedRef documents 0x8D0.
++    const auto handle = *reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(p) + 0x8D0);
++    return TESObjectREFR::GetByHandle(handle);
++}
++float Difference(const WorldItemData& a, const WorldItemData& b)
++{
++    return std::abs(a.X - b.X) + std::abs(a.Y - b.Y) + std::abs(a.Z - b.Z) + 10.f * (std::abs(a.RX - b.RX) + std::abs(a.RY - b.RY) + std::abs(a.RZ - b.RZ));
++}
++} // namespace
++WorldItemService::WorldItemService(World& w, entt::dispatcher& d, TransportService& t)
++    : m_world(w)
++    , m_transport(t)
++{
++    m_update = d.sink<UpdateEvent>().connect<&WorldItemService::OnUpdate>(this);
++    m_notify = d.sink<NotifyWorldItem>().connect<&WorldItemService::OnNotify>(this);
++    m_drop = d.sink<WorldItemDropEvent>().connect<&WorldItemService::OnDrop>(this);
++    m_disconnect = d.sink<DisconnectedEvent>().connect<&WorldItemService::OnDisconnect>(this);
++    m_cell = d.sink<CellChangeEvent>().connect<&WorldItemService::OnCell>(this);
++}
++WorldItemData WorldItemService::Describe(TESObjectREFR* ref) const
++{
++    WorldItemData data;
++    data.SourceRef = ref->formID;
++    auto& mods = m_world.GetModSystem();
++    if (!ref->IsTemporary())
++        mods.GetServerModId(ref->formID, data.Reference);
++    mods.GetServerModId(ref->baseForm->formID, data.Item.BaseId);
++    mods.GetServerModId(ref->GetCellId(), data.Cell);
++    if (auto* ws = ref->GetWorldSpace())
++        mods.GetServerModId(ws->formID, data.WorldSpace);
++    data.Item.Count = std::max(1, static_cast<int32_t>(ref->extraData.GetCount()));
++    TESObjectREFR::GetItemFromExtraData(data.Item, &ref->extraData);
++    data.Item.ExtraWorn = data.Item.ExtraWornLeft = false;
++    data.X = ref->position.x;
++    data.Y = ref->position.y;
++    data.Z = ref->position.z;
++    data.RX = ref->rotation.x;
++    data.RY = ref->rotation.y;
++    data.RZ = ref->rotation.z;
++    return data;
++}
++void WorldItemService::Send(WorldItemAction a, const WorldItemData& data)
++{
++    RequestWorldItem q;
++    q.Action = a;
++    q.Data = data;
++    m_transport.Send(q);
++}
++bool WorldItemService::IsTracked(TESObjectREFR* ref) const
++{
++    if (!ref)
++        return false;
++    for (const auto& [id, l] : m_items)
++        if (l.FormId == ref->formID)
++            return true;
++    return m_pendingDrops.contains(ref->formID);
++}
++bool WorldItemService::TryPickup(TESObjectREFR* ref)
++{
++    if (!m_transport.IsOnline() || !Eligible(ref))
++        return false;
++    if (m_pendingDrops.contains(ref->formID))
++        return true; // wait for the creation acknowledgement
++    for (const auto& [id, l] : m_items)
++        if (l.FormId == ref->formID)
++        {
++            if (!l.Data.Consumed)
++                Send(WorldItemAction::Pickup, l.Data);
++            return true;
++        }
++    if (ref->IsTemporary())
++        return false; // unrelated, unregistered runtime spawn
++    const auto data = Describe(ref);
++    if (data.Item.IsQuestItem)
++        return false;
++    Send(WorldItemAction::Pickup, data);
++    return true;
++}
++void WorldItemService::OnDrop(const WorldItemDropEvent& e)
++{
++    if (!m_transport.IsOnline())
++        return;
++    auto* ref = Cast<TESObjectREFR>(TESForm::GetById(e.FormId));
++    if (!ref)
++        return;
++    auto data = Describe(ref);
++    data.Item = e.Item;
++    data.Token = ++m_dropCounter;
++    data.Reference = {};
++    m_pendingDrops[e.FormId] = data;
++    Send(WorldItemAction::Drop, data);
++}
++void WorldItemService::Materialize(Local& l)
++{
++    auto* player = PlayerCharacter::Get();
++    if (!player)
++        return;
++    auto* cell = Cast<TESObjectCELL>(TESForm::GetById(m_world.GetModSystem().GetGameId(l.Data.Cell)));
++    if (!cell || !cell->IsAttached())
++        return;
++    auto* ref = l.FormId ? Cast<TESObjectREFR>(TESForm::GetById(l.FormId)) : nullptr;
++    if (!ref && l.Data.Reference)
++        ref = Cast<TESObjectREFR>(TESForm::GetById(m_world.GetModSystem().GetGameId(l.Data.Reference)));
++    if (ref && ref->IsDeleted())
++        ref = nullptr;
++    if (l.Data.Consumed)
++    {
++        if (ref)
++        {
++            ref->Disable();
++            if (ref->IsTemporary() && ref != Grabbed())
++                ref->Delete();
++        }
++        l.FormId = 0;
++        return;
++    }
++    if (!ref)
++    {
++        ScopedInventoryOverride guard;
++        ref = player->SpawnWorldCopy(l.Data.Item);
++    }
++    if (!ref)
++        return;
++    l.FormId = ref->formID;
++    const bool owned = l.Data.Owner == m_transport.GetLocalPlayerId();
++    if (l.MotionOwner != l.Data.Owner)
++    {
++        ref->SetWorldMotion(owned);
++        l.MotionOwner = l.Data.Owner;
++    }
++    if (!owned || l.NewlyCreated)
++    {
++        ref->SetRotation(l.Data.RX, l.Data.RY, l.Data.RZ);
++        NiPoint3 pos{glm::vec3(l.Data.X, l.Data.Y, l.Data.Z)};
++        ref->MoveTo(cell, pos);
++    }
++    l.NewlyCreated = false;
++}
++void WorldItemService::OnNotify(const NotifyWorldItem& n)
++{
++    if (!SharedItems::ValidPose(n.Data))
++        return;
++    if (n.Action == WorldItemAction::Reject)
++    {
++        if (auto i = m_pendingDrops.find(n.Data.SourceRef); i != m_pendingDrops.end() && i->second.Token == n.Data.Token)
++        {
++            if (auto* ref = Cast<TESObjectREFR>(TESForm::GetById(n.Data.SourceRef)))
++            {
++                ref->Disable();
++                ref->Delete();
++            }
++            ScopedInventoryOverride guard;
++            PlayerCharacter::Get()->AddOrRemoveItem(i->second.Item);
++            m_pendingDrops.erase(i);
++            spdlog::warn("Shared drop rejected and restored locally: {:X}", n.Data.SourceRef);
++        }
++        return;
++    }
++    if (!n.Data.Id)
++        return;
++    auto [it, inserted] = m_items.try_emplace(n.Data.Id);
++    auto& l = it->second;
++    if (inserted && n.Data.Creator == m_transport.GetLocalPlayerId() && !n.Data.Reference)
++    {
++        if (m_pendingDrops.contains(n.Data.SourceRef) && m_pendingDrops.at(n.Data.SourceRef).Token == n.Data.Token)
++        {
++            l.FormId = n.Data.SourceRef;
++            l.NewlyCreated = false;
++            m_pendingDrops.erase(n.Data.SourceRef);
++        }
++    }
++    l.Data = n.Data;
++    Materialize(l);
++}
++void WorldItemService::OnCell(const CellChangeEvent&)
++{
++    if (m_transport.IsOnline())
++        Send(WorldItemAction::Snapshot, {});
++}
++void WorldItemService::OnDisconnect(const DisconnectedEvent&)
++{
++    for (auto& [id, l] : m_items)
++        if (l.FormId && !l.Data.Reference)
++        {
++            if (auto* ref = Cast<TESObjectREFR>(TESForm::GetById(l.FormId)))
++            {
++                ref->Disable();
++                ref->Delete();
++            }
++        }
++    for (const auto& [formId, pending] : m_pendingDrops)
++    {
++        if (auto* ref = Cast<TESObjectREFR>(TESForm::GetById(formId)))
++        {
++            ref->Disable();
++            if (ref != Grabbed())
++                ref->Delete();
++        }
++    }
++    m_items.clear();
++    m_pendingDrops.clear();
++    m_timer = m_snapshotTimer = 0;
++}
++void WorldItemService::OnUpdate(const UpdateEvent& e)
++{
++    if (!m_transport.IsOnline())
++        return;
++    m_timer += e.Delta;
++    m_snapshotTimer += e.Delta;
++    if (m_snapshotTimer >= 3)
++    {
++        m_snapshotTimer = 0;
++        Send(WorldItemAction::Snapshot, {});
++    }
++    if (m_timer < 0.1)
++        return;
++    const float dt = static_cast<float>(m_timer);
++    m_timer = 0;
++    auto* grabbed = Grabbed();
++    bool foundGrab = false;
++    for (auto& [id, l] : m_items)
++    {
++        if (l.Data.Consumed)
++            continue;
++        if (!l.FormId)
++        {
++            Materialize(l);
++            continue;
++        }
++        auto* ref = Cast<TESObjectREFR>(TESForm::GetById(l.FormId));
++        if (!ref)
++        {
++            l.FormId = 0;
++            continue;
++        }
++        const bool held = grabbed == ref;
++        foundGrab |= held;
++        if (l.Data.Owner != m_transport.GetLocalPlayerId())
++        {
++            if (held)
++                Send(WorldItemAction::Grab, l.Data);
++            else if (Difference(Describe(ref), l.Data) > 0.5f)
++                Materialize(l);
++            continue;
++        }
++        auto pose = Describe(ref);
++        pose.Id = l.Data.Id;
++        if (!pose.Reference && !ref->IsTemporary())
++            continue;
++        if ((!pose.WorldSpace && pose.Cell != l.Data.Cell) || pose.WorldSpace != l.Data.WorldSpace)
++        {
++            Send(WorldItemAction::Release, l.Data);
++            continue;
++        }
++        const bool changed = Difference(pose, l.Data) > 0.1f;
++        l.StillTime = changed ? 0 : l.StillTime + dt;
++        if (held || changed)
++        {
++            Send(WorldItemAction::Move, pose);
++            l.Data.Cell = pose.Cell;
++            l.Data.X = pose.X;
++            l.Data.Y = pose.Y;
++            l.Data.Z = pose.Z;
++            l.Data.RX = pose.RX;
++            l.Data.RY = pose.RY;
++            l.Data.RZ = pose.RZ;
++        }
++        if ((l.WasGrabbed && !held) || (!held && l.StillTime > 1))
++            Send(WorldItemAction::Release, l.Data);
++        l.WasGrabbed = held;
++    }
++    if (grabbed && !foundGrab && Eligible(grabbed) && !grabbed->IsTemporary())
++        Send(WorldItemAction::Register, Describe(grabbed));
++}
+diff --git a/Code/client/Services/WorldItemService.h b/Code/client/Services/WorldItemService.h
+new file mode 100644
+index 00000000..fd79087f
+--- /dev/null
++++ b/Code/client/Services/WorldItemService.h
+@@ -0,0 +1,43 @@
++#pragma once
++#include <Structs/WorldItemData.h>
++struct World;
++struct TransportService;
++struct UpdateEvent;
++struct DisconnectedEvent;
++struct NotifyWorldItem;
++struct WorldItemDropEvent;
++struct TESObjectREFR;
++struct CellChangeEvent;
++class WorldItemService
++{
++public:
++    WorldItemService(World&, entt::dispatcher&, TransportService&);
++    bool TryPickup(TESObjectREFR*);
++    bool IsTracked(TESObjectREFR*) const;
++
++private:
++    struct Local
++    {
++        WorldItemData Data;
++        uint32_t FormId{};
++        float StillTime{};
++        bool WasGrabbed{};
++        uint32_t MotionOwner = 0xFFFFFFFF;
++        bool NewlyCreated = true;
++    };
++    World& m_world;
++    TransportService& m_transport;
++    Map<uint32_t, Local> m_items;
++    Map<uint32_t, WorldItemData> m_pendingDrops;
++    uint32_t m_dropCounter{};
++    double m_timer{}, m_snapshotTimer{};
++    entt::scoped_connection m_update, m_notify, m_drop, m_disconnect, m_cell;
++    void OnUpdate(const UpdateEvent&);
++    void OnNotify(const NotifyWorldItem&);
++    void OnDrop(const WorldItemDropEvent&);
++    void OnDisconnect(const DisconnectedEvent&);
++    void OnCell(const CellChangeEvent&);
++    WorldItemData Describe(TESObjectREFR*) const;
++    void Send(WorldItemAction, const WorldItemData&);
++    void Materialize(Local&);
++};
+diff --git a/Code/client/World.cpp b/Code/client/World.cpp
+index b0596604..05a06350 100644
+--- a/Code/client/World.cpp
++++ b/Code/client/World.cpp
+@@ -10,6 +10,7 @@
+ #include <Services/PapyrusService.h>
+ #include <Services/DiscordService.h>
+ #include <Services/ObjectService.h>
++#include <Services/WorldItemService.h>
+ #include <Services/QuestService.h>
+ #include <Services/ActorValueService.h>
+ #include <Services/InventoryService.h>
+@@ -25,7 +26,7 @@
+ #include <Events/PreUpdateEvent.h>
+ #include <Events/UpdateEvent.h>
+ 
+-#include <ModCompat/BehaviorVar.h>  
++#include <ModCompat/BehaviorVar.h>
+ 
+ World::World()
+     : m_runner(m_dispatcher)
+@@ -42,6 +43,7 @@ World::World()
+     ctx().emplace<PapyrusService>(m_dispatcher);
+     ctx().emplace<DiscordService>(m_dispatcher);
+     ctx().emplace<ObjectService>(*this, m_dispatcher, m_transport);
++    ctx().emplace<WorldItemService>(*this, m_dispatcher, m_transport);
+     ctx().emplace<CalendarService>(*this, m_dispatcher, m_transport);
+     ctx().emplace<QuestService>(*this, m_dispatcher);
+     ctx().emplace<PartyService>(*this, m_dispatcher, m_transport);
+diff --git a/Code/common/DateTime.cpp b/Code/common/DateTime.cpp
+index b091ef61..bfb1eeb4 100644
+--- a/Code/common/DateTime.cpp
++++ b/Code/common/DateTime.cpp
+@@ -15,7 +15,12 @@ uint32_t DateTime::GetNumberOfDaysByMonthIndex(int aIndex)
+ 
+ void DateTime::Update(uint64_t aDeltaTick)
+ {
+-    m_timeModel.Time += GetDeltaTime(aDeltaTick);
++    AddHours(GetDeltaTime(aDeltaTick));
++}
++
++void DateTime::AddHours(float aHours)
++{
++    m_timeModel.Time += aHours;
+ 
+     m_timeModel.Day += static_cast<uint32_t>(m_timeModel.Time / 24.f);
+     m_timeModel.Time = std::fmod(m_timeModel.Time, 24.f);
+diff --git a/Code/common/DateTime.h b/Code/common/DateTime.h
+index e5e7a758..502de7a1 100644
+--- a/Code/common/DateTime.h
++++ b/Code/common/DateTime.h
+@@ -10,10 +10,12 @@ struct DateTime
+     DateTime() = default;
+     DateTime(TimeModel aTimeModel)
+         : m_timeModel(aTimeModel)
+-    {}
++    {
++    }
+ 
+     bool operator==(const DateTime& other) const;
+     void Update(uint64_t aDeltaTick);
++    void AddHours(float aHours);
+     float GetDeltaTime(uint64_t aDeltaTick) const noexcept;
+     float GetTimeInDays() const noexcept;
+ 
+diff --git a/Code/common/SurvivalTimePolicy.h b/Code/common/SurvivalTimePolicy.h
+new file mode 100644
+index 00000000..824b2508
+--- /dev/null
++++ b/Code/common/SurvivalTimePolicy.h
+@@ -0,0 +1,30 @@
++#pragma once
++#include <cmath>
++#include <cstdint>
++
++namespace SurvivalTime
++{
++constexpr uint32_t MonthDays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
++template <class T> bool Valid(const T& t) noexcept
++{
++    return t.Year <= 10000 && t.Month < 12 && t.Day >= 1 && t.Day <= MonthDays[t.Month] && std::isfinite(t.Time) && t.Time >= 0 && t.Time < 24;
++}
++template <class T> double InDays(const T& t) noexcept
++{
++    double days = static_cast<double>(t.Year) * 365.0 + t.Day;
++    for (uint32_t m = 0; m < t.Month && m < 12; ++m)
++        days += MonthDays[m];
++    return days + static_cast<double>(t.Time) / 24.0;
++}
++// Return only the remaining distance to the desired wake-up time. Replayed or
++// overlapping requests never add the full requested duration a second time.
++template <class T> float HoursToTarget(const T& current, const T& target) noexcept
++{
++    if (!Valid(current) || !Valid(target))
++        return 0.f;
++    const double hours = (InDays(target) - InDays(current)) * 24.0;
++    if (!std::isfinite(hours) || hours <= 0.0 || hours > 24.01)
++        return 0.f;
++    return static_cast<float>(hours);
++}
++} // namespace SurvivalTime
+diff --git a/Code/common/WorldItemPolicy.h b/Code/common/WorldItemPolicy.h
+new file mode 100644
+index 00000000..cc774ebe
+--- /dev/null
++++ b/Code/common/WorldItemPolicy.h
+@@ -0,0 +1,52 @@
++#pragma once
++#include <cstdint>
++#include <cmath>
++#include <initializer_list>
++namespace SharedItems
++{
++struct Claim
++{
++    uint32_t Owner{};
++    uint64_t LeaseUntil{};
++    bool Consumed{};
++    bool Grab(uint32_t player, uint64_t now) noexcept
++    {
++        if (Consumed || !player || (Owner && Owner != player && now < LeaseUntil))
++            return false;
++        Owner = player;
++        LeaseUntil = now + 1500;
++        return true;
++    }
++    bool Move(uint32_t player, uint64_t now) noexcept
++    {
++        if (Consumed || !player || Owner != player)
++            return false;
++        LeaseUntil = now + 1500;
++        return true;
++    }
++    bool Release(uint32_t player) noexcept
++    {
++        if (Consumed || !player || Owner != player)
++            return false;
++        Owner = 0;
++        LeaseUntil = 0;
++        return true;
++    }
++    bool Pickup(uint32_t player) noexcept
++    {
++        if (Consumed || !player)
++            return false;
++        Consumed = true;
++        Owner = 0;
++        LeaseUntil = 0;
++        return true;
++    }
++};
++template <class T> bool ValidPose(const T& d) noexcept
++{
++    for (float v : {d.X, d.Y, d.Z, d.RX, d.RY, d.RZ})
++        if (!std::isfinite(v) || std::abs(v) > 10000000.f)
++            return false;
++    return true;
++}
++} // namespace SharedItems
+diff --git a/Code/encoding/Messages/ClientMessageFactory.h b/Code/encoding/Messages/ClientMessageFactory.h
+index 4f94d6d1..6d3e4e17 100644
+--- a/Code/encoding/Messages/ClientMessageFactory.h
++++ b/Code/encoding/Messages/ClientMessageFactory.h
+@@ -45,6 +45,8 @@
+ #include <Messages/TeleportCommandRequest.h>
+ #include <Messages/SetTimeCommandRequest.h>
+ #include <Messages/RequestActionEvents.h>
++#include <Messages/RequestTimeSkip.h>
++#include <Messages/RequestWorldItem.h>
+ #include <Messages/PlayerRespawnRequest.h>
+ #include <Messages/DialogueRequest.h>
+ #include <Messages/SubtitleRequest.h>
+@@ -66,11 +68,14 @@ struct ClientMessageFactory
+     template <class T> static auto Visit(T&& func)
+     {
+         auto s_visitor = CreateMessageVisitor<
+-            AuthenticationRequest, AssignCharacterRequest, ClientReferencesMoveRequest, EnterInteriorCellRequest, RequestInventoryChanges, RequestFactionsChanges, RequestQuestUpdate, PartyInviteRequest, PartyAcceptInviteRequest, PartyLeaveRequest, PartyCreateRequest,
+-            PartyChangeLeaderRequest, PartyKickRequest, RequestActorValueChanges, RequestActorMaxValueChanges, EnterExteriorCellRequest, RequestHealthChangeBroadcast, ActivateRequest, LockChangeRequest, AssignObjectsRequest, RequestDeathStateChange, ShiftGridCellRequest,
+-            RequestOwnershipTransfer, RequestOwnershipClaim, RequestObjectInventoryChanges, SpellCastRequest, ProjectileLaunchRequest, InterruptCastRequest, AddTargetRequest, ScriptAnimationRequest, DrawWeaponRequest, MountRequest, NewPackageRequest, RequestRespawn, SyncExperienceRequest,
+-            RequestEquipmentChanges, SendChatMessageRequest, TeleportCommandRequest, PlayerRespawnRequest, DialogueRequest, SubtitleRequest, PlayerDialogueRequest, PlayerLevelRequest, TeleportRequest, RequestPlayerHealthUpdate, RequestWeatherChange, RequestCurrentWeather, RequestSetWaypoint,
+-            RequestRemoveWaypoint, RemoveSpellRequest, SetTimeCommandRequest, RequestActionEvents>;
++            AuthenticationRequest, AssignCharacterRequest, ClientReferencesMoveRequest, EnterInteriorCellRequest, RequestInventoryChanges, RequestFactionsChanges,
++            RequestQuestUpdate, PartyInviteRequest, PartyAcceptInviteRequest, PartyLeaveRequest, PartyCreateRequest, PartyChangeLeaderRequest, PartyKickRequest,
++            RequestActorValueChanges, RequestActorMaxValueChanges, EnterExteriorCellRequest, RequestHealthChangeBroadcast, ActivateRequest, LockChangeRequest, AssignObjectsRequest,
++            RequestDeathStateChange, ShiftGridCellRequest, RequestOwnershipTransfer, RequestOwnershipClaim, RequestObjectInventoryChanges, SpellCastRequest,
++            ProjectileLaunchRequest, InterruptCastRequest, AddTargetRequest, ScriptAnimationRequest, DrawWeaponRequest, MountRequest, NewPackageRequest, RequestRespawn,
++            SyncExperienceRequest, RequestEquipmentChanges, SendChatMessageRequest, TeleportCommandRequest, PlayerRespawnRequest, DialogueRequest, SubtitleRequest,
++            PlayerDialogueRequest, PlayerLevelRequest, TeleportRequest, RequestPlayerHealthUpdate, RequestWeatherChange, RequestCurrentWeather, RequestSetWaypoint,
++            RequestRemoveWaypoint, RemoveSpellRequest, SetTimeCommandRequest, RequestActionEvents, RequestTimeSkip, RequestWorldItem>;
+ 
+         return s_visitor(std::forward<T>(func));
+     }
+diff --git a/Code/encoding/Messages/NotifyWorldItem.cpp b/Code/encoding/Messages/NotifyWorldItem.cpp
+new file mode 100644
+index 00000000..43f7aa33
+--- /dev/null
++++ b/Code/encoding/Messages/NotifyWorldItem.cpp
+@@ -0,0 +1,14 @@
++#include "NotifyWorldItem.h"
++void NotifyWorldItem::SerializeRaw(Buffer::Writer& w) const noexcept
++{
++    w.WriteBits(static_cast<uint8_t>(Action), 8);
++    Data.Serialize(w);
++}
++void NotifyWorldItem::DeserializeRaw(Buffer::Reader& r) noexcept
++{
++    ServerMessage::DeserializeRaw(r);
++    uint64_t v = 0;
++    r.ReadBits(v, 8);
++    Action = static_cast<WorldItemAction>(v);
++    Data.Deserialize(r);
++}
+diff --git a/Code/encoding/Messages/NotifyWorldItem.h b/Code/encoding/Messages/NotifyWorldItem.h
+new file mode 100644
+index 00000000..21bf1881
+--- /dev/null
++++ b/Code/encoding/Messages/NotifyWorldItem.h
+@@ -0,0 +1,15 @@
++#pragma once
++#include "Message.h"
++#include <Structs/WorldItemData.h>
++struct NotifyWorldItem final : ServerMessage
++{
++    static constexpr ServerOpcode Opcode = kNotifyWorldItem;
++    NotifyWorldItem()
++        : ServerMessage(Opcode)
++    {
++    }
++    WorldItemAction Action = WorldItemAction::State;
++    WorldItemData Data;
++    void SerializeRaw(Buffer::Writer&) const noexcept override;
++    void DeserializeRaw(Buffer::Reader&) noexcept override;
++};
+diff --git a/Code/encoding/Messages/RequestTimeSkip.cpp b/Code/encoding/Messages/RequestTimeSkip.cpp
+new file mode 100644
+index 00000000..ea9fbd37
+--- /dev/null
++++ b/Code/encoding/Messages/RequestTimeSkip.cpp
+@@ -0,0 +1,10 @@
++#include "RequestTimeSkip.h"
++void RequestTimeSkip::SerializeRaw(TiltedPhoques::Buffer::Writer& writer) const noexcept
++{
++    TargetTime.Serialize(writer);
++}
++void RequestTimeSkip::DeserializeRaw(TiltedPhoques::Buffer::Reader& reader) noexcept
++{
++    ClientMessage::DeserializeRaw(reader);
++    TargetTime.Deserialize(reader);
++}
+diff --git a/Code/encoding/Messages/RequestTimeSkip.h b/Code/encoding/Messages/RequestTimeSkip.h
+new file mode 100644
+index 00000000..80209bad
+--- /dev/null
++++ b/Code/encoding/Messages/RequestTimeSkip.h
+@@ -0,0 +1,16 @@
++#pragma once
++#include "Message.h"
++#include <Structs/TimeModel.h>
++// Protocol extension: every participant must use this custom client/server build.
++struct RequestTimeSkip final : ClientMessage
++{
++    static constexpr ClientOpcode Opcode = kRequestTimeSkip;
++    RequestTimeSkip()
++        : ClientMessage(Opcode)
++    {
++    }
++    void SerializeRaw(TiltedPhoques::Buffer::Writer&) const noexcept override;
++    void DeserializeRaw(TiltedPhoques::Buffer::Reader&) noexcept override;
++    bool operator==(const RequestTimeSkip& rhs) const noexcept { return GetOpcode() == rhs.GetOpcode() && TargetTime == rhs.TargetTime; }
++    TimeModel TargetTime;
++};
+diff --git a/Code/encoding/Messages/RequestWorldItem.cpp b/Code/encoding/Messages/RequestWorldItem.cpp
+new file mode 100644
+index 00000000..ca252e9f
+--- /dev/null
++++ b/Code/encoding/Messages/RequestWorldItem.cpp
+@@ -0,0 +1,14 @@
++#include "RequestWorldItem.h"
++void RequestWorldItem::SerializeRaw(Buffer::Writer& w) const noexcept
++{
++    w.WriteBits(static_cast<uint8_t>(Action), 8);
++    Data.Serialize(w);
++}
++void RequestWorldItem::DeserializeRaw(Buffer::Reader& r) noexcept
++{
++    ClientMessage::DeserializeRaw(r);
++    uint64_t v = 0;
++    r.ReadBits(v, 8);
++    Action = static_cast<WorldItemAction>(v);
++    Data.Deserialize(r);
++}
+diff --git a/Code/encoding/Messages/RequestWorldItem.h b/Code/encoding/Messages/RequestWorldItem.h
+new file mode 100644
+index 00000000..7455a51c
+--- /dev/null
++++ b/Code/encoding/Messages/RequestWorldItem.h
+@@ -0,0 +1,15 @@
++#pragma once
++#include "Message.h"
++#include <Structs/WorldItemData.h>
++struct RequestWorldItem final : ClientMessage
++{
++    static constexpr ClientOpcode Opcode = kRequestWorldItem;
++    RequestWorldItem()
++        : ClientMessage(Opcode)
++    {
++    }
++    WorldItemAction Action = WorldItemAction::State;
++    WorldItemData Data;
++    void SerializeRaw(Buffer::Writer&) const noexcept override;
++    void DeserializeRaw(Buffer::Reader&) noexcept override;
++};
+diff --git a/Code/encoding/Messages/ServerMessageFactory.h b/Code/encoding/Messages/ServerMessageFactory.h
+index 516878b1..466a714e 100644
+--- a/Code/encoding/Messages/ServerMessageFactory.h
++++ b/Code/encoding/Messages/ServerMessageFactory.h
+@@ -59,6 +59,7 @@
+ #include <Messages/NotifyRemoveWaypoint.h>
+ #include <Messages/NotifySetTimeResult.h>
+ #include <Messages/NotifyActionEvents.h>
++#include <Messages/NotifyWorldItem.h>
+ 
+ using TiltedPhoques::UniquePtr;
+ 
+@@ -69,11 +70,14 @@ struct ServerMessageFactory
+     template <class T> static auto Visit(T&& func)
+     {
+         auto s_visitor = CreateMessageVisitor<
+-            AuthenticationResponse, AssignCharacterResponse, ServerReferencesMoveRequest, ServerTimeSettings, CharacterSpawnRequest, NotifyInventoryChanges, StringCacheUpdate, NotifyFactionsChanges, NotifyRemoveCharacter, NotifyQuestUpdate, NotifyPlayerList, NotifyPartyInfo, NotifyPartyInvite,
+-            NotifyActorValueChanges, NotifyPartyJoined, NotifyPartyLeft, NotifyActorMaxValueChanges, NotifyHealthChangeBroadcast, NotifyActivate, NotifyLockChange, AssignObjectsResponse, NotifyDeathStateChange, NotifyOwnershipTransfer, NotifyObjectInventoryChanges, NotifySpellCast,
+-            NotifyProjectileLaunch, NotifyInterruptCast, NotifyAddTarget, NotifyScriptAnimation, NotifyDrawWeapon, NotifyMount, NotifyNewPackage, NotifyRespawn, NotifySyncExperience, NotifyEquipmentChanges, NotifyChatMessageBroadcast, TeleportCommandResponse, NotifyPlayerRespawn, NotifyDialogue,
+-            NotifySubtitle, NotifyPlayerDialogue, NotifyActorTeleport, NotifyPlayerLeft, NotifyPlayerJoined, NotifyDialogue, NotifySubtitle, NotifyPlayerDialogue, NotifyPlayerLevel, NotifyPlayerCellChanged, NotifyTeleport, NotifyPlayerHealthUpdate, NotifySettingsChange,
+-            NotifyWeatherChange, NotifySetWaypoint, NotifyRemoveWaypoint, NotifySetTimeResult, NotifyRemoveSpell, NotifyActionEvents>;
++            AuthenticationResponse, AssignCharacterResponse, ServerReferencesMoveRequest, ServerTimeSettings, CharacterSpawnRequest, NotifyInventoryChanges, StringCacheUpdate,
++            NotifyFactionsChanges, NotifyRemoveCharacter, NotifyQuestUpdate, NotifyPlayerList, NotifyPartyInfo, NotifyPartyInvite, NotifyActorValueChanges, NotifyPartyJoined,
++            NotifyPartyLeft, NotifyActorMaxValueChanges, NotifyHealthChangeBroadcast, NotifyActivate, NotifyLockChange, AssignObjectsResponse, NotifyDeathStateChange,
++            NotifyOwnershipTransfer, NotifyObjectInventoryChanges, NotifySpellCast, NotifyProjectileLaunch, NotifyInterruptCast, NotifyAddTarget, NotifyScriptAnimation,
++            NotifyDrawWeapon, NotifyMount, NotifyNewPackage, NotifyRespawn, NotifySyncExperience, NotifyEquipmentChanges, NotifyChatMessageBroadcast, TeleportCommandResponse,
++            NotifyPlayerRespawn, NotifyDialogue, NotifySubtitle, NotifyPlayerDialogue, NotifyActorTeleport, NotifyPlayerLeft, NotifyPlayerJoined, NotifyDialogue, NotifySubtitle,
++            NotifyPlayerDialogue, NotifyPlayerLevel, NotifyPlayerCellChanged, NotifyTeleport, NotifyPlayerHealthUpdate, NotifySettingsChange, NotifyWeatherChange,
++            NotifySetWaypoint, NotifyRemoveWaypoint, NotifySetTimeResult, NotifyRemoveSpell, NotifyActionEvents, NotifyWorldItem>;
+ 
+         return s_visitor(std::forward<T>(func));
+     }
+diff --git a/Code/encoding/Opcodes.h b/Code/encoding/Opcodes.h
+index baab493c..78c235c5 100644
+--- a/Code/encoding/Opcodes.h
++++ b/Code/encoding/Opcodes.h
+@@ -54,6 +54,8 @@ enum ClientOpcode : unsigned char
+     kRequestRemoveWaypoint,
+     kSetTimeCommandRequest,
+     kRequestActionEvents,
++    kRequestTimeSkip,
++    kRequestWorldItem,
+     kClientOpcodeMax
+ };
+ 
+@@ -114,5 +116,6 @@ enum ServerOpcode : unsigned char
+     kNotifyRemoveWaypoint,
+     kNotifySetTimeResult,
+     kNotifyActionEvents,
++    kNotifyWorldItem,
+     kServerOpcodeMax
+ };
+diff --git a/Code/encoding/Structs/WorldItemData.cpp b/Code/encoding/Structs/WorldItemData.cpp
+new file mode 100644
+index 00000000..d2917587
+--- /dev/null
++++ b/Code/encoding/Structs/WorldItemData.cpp
+@@ -0,0 +1,35 @@
++#include <Structs/WorldItemData.h>
++#include <TiltedCore/Serialization.hpp>
++void WorldItemData::Serialize(Buffer::Writer& w) const noexcept
++{
++    using TiltedPhoques::Serialization;
++    for (auto v : {Id, Creator, SourceRef, Owner, Token})
++        Serialization::WriteVarInt(w, v);
++    Reference.Serialize(w);
++    Cell.Serialize(w);
++    WorldSpace.Serialize(w);
++    Item.Serialize(w);
++    for (float v : {X, Y, Z, RX, RY, RZ})
++        Serialization::WriteFloat(w, v);
++    Serialization::WriteBool(w, Consumed);
++}
++void WorldItemData::Deserialize(Buffer::Reader& r) noexcept
++{
++    using TiltedPhoques::Serialization;
++    Id = Serialization::ReadVarInt(r);
++    Creator = Serialization::ReadVarInt(r);
++    SourceRef = Serialization::ReadVarInt(r);
++    Owner = Serialization::ReadVarInt(r);
++    Token = Serialization::ReadVarInt(r);
++    Reference.Deserialize(r);
++    Cell.Deserialize(r);
++    WorldSpace.Deserialize(r);
++    Item.Deserialize(r);
++    X = Serialization::ReadFloat(r);
++    Y = Serialization::ReadFloat(r);
++    Z = Serialization::ReadFloat(r);
++    RX = Serialization::ReadFloat(r);
++    RY = Serialization::ReadFloat(r);
++    RZ = Serialization::ReadFloat(r);
++    Consumed = Serialization::ReadBool(r);
++}
+diff --git a/Code/encoding/Structs/WorldItemData.h b/Code/encoding/Structs/WorldItemData.h
+new file mode 100644
+index 00000000..bc7ad588
+--- /dev/null
++++ b/Code/encoding/Structs/WorldItemData.h
+@@ -0,0 +1,25 @@
++#pragma once
++#include <Structs/GameId.h>
++#include <Structs/Inventory.h>
++enum class WorldItemAction : uint8_t
++{
++    Drop,
++    Register,
++    Grab,
++    Move,
++    Release,
++    Pickup,
++    Snapshot,
++    State,
++    Reject
++};
++struct WorldItemData
++{
++    uint32_t Id{}, Creator{}, SourceRef{}, Owner{}, Token{};
++    GameId Reference{}, Cell{}, WorldSpace{};
++    Inventory::Entry Item{};
++    float X{}, Y{}, Z{}, RX{}, RY{}, RZ{};
++    bool Consumed{};
++    void Serialize(Buffer::Writer&) const noexcept;
++    void Deserialize(Buffer::Reader&) noexcept;
++};
+diff --git a/Code/server/Services/CalendarService.cpp b/Code/server/Services/CalendarService.cpp
+index 7014c285..6d367d94 100644
+--- a/Code/server/Services/CalendarService.cpp
++++ b/Code/server/Services/CalendarService.cpp
+@@ -7,6 +7,14 @@
+ #include <Events/UpdateEvent.h>
+ 
+ #include <Messages/ServerTimeSettings.h>
++#include <Messages/RequestTimeSkip.h>
++#include <SurvivalTimePolicy.h>
++#include <Setting.h>
++
++namespace
++{
++Console::Setting bEnableSurvivalTimeSync{"Gameplay:bEnableSurvivalTimeSync", "Experimental shared sleep/wait time for Survival Mode; use matching custom clients", false};
++}
+ 
+ #include "Game/Player.h"
+ 
+@@ -15,6 +23,7 @@ CalendarService::CalendarService(World& aWorld, entt::dispatcher& aDispatcher)
+ {
+     m_updateConnection = aDispatcher.sink<UpdateEvent>().connect<&CalendarService::OnUpdate>(this);
+     m_joinConnection = aDispatcher.sink<PlayerJoinEvent>().connect<&CalendarService::OnPlayerJoin>(this);
++    m_timeSkipConnection = aDispatcher.sink<PacketEvent<RequestTimeSkip>>().connect<&CalendarService::OnTimeSkip>(this);
+ }
+ 
+ void CalendarService::OnUpdate(const UpdateEvent&) noexcept
+@@ -99,6 +108,23 @@ bool CalendarService::SetDate(int aDay, int aMonth, float aYear) noexcept
+     return false;
+ }
+ 
++void CalendarService::OnTimeSkip(const PacketEvent<RequestTimeSkip>& event) noexcept
++{
++    if (!bEnableSurvivalTimeSync || !event.pPlayer || !event.pPlayer->GetCharacter())
++        return;
++    // Account for real time before comparing, preventing a stale server baseline.
++    const auto now = GameServer::Get()->GetTick();
++    if (m_lastTick && now >= m_lastTick)
++        m_dateTime.Update(now - m_lastTick);
++    m_lastTick = now;
++    const float hours = SurvivalTime::HoursToTarget(m_dateTime.m_timeModel, event.Packet.TargetTime);
++    if (hours <= 0.f)
++        return;
++    m_dateTime.AddHours(hours);
++    spdlog::info("Survival time: player {} advanced the shared clock by {} hours", event.pPlayer->GetId(), hours);
++    SendTimeResync();
++}
++
+ void CalendarService::SendTimeResync() noexcept
+ {
+     ServerTimeSettings timeMsg;
+diff --git a/Code/server/Services/CalendarService.h b/Code/server/Services/CalendarService.h
+index 43804904..41542476 100644
+--- a/Code/server/Services/CalendarService.h
++++ b/Code/server/Services/CalendarService.h
+@@ -7,6 +7,7 @@
+ struct World;
+ struct UpdateEvent;
+ struct PlayerJoinEvent;
++struct RequestTimeSkip;
+ 
+ /**
+  * @brief Manages time and date of the world.
+@@ -37,6 +38,7 @@ public:
+ 
+ private:
+     void OnUpdate(const UpdateEvent&) noexcept;
++    void OnTimeSkip(const PacketEvent<RequestTimeSkip>&) noexcept;
+     void OnPlayerJoin(const PlayerJoinEvent&) noexcept;
+     void SendTimeResync() noexcept;
+ 
+@@ -48,4 +50,5 @@ private:
+ 
+     entt::scoped_connection m_updateConnection;
+     entt::scoped_connection m_joinConnection;
++    entt::scoped_connection m_timeSkipConnection;
+ };
+diff --git a/Code/server/Services/WorldItemService.cpp b/Code/server/Services/WorldItemService.cpp
+new file mode 100644
+index 00000000..5d698070
+--- /dev/null
++++ b/Code/server/Services/WorldItemService.cpp
+@@ -0,0 +1,178 @@
++#include <Services/WorldItemService.h>
++#include <World.h>
++#include <Components.h>
++#include <GameServer.h>
++#include <Messages/RequestWorldItem.h>
++#include <Messages/NotifyWorldItem.h>
++#include <Messages/NotifyInventoryChanges.h>
++#include <Structs/GridCellCoords.h>
++
++WorldItemService::WorldItemService(World& w, entt::dispatcher& d)
++    : m_world(w)
++{
++    m_request = d.sink<PacketEvent<RequestWorldItem>>().connect<&WorldItemService::OnRequest>(this);
++}
++bool WorldItemService::InRange(const Player* p, const WorldItemData& d) const
++{
++    const auto& c = p->GetCellComponent();
++    if (!d.WorldSpace)
++        return c.IsInInteriorCell() && c.Cell == d.Cell;
++    return !c.IsInInteriorCell() && c.WorldSpaceId == d.WorldSpace && std::abs(static_cast<double>(d.X) - static_cast<double>(c.CenterCoords.X) * 4096.0) < 20000 &&
++           std::abs(static_cast<double>(d.Y) - static_cast<double>(c.CenterCoords.Y) * 4096.0) < 20000;
++}
++void WorldItemService::Broadcast(const Record& r)
++{
++    NotifyWorldItem n;
++    n.Data = r.Data;
++    n.Data.Owner = r.Claim.Owner;
++    n.Data.Consumed = r.Claim.Consumed;
++    for (Player* p : m_world.GetPlayerManager())
++        if (InRange(p, n.Data))
++            p->Send(n);
++}
++void WorldItemService::OnRequest(const PacketEvent<RequestWorldItem>& e)
++{
++    Player* p = e.pPlayer;
++    if (!p || !p->GetCharacter())
++        return;
++    const auto& q = e.Packet;
++    const auto actor = *p->GetCharacter();
++    auto* inv = m_world.try_get<InventoryComponent>(actor);
++    auto* owner = m_world.try_get<OwnerComponent>(actor);
++    if (!inv || !owner || owner->GetOwner() != p)
++        return;
++    if (q.Action == WorldItemAction::Snapshot)
++    {
++        for (const auto& [id, r] : m_items)
++            if (InRange(p, r.Data))
++            {
++                NotifyWorldItem n;
++                n.Data = r.Data;
++                n.Data.Owner = r.Claim.Owner;
++                n.Data.Consumed = r.Claim.Consumed;
++                p->Send(n);
++            }
++        return;
++    }
++    if (!SharedItems::ValidPose(q.Data))
++        return;
++    if (q.Action == WorldItemAction::Drop && q.Data.Token == 0)
++        return;
++    uint32_t id = q.Data.Id;
++    if (!id)
++    {
++        for (const auto& [key, r] : m_items)
++        {
++            if ((q.Data.Reference && r.Data.Reference == q.Data.Reference) || (!q.Data.Reference && r.Data.Creator == p->GetId() && r.Data.Token == q.Data.Token))
++            {
++                id = key;
++                break;
++            }
++        }
++    }
++    if (!id && (q.Action == WorldItemAction::Drop || q.Action == WorldItemAction::Register || q.Action == WorldItemAction::Pickup))
++    {
++        if (!InRange(p, q.Data) || !q.Data.Item.BaseId || q.Data.Item.Count <= 0 || q.Data.Item.Count > 32767 || q.Data.Item.IsQuestItem || m_items.size() >= 4096)
++        {
++            if (q.Action == WorldItemAction::Drop)
++            {
++                NotifyWorldItem rejected;
++                rejected.Action = WorldItemAction::Reject;
++                rejected.Data = q.Data;
++                p->Send(rejected);
++            }
++            return;
++        }
++        if (q.Action != WorldItemAction::Drop && !q.Data.Reference)
++            return;
++        Record row;
++        row.Data = q.Data;
++        row.Data.Id = m_nextId++;
++        row.Data.Creator = p->GetId();
++        row.Data.Owner = 0;
++        row.Data.Consumed = false;
++        if (q.Action == WorldItemAction::Drop)
++        {
++            auto match = inv->Content.Entries.end();
++            for (auto i = inv->Content.Entries.begin(); i != inv->Content.Entries.end(); ++i)
++            {
++                auto a = *i, b = q.Data.Item;
++                a.ExtraWorn = a.ExtraWornLeft = b.ExtraWorn = b.ExtraWornLeft = false;
++                if (a.CanBeMerged(b) && i->Count >= q.Data.Item.Count)
++                {
++                    match = i;
++                    break;
++                }
++            }
++            if (match == inv->Content.Entries.end())
++            {
++                NotifyWorldItem rejected;
++                rejected.Action = WorldItemAction::Reject;
++                rejected.Data = q.Data;
++                p->Send(rejected);
++                return;
++            }
++            auto removed = *match;
++            removed.Count = -q.Data.Item.Count;
++            row.Data.Item = *match;
++            row.Data.Item.Count = q.Data.Item.Count;
++            row.Data.Item.ExtraWorn = row.Data.Item.ExtraWornLeft = false;
++            inv->Content.AddOrRemoveEntry(removed);
++            NotifyInventoryChanges n;
++            n.ServerId = World::ToInteger(actor);
++            n.OwnershipEpoch = owner->OwnershipEpoch;
++            n.Item = removed;
++            GameServer::Get()->SendToPlayers(n, p);
++            row.Claim.Grab(p->GetId(), GameServer::Get()->GetTick());
++        }
++        id = row.Data.Id;
++        m_items.emplace(id, std::move(row));
++    }
++    auto it = m_items.find(id);
++    if (it == m_items.end() || !InRange(p, it->second.Data))
++        return;
++    auto& row = it->second;
++    const auto now = GameServer::Get()->GetTick();
++    switch (q.Action)
++    {
++    case WorldItemAction::Drop:
++    case WorldItemAction::Register: break;
++    case WorldItemAction::Grab:
++        if (!row.Claim.Grab(p->GetId(), now))
++            return;
++        break;
++    case WorldItemAction::Move:
++        if (!row.Claim.Move(p->GetId(), now) || (!row.Data.WorldSpace && q.Data.Cell != row.Data.Cell) || q.Data.WorldSpace != row.Data.WorldSpace || !InRange(p, q.Data))
++            return;
++        row.Data.Cell = q.Data.Cell;
++        row.Data.X = q.Data.X;
++        row.Data.Y = q.Data.Y;
++        row.Data.Z = q.Data.Z;
++        row.Data.RX = q.Data.RX;
++        row.Data.RY = q.Data.RY;
++        row.Data.RZ = q.Data.RZ;
++        break;
++    case WorldItemAction::Release:
++        if (!row.Claim.Release(p->GetId()))
++            return;
++        break;
++    case WorldItemAction::Pickup:
++        if (!row.Claim.Pickup(p->GetId()))
++        {
++            Broadcast(row);
++            return;
++        }
++        inv->Content.AddOrRemoveEntry(row.Data.Item);
++        Broadcast(row);
++        {
++            NotifyInventoryChanges n;
++            n.ServerId = World::ToInteger(actor);
++            n.OwnershipEpoch = owner->OwnershipEpoch;
++            n.Item = row.Data.Item;
++            GameServer::Get()->SendToPlayers(n);
++        }
++        return;
++    default: return;
++    }
++    Broadcast(row);
++}
+diff --git a/Code/server/Services/WorldItemService.h b/Code/server/Services/WorldItemService.h
+new file mode 100644
+index 00000000..972b70aa
+--- /dev/null
++++ b/Code/server/Services/WorldItemService.h
+@@ -0,0 +1,26 @@
++#pragma once
++#include <Events/PacketEvent.h>
++#include <Structs/WorldItemData.h>
++#include <WorldItemPolicy.h>
++struct World;
++struct RequestWorldItem;
++struct Player;
++class WorldItemService
++{
++public:
++    WorldItemService(World&, entt::dispatcher&);
++
++private:
++    struct Record
++    {
++        WorldItemData Data;
++        SharedItems::Claim Claim;
++    };
++    Map<uint32_t, Record> m_items;
++    uint32_t m_nextId = 1;
++    World& m_world;
++    entt::scoped_connection m_request;
++    void OnRequest(const PacketEvent<RequestWorldItem>&);
++    bool InRange(const Player*, const WorldItemData&) const;
++    void Broadcast(const Record&);
++};
+diff --git a/Code/server/World.cpp b/Code/server/World.cpp
+index 8bfd5104..996a5fc9 100644
+--- a/Code/server/World.cpp
++++ b/Code/server/World.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include <Services/CharacterService.h>
+ #include <Services/ObjectService.h>
++#include <Services/WorldItemService.h>
+ #include <Services/QuestService.h>
+ #include <Services/ServerListService.h>
+ #include <Services/ActorValueService.h>
+@@ -24,6 +25,7 @@ World::World()
+     ctx().emplace<PlayerService>(*this, m_dispatcher);
+     ctx().emplace<CalendarService>(*this, m_dispatcher);
+     ctx().emplace<ObjectService>(*this, m_dispatcher);
++    ctx().emplace<WorldItemService>(*this, m_dispatcher);
+     ctx().emplace<ModsComponent>();
+     ctx().emplace<ServerListService>(*this, m_dispatcher);
+     ctx().emplace<QuestService>(*this, m_dispatcher);
+diff --git a/Code/tests/encoding.cpp b/Code/tests/encoding.cpp
+index defb8084..b30e96ac 100644
+--- a/Code/tests/encoding.cpp
++++ b/Code/tests/encoding.cpp
+@@ -276,10 +276,11 @@ TEST_CASE("Differential structures", "[encoding.differential]")
+     GIVEN("AnimationVariables")
+     {
+         AnimationVariables vars, recvVars;
+- 
++
+         vars.Booleans.resize(76);
+-        String testString("\xDE\xAD\xBE\xEF"
+-                          "\xDE\xAD\xBE\xEF\x76\xB");
++        String testString(
++            "\xDE\xAD\xBE\xEF"
++            "\xDE\xAD\xBE\xEF\x76\xB");
+         vars.String_to_VectorBool(testString, vars.Booleans);
+ 
+         vars.Floats.push_back(1.f);
+@@ -552,3 +553,78 @@ TEST_CASE("StringCache", "[encoding.string_cache]")
+         REQUIRE(update == recvUpdate);
+     }
+ }
++
++TEST_CASE("Survival target time request round trip", "[encoding.survival]")
++{
++    Buffer buff(1000);
++    RequestTimeSkip request;
++    request.TargetTime.Year = 202;
++    request.TargetTime.Month = 0;
++    request.TargetTime.Day = 1;
++    request.TargetTime.Time = 7.5f;
++    Buffer::Writer writer(&buff);
++    request.Serialize(writer);
++    Buffer::Reader reader(&buff);
++    ClientMessageFactory factory;
++    auto decoded = factory.Extract(reader);
++    REQUIRE(decoded);
++    REQUIRE(decoded->GetOpcode() == RequestTimeSkip::Opcode);
++    REQUIRE(*CastUnique<RequestTimeSkip>(std::move(decoded)) == request);
++}
++
++TEST_CASE("Shared world item packets preserve identity and metadata", "[encoding.worlditems]")
++{
++    RequestWorldItem request;
++    request.Action = WorldItemAction::Drop;
++    request.Data.Id = 42;
++    request.Data.SourceRef = 0xFF000123;
++    request.Data.Creator = 7;
++    request.Data.Token = 12345;
++    request.Data.Owner = 7;
++    request.Data.Cell = GameId(1, 0x123);
++    request.Data.Item.BaseId = GameId(2, 0x456);
++    request.Data.Item.Count = 12;
++    request.Data.Item.ExtraHealth = 1.5f;
++    request.Data.Item.ExtraCharge = 83.f;
++    request.Data.X = -1234.5f;
++    request.Data.RZ = 1.2f;
++    Buffer buffer(4096);
++    Buffer::Writer writer(&buffer);
++    request.Serialize(writer);
++    Buffer::Reader reader(&buffer);
++    ClientMessageFactory factory;
++    auto decoded = factory.Extract(reader);
++    REQUIRE(decoded);
++    REQUIRE(decoded->GetOpcode() == RequestWorldItem::Opcode);
++    auto result = CastUnique<RequestWorldItem>(std::move(decoded));
++    REQUIRE(result->Action == request.Action);
++    REQUIRE(result->Data.Id == request.Data.Id);
++    REQUIRE(result->Data.SourceRef == request.Data.SourceRef);
++    REQUIRE(result->Data.Token == request.Data.Token);
++    REQUIRE(result->Data.Item == request.Data.Item);
++    REQUIRE(result->Data.Cell == request.Data.Cell);
++    REQUIRE(result->Data.X == request.Data.X);
++    REQUIRE(result->Data.RZ == request.Data.RZ);
++}
++
++TEST_CASE("Consumed world item notifications survive serialization", "[encoding.worlditems]")
++{
++    NotifyWorldItem notify;
++    notify.Data.Id = 91;
++    notify.Data.Token = 321;
++    notify.Data.Consumed = true;
++    notify.Data.Item.Count = 12;
++    Buffer buffer(4096);
++    Buffer::Writer writer(&buffer);
++    notify.Serialize(writer);
++    Buffer::Reader reader(&buffer);
++    ServerMessageFactory factory;
++    auto decoded = factory.Extract(reader);
++    REQUIRE(decoded);
++    REQUIRE(decoded->GetOpcode() == NotifyWorldItem::Opcode);
++    auto result = CastUnique<NotifyWorldItem>(std::move(decoded));
++    REQUIRE(result->Data.Id == 91);
++    REQUIRE(result->Data.Token == 321);
++    REQUIRE(result->Data.Consumed);
++    REQUIRE(result->Data.Item.Count == 12);
++}
+diff --git a/Code/tests/xmake.lua b/Code/tests/xmake.lua
+index 19abce57..8188e595 100644
+--- a/Code/tests/xmake.lua
++++ b/Code/tests/xmake.lua
+@@ -1,3 +1,4 @@
++add_requires("catch2 v2.13.10")
+ 
+ target("TPTests")
+     set_kind("binary")
+@@ -15,3 +16,10 @@ target("TPTests")
+         "catch2",
+         "mimalloc",
+         "glm")
++
++
++target("WorldItemPolicyTests")
++    set_kind("binary")
++    set_group("Tests")
++    add_files("../../Tests/world_items.cpp")
++    add_undefines("NDEBUG")
+diff --git a/Tests/date_time.cpp b/Tests/date_time.cpp
+new file mode 100644
+index 00000000..01cbf8ae
+--- /dev/null
++++ b/Tests/date_time.cpp
+@@ -0,0 +1,29 @@
++#include "../Code/common/DateTime.h"
++#include "../Code/common/SurvivalTimePolicy.h"
++#include <cassert>
++#include <cmath>
++#include <iostream>
++int main()
++{
++    TimeModel m;
++    m.Year = 201;
++    m.Month = 11;
++    m.Day = 31;
++    m.Time = 23;
++    m.TimeScale = 20;
++    DateTime t(m);
++    t.AddHours(8);
++    assert(t.m_timeModel.Year == 202 && t.m_timeModel.Month == 0 && t.m_timeModel.Day == 1);
++    assert(std::abs(t.m_timeModel.Time - 7) < 0.001);
++    DateTime before(t);
++    t.Update(3600000);
++    assert(std::abs((SurvivalTime::InDays(t.m_timeModel) - SurvivalTime::InDays(before.m_timeModel)) * 24 - 20) < 0.001);
++    assert(t.m_timeModel.TimeScale == 20);
++    auto target = t.m_timeModel;
++    target.Time = 20;
++    const auto hours = SurvivalTime::HoursToTarget(t.m_timeModel, target);
++    t.AddHours(hours);
++    assert(std::abs(t.m_timeModel.Time - 20) < 0.001);
++    assert(SurvivalTime::HoursToTarget(t.m_timeModel, target) == 0);
++    std::cout << "PASS: actual DateTime.cpp advance, calendar rollover, scaled ticking, target replay\n";
++}
+diff --git a/Tests/stubs/TiltedCore/Buffer.hpp b/Tests/stubs/TiltedCore/Buffer.hpp
+new file mode 100644
+index 00000000..d5f179bb
+--- /dev/null
++++ b/Tests/stubs/TiltedCore/Buffer.hpp
+@@ -0,0 +1,10 @@
++#pragma once
++// Standalone test declaration stub only. No networking implementation.
++namespace TiltedPhoques
++{
++struct Buffer
++{
++    struct Writer;
++    struct Reader;
++};
++} // namespace TiltedPhoques
+diff --git a/Tests/survival_time.cpp b/Tests/survival_time.cpp
+new file mode 100644
+index 00000000..27c10fd3
+--- /dev/null
++++ b/Tests/survival_time.cpp
+@@ -0,0 +1,36 @@
++#include "../Code/common/SurvivalTimePolicy.h"
++#include <cassert>
++#include <limits>
++#include <iostream>
++struct Clock
++{
++    unsigned Year = 201, Month = 7, Day = 17;
++    float Time = 20.f;
++};
++int main()
++{
++    using namespace SurvivalTime;
++    Clock now, target{201, 7, 18, 4};
++    assert(std::abs(HoursToTarget(now, target) - 8.f) < 0.001f);
++    now = target;
++    assert(HoursToTarget(now, target) == 0); // duplicate / second sleeper
++    Clock longer{201, 7, 18, 8};
++    assert(std::abs(HoursToTarget(now, longer) - 4.f) < 0.001f);
++    assert(HoursToTarget(longer, target) == 0);            // out-of-order packet
++    assert(HoursToTarget(now, Clock{201, 7, 20, 4}) == 0); // over 24h
++    assert(std::abs(HoursToTarget(Clock{201, 11, 31, 23}, Clock{202, 0, 1, 1}) - 2.f) < 0.001f);
++    assert(std::abs(HoursToTarget(Clock{201, 1, 28, 23}, Clock{201, 2, 1, 1}) - 2.f) < 0.001f);
++    assert(HoursToTarget(now, Clock{201, 12, 1, 4}) == 0);
++    assert(HoursToTarget(now, Clock{201, 1, 30, 4}) == 0);
++    assert(HoursToTarget(now, Clock{201, 7, 18, std::numeric_limits<float>::quiet_NaN()}) == 0);
++    assert(HoursToTarget(now, Clock{201, 7, 18, std::numeric_limits<float>::infinity()}) == 0);
++    assert(HoursToTarget(now, Clock{201, 7, 18, -1}) == 0);
++    // FPS-independent policy: the same wake target yields the same final time.
++    for (int fps : {20, 30, 60, 120, 144})
++    {
++        Clock start{201, 7, 17, 20.f + 1.f / fps};
++        const auto hours = HoursToTarget(start, target);
++        assert(std::abs(InDays(start) + hours / 24.0 - InDays(target)) < 1e-7);
++    }
++    std::cout << "PASS: overlapping sleeps, replay, out-of-order requests, midnight/year/month rollover, invalid requests and frame rates\n";
++}
+diff --git a/Tests/world_items.cpp b/Tests/world_items.cpp
+new file mode 100644
+index 00000000..1f826732
+--- /dev/null
++++ b/Tests/world_items.cpp
+@@ -0,0 +1,53 @@
++#ifdef NDEBUG
++#undef NDEBUG
++#endif
++#include "../Code/common/WorldItemPolicy.h"
++#include <cassert>
++#include <iostream>
++#include <limits>
++#include <array>
++struct Pose
++{
++    float X{}, Y{}, Z{}, RX{}, RY{}, RZ{};
++};
++int main()
++{
++    using SharedItems::Claim;
++    Claim a;
++    assert(a.Grab(1, 100));
++    assert(!a.Grab(2, 200));
++    assert(!a.Move(2, 300));
++    assert(a.Move(1, 300));
++    assert(!a.Grab(2, 1700));
++    assert(a.Grab(2, 1800));
++    assert(!a.Release(1));
++    assert(a.Release(2));
++    assert(a.Grab(1, 2000));
++    assert(a.Pickup(2));
++    assert(!a.Pickup(1));
++    assert(!a.Pickup(2));
++    assert(!a.Grab(1, 999999));
++    assert(!a.Move(2, 999999));
++    for (int first : {1, 2})
++    {
++        Claim r;
++        int granted = 0;
++        for (int retry = 0; retry < 1000; ++retry)
++        {
++            granted += r.Pickup(first);
++            granted += r.Pickup(3 - first);
++        }
++        assert(granted == 1);
++    }
++    Pose p;
++    assert(SharedItems::ValidPose(p));
++    p.X = std::numeric_limits<float>::quiet_NaN();
++    assert(!SharedItems::ValidPose(p));
++    p.X = 0;
++    p.RY = std::numeric_limits<float>::infinity();
++    assert(!SharedItems::ValidPose(p));
++    p.RY = 0;
++    p.Z = 1e8;
++    assert(!SharedItems::ValidPose(p));
++    std::cout << "PASS: exclusive grab, lease expiry, stale movement/release, competing pickup, replay, consumed tombstone, invalid pose\n";
++}
+diff --git a/Tools/modules/version.lua b/Tools/modules/version.lua
+new file mode 100644
+index 00000000..cb02a67a
+--- /dev/null
++++ b/Tools/modules/version.lua
+@@ -0,0 +1,8 @@
++-- Local build metadata helper required by the root xmake before_build hook.
++function main()
++    import("detect.tools.find_git")
++    local git = find_git()
++    if not git then return "unknown", "unknown" end
++    return os.iorunv(git, {"rev-parse", "--abbrev-ref", "HEAD"}):trim(),
++           os.iorunv(git, {"describe", "--tags", "--always"}):trim()
++end
+diff --git a/xmake.lua b/xmake.lua
+index 8568b89d..4f9a1bc0 100644
+--- a/xmake.lua
++++ b/xmake.lua
+@@ -1,4 +1,5 @@
+ set_xmakever("3.0.0")
++add_moduledirs("Tools")
+ 
+ -- If newer version of xmake, remove ccache until it actually works
+ if set_policy ~= nil then

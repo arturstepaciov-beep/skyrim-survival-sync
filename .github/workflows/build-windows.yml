@@ -3,7 +3,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'survival-sync-v0.1.patch'
+      - 'world-items-v0.2.patch'
       - 'Build-Windows.ps1'
       - '.github/workflows/build-windows.yml'
   workflow_dispatch:
@@ -18,6 +18,11 @@ jobs:
       - uses: xmake-io/github-action-setup-xmake@v1
         with:
           xmake-version: '3.1.0'
+      - uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/.xmake/packages
+          key: windows-xmake-worlditems-v02
+          restore-keys: windows-xmake-
       - uses: pnpm/action-setup@v4
         with:
           version: 9
@@ -30,7 +35,7 @@ jobs:
       - name: Upload Windows install package
         uses: actions/upload-artifact@v4
         with:
-          name: SurvivalSync-v0.1-Windows
-          path: ${{ runner.temp }}/survival-build/SurvivalSync-v0.1-Windows.zip
+          name: SurvivalSync-WorldItems-v0.2-Windows
+          path: ${{ runner.temp }}/survival-build/SurvivalSync-WorldItems-v0.2-Windows.zip
           if-no-files-found: error
           retention-days: 14
