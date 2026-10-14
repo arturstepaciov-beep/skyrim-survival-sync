@@ -1,6 +1,6 @@
 diff --git a/.github/workflows/survival-windows.yml b/.github/workflows/survival-windows.yml
 new file mode 100644
-index 00000000..1f974648
+index 0000000000000000000000000000000000000000..1f974648d34e3d5f92bf2f1c559e62b30e656a26
 --- /dev/null
 +++ b/.github/workflows/survival-windows.yml
 @@ -0,0 +1,32 @@
@@ -37,7 +37,7 @@ index 00000000..1f974648
 +      build-mode: releasedbg
 +      upload-build-for-next-job: true
 diff --git a/.github/workflows/windows.yml b/.github/workflows/windows.yml
-index 807dab47..cfe9254a 100644
+index 807dab4718ecc89a29849e1388072b2063bc8f57..cfe9254a2917d8c2450ff5cb9cb9abd2a271d6f7 100644
 --- a/.github/workflows/windows.yml
 +++ b/.github/workflows/windows.yml
 @@ -78,6 +78,9 @@ jobs:
@@ -50,9 +50,21 @@ index 807dab47..cfe9254a 100644
        # Create distrib
        - name: Output distrib binaries via xmake
          run: |
+diff --git a/Code/client/Components/RemoteAnimationComponent.h b/Code/client/Components/RemoteAnimationComponent.h
+index 26ff80d2783dd2e55a2c757a7f0c12d2369439a2..f3640943853da5e7aa9bbe9e6434d7a45fafea14 100644
+--- a/Code/client/Components/RemoteAnimationComponent.h
++++ b/Code/client/Components/RemoteAnimationComponent.h
+@@ -9,6 +9,6 @@ struct RemoteAnimationComponent
+     List<ActionEvent> TimePoints;
+     ActionEvent LastRanAction;
+     ActionEvent LastProcessedAction;
+-    uint32_t ReplayCount;
++    uint32_t ReplayCount{};
+     bool ResetAnimationGraphForReplay{false};
+ };
 diff --git a/Code/client/Events/WorldItemDropEvent.h b/Code/client/Events/WorldItemDropEvent.h
 new file mode 100644
-index 00000000..5afab124
+index 0000000000000000000000000000000000000000..5afab1244b2ae1c620aa9d7b9bd5376c4f904a1a
 --- /dev/null
 +++ b/Code/client/Events/WorldItemDropEvent.h
 @@ -0,0 +1,7 @@
@@ -63,8 +75,39 @@ index 00000000..5afab124
 +    uint32_t FormId{};
 +    Inventory::Entry Item;
 +};
+diff --git a/Code/client/Games/Animation.cpp b/Code/client/Games/Animation.cpp
+index 0714b2b88df20ce28e3939403a8bfd39bc5170d7..4621d178203101f6730b53a6e00a1c1eec64ca9e 100644
+--- a/Code/client/Games/Animation.cpp
++++ b/Code/client/Games/Animation.cpp
+@@ -33,7 +33,7 @@ uint8_t TP_MAKE_THISCALL(HookPerformAction, ActorMediator, TESActionData* apActi
+         action.Type = apAction->unkInput | (apAction->someFlag ? 0x4 : 0);
+         action.Tick = World::Get().GetTick();
+         action.ActorId = pActor->formID;
+-        action.ActionId = apAction->action->formID;
++        action.ActionId = apAction->action ? apAction->action->formID : 0;
+         action.TargetId = apAction->target ? apAction->target->formID : 0;
+ 
+         pActor->SaveAnimationVariables(action.Variables);
+@@ -43,12 +43,16 @@ uint8_t TP_MAKE_THISCALL(HookPerformAction, ActorMediator, TESActionData* apActi
+         // spdlog::debug("Action event name: {}, target name: {}", apAction->eventName.AsAscii(), apAction->targetEventName.AsAscii());
+ 
+         // This is a weird case where it gets spammed and doesn't do much, not sure if it still needs to be sent over the network
+-        if (apAction->someFlag == 1 || g_forceAnimation)
++        if (g_forceAnimation || (apAction->someFlag == 1 && !apAction->idleForm))
+             return res;
+ 
+         action.EventName = apAction->eventName.AsAscii();
+         action.TargetEventName = apAction->targetEventName.AsAscii();
+         action.IdleId = apAction->idleForm ? apAction->idleForm->formID : 0;
++        // Furniture and idle transitions can update actor state during PerformAction.
++        action.State1 = pActor->actorState.flags1;
++        action.State2 = pActor->actorState.flags2;
++        pActor->SaveAnimationVariables(action.Variables);
+ 
+         // Save for later
+         if (res)
 diff --git a/Code/client/Games/Skyrim/Actor.cpp b/Code/client/Games/Skyrim/Actor.cpp
-index c3f3d1ad..97c35819 100644
+index c3f3d1adf9c741922265892f59e14a82d60f76d4..0f7887db95a7329d3ca6b01049f79d1acd9a9615 100644
 --- a/Code/client/Games/Skyrim/Actor.cpp
 +++ b/Code/client/Games/Skyrim/Actor.cpp
 @@ -14,6 +14,8 @@
@@ -130,7 +173,7 @@ index c3f3d1ad..97c35819 100644
      if (!ScopedInventoryOverride::IsOverriden())
      {
          auto& modSystem = World::Get().GetModSystem();
-@@ -1117,11 +1122,25 @@ void* TP_MAKE_THISCALL(HookDropObject, Actor, void* apResult, TESBoundObject* ap
+@@ -1117,11 +1122,27 @@ void* TP_MAKE_THISCALL(HookDropObject, Actor, void* apResult, TESBoundObject* ap
      if (apExtraData)
          apThis->GetItemFromExtraData(item, apExtraData);
  
@@ -155,12 +198,14 @@ index c3f3d1ad..97c35819 100644
 +            item.ExtraWorn = item.ExtraWornLeft = false;
 +            World::Get().GetRunner().Trigger(WorldItemDropEvent{ref->formID, std::move(item)});
 +        }
++        else
++            spdlog::warn("Shared item: drop returned no resolvable reference, base={:X}", apObject->formID);
 +    }
 +    return result;
  }
  
  void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLocation, NiPoint3* apRotation) noexcept
-@@ -1207,12 +1226,18 @@ void TP_MAKE_THISCALL(HookUnequipObject, Actor, void* apUnk1, TESBoundObject* ap
+@@ -1207,12 +1228,18 @@ void TP_MAKE_THISCALL(HookUnequipObject, Actor, void* apUnk1, TESBoundObject* ap
      TiltedPhoques::ThisCall(RealUnequipObject, apThis, apUnk1, apObject, aUnk2, apUnk3);
  }
  
@@ -182,7 +227,7 @@ index c3f3d1ad..97c35819 100644
  
      // The player having the conversation may not own this NPC. Ambient
      // speech still comes only from the actor's simulation owner.
-@@ -1265,7 +1290,7 @@ bool TP_MAKE_THISCALL(HookIsFleeing, Actor)
+@@ -1265,7 +1292,7 @@ bool TP_MAKE_THISCALL(HookIsFleeing, Actor)
      // TODO: investigate why the flee flag is set at all on remote players sometimes.
      if (apThis->GetExtension()->IsPlayer())
          return false;
@@ -192,10 +237,22 @@ index c3f3d1ad..97c35819 100644
  }
  
 diff --git a/Code/client/Games/Skyrim/Events/EventDispatcher.h b/Code/client/Games/Skyrim/Events/EventDispatcher.h
-index 448a179f..963d4d67 100644
+index 448a179fa9eb651bcbaeb5fb726555715924b878..3b91ae42cde5b1b7349e0d6f0b23fd500c6afed6 100644
 --- a/Code/client/Games/Skyrim/Events/EventDispatcher.h
 +++ b/Code/client/Games/Skyrim/Events/EventDispatcher.h
-@@ -208,10 +208,24 @@ struct TESSellEvent
+@@ -100,7 +100,11 @@ struct TESFurnitureEvent
+ 
+ struct TESGrabReleaseEvent
+ {
++    TESObjectREFR* ref; // NiPointer<TESObjectREFR>, pointer-sized event payload
++    bool grabbed;
++    uint8_t padding[7];
+ };
++static_assert(sizeof(TESGrabReleaseEvent) == 0x10);
+ 
+ struct TESHitEvent
+ {
+@@ -208,10 +212,24 @@ struct TESSellEvent
  
  struct TESSleepStartEvent
  {
@@ -220,7 +277,7 @@ index 448a179f..963d4d67 100644
  };
  
  struct TESSpellCastEvent
-@@ -312,7 +326,7 @@ struct EventDispatcherManager
+@@ -312,7 +330,7 @@ struct EventDispatcherManager
      EventDispatcher<TESSceneActionEvent> sceneActionEvent;
      EventDispatcher<TESScenePhaseEvent> scenePhaseEvent;
      EventDispatcher<TESSellEvent> sellEvent;
@@ -229,7 +286,7 @@ index 448a179f..963d4d67 100644
      EventDispatcher<TESSleepStopEvent> sleepStopEvent;
      EventDispatcher<TESSpellCastEvent> spellCastEvent;
      EventDispatcher<TESPlayerBowShotEvent> unknownDispatcher42;
-@@ -323,8 +337,8 @@ struct EventDispatcherManager
+@@ -323,8 +341,8 @@ struct EventDispatcherManager
      EventDispatcher<TESTriggerEnterEvent> triggerEnterEvent;
      EventDispatcher<TESTriggerLeaveEvent> triggerLeaveEvent;
      EventDispatcher<TESUniqueIDChangeEvent> uniqueIDChangeEvent;
@@ -241,7 +298,7 @@ index 448a179f..963d4d67 100644
      EventDispatcher<TESFastTravelEndEvent> fastTravelEndEvent;
  };
 diff --git a/Code/client/Games/Skyrim/TESObjectREFR.cpp b/Code/client/Games/Skyrim/TESObjectREFR.cpp
-index 9032a69a..cd57d83d 100644
+index 9032a69a918309ee7de9949ab9cdcbe8ba41057c..cd57d83d91c7f7e51e44430356900b288a0ae2d0 100644
 --- a/Code/client/Games/Skyrim/TESObjectREFR.cpp
 +++ b/Code/client/Games/Skyrim/TESObjectREFR.cpp
 @@ -6,6 +6,7 @@
@@ -396,7 +453,7 @@ index 9032a69a..cd57d83d 100644
      else
          World::Get().GetRunner().Trigger(LockChangeEvent(apThis->formID, false, 0));
 diff --git a/Code/client/Games/Skyrim/TESObjectREFR.h b/Code/client/Games/Skyrim/TESObjectREFR.h
-index 2ebd9b21..190b80ba 100644
+index 2ebd9b2195c7d4993b28bc25f1c9c0917aaa46f9..190b80ba20b097f389213b3db60711d100418e0e 100644
 --- a/Code/client/Games/Skyrim/TESObjectREFR.h
 +++ b/Code/client/Games/Skyrim/TESObjectREFR.h
 @@ -91,7 +91,9 @@ struct TESObjectREFR : TESForm
@@ -420,7 +477,7 @@ index 2ebd9b21..190b80ba 100644
      void Disable() const noexcept;
      void Enable() const noexcept;
 diff --git a/Code/client/Services/CalendarService.h b/Code/client/Services/CalendarService.h
-index dd442b60..a9a9d7d5 100644
+index dd442b6019c79f8a5e96b5f6143527cae39d1a91..a9a9d7d55ff08e2dcec2cb60248e659ba1e72026 100644
 --- a/Code/client/Services/CalendarService.h
 +++ b/Code/client/Services/CalendarService.h
 @@ -13,14 +13,27 @@ struct TransportService;
@@ -470,7 +527,7 @@ index dd442b60..a9a9d7d5 100644
      TransportService& m_transport;
  };
 diff --git a/Code/client/Services/Generic/CalendarService.cpp b/Code/client/Services/Generic/CalendarService.cpp
-index 585d034d..f2c517cb 100644
+index 585d034dc6fac3d1cb57d63e0df75877bec4bf33..f2c517cbd1a151a8570a490559a697f71d15ae80 100644
 --- a/Code/client/Services/Generic/CalendarService.cpp
 +++ b/Code/client/Services/Generic/CalendarService.cpp
 @@ -3,7 +3,11 @@
@@ -623,12 +680,68 @@ index 585d034d..f2c517cb 100644
          pGameTime->TimeScale->f = m_onlineTime.m_timeModel.TimeScale;
          pGameTime->GameDay->f = m_onlineTime.m_timeModel.Day;
          pGameTime->GameMonth->f = m_onlineTime.m_timeModel.Month;
+diff --git a/Code/client/Services/Generic/CharacterService.cpp b/Code/client/Services/Generic/CharacterService.cpp
+index 6806a9907e14a7fb8dd33d65af8602109223a7cc..ed0ee1e35148a942cf9d112cef329c0f76bfda3c 100644
+--- a/Code/client/Services/Generic/CharacterService.cpp
++++ b/Code/client/Services/Generic/CharacterService.cpp
+@@ -503,6 +503,30 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage)
+     auto remoteView = m_world.view<RemoteComponent>();
+     const auto remoteItor = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.ServerId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
+ 
++    if (acMessage.IsResync)
++    {
++        if (remoteItor == std::end(remoteView))
++            return; // Refresh existing replicas only; do not create inventory-bearing actors.
++        const auto entity = *remoteItor;
++        if (remoteView.get<RemoteComponent>(entity).OwnershipEpoch != acMessage.OwnershipEpoch)
++            return;
++        auto* form = m_world.try_get<FormIdComponent>(entity);
++        auto* actor = form ? Cast<Actor>(TESForm::GetById(form->Id)) : nullptr;
++        if (!actor)
++            return;
++        actor->ForcePosition(acMessage.Position);
++        actor->SetRotation(acMessage.Rotation.x, 0.f, acMessage.Rotation.y);
++        m_world.emplace_or_replace<InterpolationComponent>(entity);
++        auto& animation = m_world.get_or_emplace<RemoteAnimationComponent>(entity);
++        // Keep LastProcessedAction: subsequent live packets are differential
++        // against that baseline, independent of the replay snapshot.
++        animation.TimePoints.clear();
++        AnimationSystem::AddActionsForReplay(animation, acMessage.ActionsToReplay);
++        if (!acMessage.ActionsToReplay.Actions.empty())
++            animation.ResetAnimationGraphForReplay = true;
++        spdlog::info("Resynced remote actor {:X}", acMessage.ServerId);
++        return;
++    }
+     if (remoteItor != std::end(remoteView))
+     {
+         spdlog::warn("Character with remote id {:X} is already spawned.", acMessage.ServerId);
+diff --git a/Code/client/Services/Generic/OverlayClient.cpp b/Code/client/Services/Generic/OverlayClient.cpp
+index a0378612faa3c2f7140620d10a5a9206c351a31d..6612b0b6a403631de84c97d383eb3af0489d6053 100644
+--- a/Code/client/Services/Generic/OverlayClient.cpp
++++ b/Code/client/Services/Generic/OverlayClient.cpp
+@@ -5,6 +5,7 @@
+ 
+ #include <Services/OverlayClient.h>
+ #include <Services/TransportService.h>
++#include <Services/WorldItemService.h>
+ 
+ #include <Messages/SendChatMessageRequest.h>
+ #include <Messages/TeleportRequest.h>
+@@ -45,6 +46,8 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
+             ProcessConnectMessage(eventArgs);
+         else if (eventName == "disconnect")
+             ProcessDisconnectMessage();
++        else if (eventName == "resync")
++            World::Get().GetRunner().Queue([] { World::Get().ctx().at<WorldItemService>().Resync(); });
+         else if (eventName == "revealPlayers")
+             ProcessRevealPlayersMessage();
+         else if (eventName == "sendMessage")
 diff --git a/Code/client/Services/Generic/WorldItemService.cpp b/Code/client/Services/Generic/WorldItemService.cpp
 new file mode 100644
-index 00000000..809f0bba
+index 0000000000000000000000000000000000000000..df80907b8a6893b31dc8508adf357186d341d16e
 --- /dev/null
 +++ b/Code/client/Services/Generic/WorldItemService.cpp
-@@ -0,0 +1,315 @@
+@@ -0,0 +1,396 @@
 +#include <Services/WorldItemService.h>
 +#include <World.h>
 +#include <Services/TransportService.h>
@@ -643,6 +756,8 @@ index 00000000..809f0bba
 +#include <Forms/TESObjectCELL.h>
 +#include <Forms/TESWorldSpace.h>
 +#include <WorldItemPolicy.h>
++#include <Games/TES.h>
++#include <Interface/UI.h>
 +#include <cmath>
 +namespace
 +{
@@ -663,16 +778,6 @@ index 00000000..809f0bba
 +    default: return false;
 +    }
 +}
-+TESObjectREFR* Grabbed()
-+{
-+    auto* p = PlayerCharacter::Get();
-+    if (!p)
-+        return nullptr;
-+    // AE 1.6.629+ layout, matching the PlayerCharacter layout in this base.
-+    // CommonLibSSE-NG PlayerCharacter::GetGrabbedRef documents 0x8D0.
-+    const auto handle = *reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(p) + 0x8D0);
-+    return TESObjectREFR::GetByHandle(handle);
-+}
 +float Difference(const WorldItemData& a, const WorldItemData& b)
 +{
 +    return std::abs(a.X - b.X) + std::abs(a.Y - b.Y) + std::abs(a.Z - b.Z) + 10.f * (std::abs(a.RX - b.RX) + std::abs(a.RY - b.RY) + std::abs(a.RZ - b.RZ));
@@ -687,6 +792,22 @@ index 00000000..809f0bba
 +    m_drop = d.sink<WorldItemDropEvent>().connect<&WorldItemService::OnDrop>(this);
 +    m_disconnect = d.sink<DisconnectedEvent>().connect<&WorldItemService::OnDisconnect>(this);
 +    m_cell = d.sink<CellChangeEvent>().connect<&WorldItemService::OnCell>(this);
++    EventDispatcherManager::Get()->grabReleaseEvent.RegisterSink(this);
++}
++TESObjectREFR* WorldItemService::Grabbed() const
++{
++    return m_grabbedFormId ? Cast<TESObjectREFR>(TESForm::GetById(m_grabbedFormId)) : nullptr;
++}
++BSTEventResult WorldItemService::OnEvent(const TESGrabReleaseEvent* e, const EventDispatcher<TESGrabReleaseEvent>*)
++{
++    if (!e || !e->ref)
++        return BSTEventResult::kOk;
++    if (e->grabbed)
++        m_grabbedFormId = e->ref->formID;
++    else if (m_grabbedFormId == e->ref->formID)
++        m_grabbedFormId = 0;
++    spdlog::info("Shared item: {} ref={:X}", e->grabbed ? "grab" : "release", e->ref->formID);
++    return BSTEventResult::kOk;
 +}
 +WorldItemData WorldItemService::Describe(TESObjectREFR* ref) const
 +{
@@ -696,7 +817,8 @@ index 00000000..809f0bba
 +    if (!ref->IsTemporary())
 +        mods.GetServerModId(ref->formID, data.Reference);
 +    mods.GetServerModId(ref->baseForm->formID, data.Item.BaseId);
-+    mods.GetServerModId(ref->GetCellId(), data.Cell);
++    if (auto* cell = ref->GetParentCellEx())
++        mods.GetServerModId(cell->formID, data.Cell);
 +    if (auto* ws = ref->GetWorldSpace())
 +        mods.GetServerModId(ws->formID, data.WorldSpace);
 +    data.Item.Count = std::max(1, static_cast<int32_t>(ref->extraData.GetCount()));
@@ -716,6 +838,17 @@ index 00000000..809f0bba
 +    q.Action = a;
 +    q.Data = data;
 +    m_transport.Send(q);
++}
++void WorldItemService::Resync()
++{
++    const auto now = m_world.GetTick();
++    if (!m_transport.IsOnline() || now < m_nextResyncTick)
++        return;
++    m_nextResyncTick = now + 10000;
++    for (auto i = m_items.begin(); i != m_items.end(); ++i)
++        i.value().HasAppliedPose = false;
++    Send(WorldItemAction::Resync, {});
++    spdlog::info("Client resync requested: remote actor poses, idle replay and world items");
 +}
 +bool WorldItemService::IsTracked(TESObjectREFR* ref) const
 +{
@@ -759,6 +892,7 @@ index 00000000..809f0bba
 +    data.Token = ++m_dropCounter;
 +    data.Reference = {};
 +    m_pendingDrops[e.FormId] = data;
++    spdlog::info("Shared item: sending drop ref={:X} token={} count={}", e.FormId, data.Token, data.Item.Count);
 +    Send(WorldItemAction::Drop, data);
 +}
 +void WorldItemService::Materialize(Local& l)
@@ -768,7 +902,10 @@ index 00000000..809f0bba
 +        return;
 +    auto* cell = Cast<TESObjectCELL>(TESForm::GetById(m_world.GetModSystem().GetGameId(l.Data.Cell)));
 +    if (!cell || !cell->IsAttached())
++    {
++        spdlog::debug("Shared item: waiting for attached cell, item={}", l.Data.Id);
 +        return;
++    }
 +    auto* ref = l.FormId ? Cast<TESObjectREFR>(TESForm::GetById(l.FormId)) : nullptr;
 +    if (!ref && l.Data.Reference)
 +        ref = Cast<TESObjectREFR>(TESForm::GetById(m_world.GetModSystem().GetGameId(l.Data.Reference)));
@@ -787,24 +924,34 @@ index 00000000..809f0bba
 +    }
 +    if (!ref)
 +    {
++        l.NewlyCreated = true;
++        l.HasAppliedPose = false;
 +        ScopedInventoryOverride guard;
 +        ref = player->SpawnWorldCopy(l.Data.Item);
++        if (!ref)
++            spdlog::warn("Shared item: spawn failed, item={}", l.Data.Id);
++        else
++            spdlog::info("Shared item: created item={} ref={:X}", l.Data.Id, ref->formID);
 +    }
 +    if (!ref)
 +        return;
 +    l.FormId = ref->formID;
 +    const bool owned = l.Data.Owner == m_transport.GetLocalPlayerId();
-+    if (l.MotionOwner != l.Data.Owner)
-+    {
-+        ref->SetWorldMotion(true);
-+        l.MotionOwner = l.Data.Owner;
-+    }
-+    if (!owned || l.NewlyCreated)
++    const bool initializeMotion = l.NewlyCreated || l.MotionOwner != l.Data.Owner;
++    const bool changedPose = !l.HasAppliedPose || l.AppliedPose.Cell != l.Data.Cell || Difference(l.AppliedPose, l.Data) > 0.5f;
++    if (l.NewlyCreated || (!owned && changedPose))
 +    {
 +        ref->SetRotation(l.Data.RX, l.Data.RY, l.Data.RZ);
 +        NiPoint3 pos{glm::vec3(l.Data.X, l.Data.Y, l.Data.Z)};
 +        ref->MoveTo(cell, pos);
 +    }
++    if (initializeMotion)
++    {
++        ref->SetWorldMotion(true);
++        l.MotionOwner = l.Data.Owner;
++    }
++    l.AppliedPose = l.Data;
++    l.HasAppliedPose = true;
 +    l.NewlyCreated = false;
 +}
 +void WorldItemService::OnNotify(const NotifyWorldItem& n)
@@ -829,6 +976,8 @@ index 00000000..809f0bba
 +    }
 +    if (!n.Data.Id)
 +        return;
++    if (!m_items.contains(n.Data.Id))
++        spdlog::info("Shared item: received item={} creator={} count={}", n.Data.Id, n.Data.Creator, n.Data.Item.Count);
 +    auto [it, inserted] = m_items.try_emplace(n.Data.Id);
 +    auto& l = it.value();
 +    if (inserted && n.Data.Creator == m_transport.GetLocalPlayerId() && !n.Data.Reference)
@@ -868,14 +1017,56 @@ index 00000000..809f0bba
 +                ref->Delete();
 +        }
 +    }
++    m_grabbedFormId = 0;
++    m_nextResyncTick = 0;
 +    m_items.clear();
 +    m_pendingDrops.clear();
++    m_observedProps.clear();
 +    m_timer = m_snapshotTimer = 0;
++}
++void WorldItemService::ObservePhysics()
++{
++    auto* tes = TES::Get();
++    if (!tes)
++        return;
++    Vector<TESObjectCELL*> cells;
++    if (tes->interiorCell)
++        cells.push_back(tes->interiorCell);
++    else if (tes->cells && tes->cells->arr && tes->cells->dimension <= 15)
++        for (uint32_t i = 0; i < tes->cells->dimension * tes->cells->dimension; ++i)
++            if (tes->cells->arr[i])
++                cells.push_back(tes->cells->arr[i]);
++    Map<uint32_t, WorldItemData> observed;
++    const Vector<FormType> types{static_cast<FormType>(23), FormType::Armor, FormType::Ingredient,
++        static_cast<FormType>(32), FormType::Weapon, FormType::Ammo, FormType::Alchemy, static_cast<FormType>(52)};
++    for (auto* cell : cells)
++    {
++        if (!cell->IsAttached())
++            continue;
++        for (auto* ref : cell->GetRefsByFormTypes(types))
++        {
++            if (!Eligible(ref) || ref->IsTemporary() || IsTracked(ref) || observed.size() >= 4096)
++                continue;
++            auto pose = Describe(ref);
++            if (!pose.Reference || pose.Item.IsQuestItem)
++                continue;
++            if (auto previous = m_observedProps.find(ref->formID); previous != m_observedProps.end())
++                if (Difference(previous->second, pose) > 1.f)
++                    Send(WorldItemAction::Physics, pose);
++            observed.emplace(ref->formID, std::move(pose));
++        }
++    }
++    m_observedProps = std::move(observed);
 +}
 +void WorldItemService::OnUpdate(const UpdateEvent& e)
 +{
 +    if (!m_transport.IsOnline())
 +        return;
++    if (auto* ui = UI::Get(); ui && ui->GetMenuOpen(BSFixedString("Loading Menu")))
++    {
++        m_observedProps.clear();
++        return;
++    }
 +    m_timer += e.Delta;
 +    m_snapshotTimer += e.Delta;
 +    if (m_snapshotTimer >= 3)
@@ -887,6 +1078,7 @@ index 00000000..809f0bba
 +        return;
 +    const float dt = static_cast<float>(m_timer);
 +    m_timer = 0;
++    ObservePhysics();
 +    auto* grabbed = Grabbed();
 +    bool foundGrab = false;
 +    for (auto itemIt = m_items.begin(); itemIt != m_items.end(); ++itemIt)
@@ -911,8 +1103,10 @@ index 00000000..809f0bba
 +        {
 +            if (held)
 +                Send(WorldItemAction::Grab, l.Data);
-+            else if (Difference(Describe(ref), l.Data) > 0.5f)
-+                Materialize(l);
++            else if (!l.Data.Owner && Difference(Describe(ref), l.Data) > 2.f)
++                Send(WorldItemAction::Physics, l.Data);
++            // Apply remote poses only when a new pose arrives. Repeated MoveTo
++            // calls here continually reset Havok and invalidate the activation ray.
 +            continue;
 +        }
 +        auto pose = Describe(ref);
@@ -946,12 +1140,13 @@ index 00000000..809f0bba
 +}
 diff --git a/Code/client/Services/WorldItemService.h b/Code/client/Services/WorldItemService.h
 new file mode 100644
-index 00000000..fd79087f
+index 0000000000000000000000000000000000000000..6c99a4d9ee47c502b9e59af3f18b97134a65d580
 --- /dev/null
 +++ b/Code/client/Services/WorldItemService.h
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,53 @@
 +#pragma once
 +#include <Structs/WorldItemData.h>
++#include <Games/Events.h>
 +struct World;
 +struct TransportService;
 +struct UpdateEvent;
@@ -960,10 +1155,11 @@ index 00000000..fd79087f
 +struct WorldItemDropEvent;
 +struct TESObjectREFR;
 +struct CellChangeEvent;
-+class WorldItemService
++class WorldItemService : public BSTEventSink<TESGrabReleaseEvent>
 +{
 +public:
 +    WorldItemService(World&, entt::dispatcher&, TransportService&);
++    void Resync();
 +    bool TryPickup(TESObjectREFR*);
 +    bool IsTracked(TESObjectREFR*) const;
 +
@@ -971,6 +1167,8 @@ index 00000000..fd79087f
 +    struct Local
 +    {
 +        WorldItemData Data;
++        WorldItemData AppliedPose;
++        bool HasAppliedPose{};
 +        uint32_t FormId{};
 +        float StillTime{};
 +        bool WasGrabbed{};
@@ -981,7 +1179,13 @@ index 00000000..fd79087f
 +    TransportService& m_transport;
 +    Map<uint32_t, Local> m_items;
 +    Map<uint32_t, WorldItemData> m_pendingDrops;
++    Map<uint32_t, WorldItemData> m_observedProps;
++    void ObservePhysics();
++    uint64_t m_nextResyncTick{};
 +    uint32_t m_dropCounter{};
++    uint32_t m_grabbedFormId{};
++    TESObjectREFR* Grabbed() const;
++    BSTEventResult OnEvent(const TESGrabReleaseEvent*, const EventDispatcher<TESGrabReleaseEvent>*) override;
 +    double m_timer{}, m_snapshotTimer{};
 +    entt::scoped_connection m_update, m_notify, m_drop, m_disconnect, m_cell;
 +    void OnUpdate(const UpdateEvent&);
@@ -993,8 +1197,20 @@ index 00000000..fd79087f
 +    void Send(WorldItemAction, const WorldItemData&);
 +    void Materialize(Local&);
 +};
+diff --git a/Code/client/Systems/AnimationSystem.cpp b/Code/client/Systems/AnimationSystem.cpp
+index 5d2a12b1dfabddcd1892da3030455abee4b6cee1..ae6e1abb75246d6d7f031ae823405fe5a1322f86 100644
+--- a/Code/client/Systems/AnimationSystem.cpp
++++ b/Code/client/Systems/AnimationSystem.cpp
+@@ -57,6 +57,7 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
+         // Play the animation
+         TESActionData actionData(first.Type & 0x3, apActor, pAction, pTarget);
+         actionData.eventName = BSFixedString(first.EventName.c_str());
++        actionData.targetEventName = BSFixedString(first.TargetEventName.c_str());
+         actionData.idleForm = Cast<TESIdleForm>(TESForm::GetById(first.IdleId));
+         actionData.someFlag = ((first.Type & 0x4) != 0) ? 1 : 0;
+ 
 diff --git a/Code/client/World.cpp b/Code/client/World.cpp
-index b0596604..05a06350 100644
+index b0596604b504f429648fa5072f4bac592cbe1193..05a06350c626749f977a80ae10e2a60fd4b68b0b 100644
 --- a/Code/client/World.cpp
 +++ b/Code/client/World.cpp
 @@ -10,6 +10,7 @@
@@ -1023,7 +1239,7 @@ index b0596604..05a06350 100644
      ctx().emplace<QuestService>(*this, m_dispatcher);
      ctx().emplace<PartyService>(*this, m_dispatcher, m_transport);
 diff --git a/Code/common/BuildInfo.h.in b/Code/common/BuildInfo.h.in
-index 5db8d876..129d6f98 100644
+index 5db8d876f831b28e1c3b326ed18721358d1f2aae..c10b5e29541ea0360cf24f4bf55eaffd3a132901 100644
 --- a/Code/common/BuildInfo.h.in
 +++ b/Code/common/BuildInfo.h.in
 @@ -1,4 +1,4 @@
@@ -1032,9 +1248,9 @@ index 5db8d876..129d6f98 100644
 -#define BUILD_BRANCH "${GIT_BRANCH}"
 -#define BUILD_COMMIT "${GIT_TAG}"
 +#define BUILD_BRANCH "survival-worlditems"
-+#define BUILD_COMMIT "survival-worlditems-v02"
++#define BUILD_COMMIT "survival-worlditems-v03-resync"
 diff --git a/Code/common/DateTime.cpp b/Code/common/DateTime.cpp
-index b091ef61..bfb1eeb4 100644
+index b091ef6158f2859feae706298abe5c44e802ee60..bfb1eeb42605cd97c132d5dec0450ab111f03ecd 100644
 --- a/Code/common/DateTime.cpp
 +++ b/Code/common/DateTime.cpp
 @@ -15,7 +15,12 @@ uint32_t DateTime::GetNumberOfDaysByMonthIndex(int aIndex)
@@ -1052,7 +1268,7 @@ index b091ef61..bfb1eeb4 100644
      m_timeModel.Day += static_cast<uint32_t>(m_timeModel.Time / 24.f);
      m_timeModel.Time = std::fmod(m_timeModel.Time, 24.f);
 diff --git a/Code/common/DateTime.h b/Code/common/DateTime.h
-index e5e7a758..502de7a1 100644
+index e5e7a758abf9447546774933f0110dbc0fa248cb..502de7a19c934f42666564701208dd678e8c673f 100644
 --- a/Code/common/DateTime.h
 +++ b/Code/common/DateTime.h
 @@ -10,10 +10,12 @@ struct DateTime
@@ -1071,7 +1287,7 @@ index e5e7a758..502de7a1 100644
  
 diff --git a/Code/common/SurvivalTimePolicy.h b/Code/common/SurvivalTimePolicy.h
 new file mode 100644
-index 00000000..824b2508
+index 0000000000000000000000000000000000000000..824b2508ff00212e8db3dd4c99216569a97255f5
 --- /dev/null
 +++ b/Code/common/SurvivalTimePolicy.h
 @@ -0,0 +1,30 @@
@@ -1107,7 +1323,7 @@ index 00000000..824b2508
 +} // namespace SurvivalTime
 diff --git a/Code/common/WorldItemPolicy.h b/Code/common/WorldItemPolicy.h
 new file mode 100644
-index 00000000..cc774ebe
+index 0000000000000000000000000000000000000000..cc774ebed65735f06688edfd0b6d513564fe1b60
 --- /dev/null
 +++ b/Code/common/WorldItemPolicy.h
 @@ -0,0 +1,52 @@
@@ -1163,8 +1379,47 @@ index 00000000..cc774ebe
 +    return true;
 +}
 +} // namespace SharedItems
+diff --git a/Code/encoding/Messages/CharacterSpawnRequest.cpp b/Code/encoding/Messages/CharacterSpawnRequest.cpp
+index 3a739be59abac3e684e372fca33586d0d2de77e3..1a0245afdccb194c6eab9eee3f89ad9f895e950f 100644
+--- a/Code/encoding/Messages/CharacterSpawnRequest.cpp
++++ b/Code/encoding/Messages/CharacterSpawnRequest.cpp
+@@ -22,6 +22,7 @@ void CharacterSpawnRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter)
+     Serialization::WriteBool(aWriter, IsWeaponDrawn);
+     Serialization::WriteBool(aWriter, IsPlayerSummon);
+     LeveledNpcPickId.Serialize(aWriter);
++    Serialization::WriteBool(aWriter, IsResync);
+ }
+ 
+ void CharacterSpawnRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
+@@ -59,4 +60,5 @@ void CharacterSpawnRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReade
+     IsWeaponDrawn = Serialization::ReadBool(aReader);
+     IsPlayerSummon = Serialization::ReadBool(aReader);
+     LeveledNpcPickId.Deserialize(aReader);
++    IsResync = Serialization::ReadBool(aReader);
+ }
+diff --git a/Code/encoding/Messages/CharacterSpawnRequest.h b/Code/encoding/Messages/CharacterSpawnRequest.h
+index d6485177da29e66f2611f230aba1937996242653..5b9203cb2cd9e0bd206db2c039c234ee6f040534 100644
+--- a/Code/encoding/Messages/CharacterSpawnRequest.h
++++ b/Code/encoding/Messages/CharacterSpawnRequest.h
+@@ -27,7 +27,7 @@ struct CharacterSpawnRequest final : ServerMessage
+ 
+     bool operator==(const CharacterSpawnRequest& acRhs) const noexcept
+     {
+-        return ServerId == acRhs.ServerId && FormId == acRhs.FormId && BaseId == acRhs.BaseId &&
++        return IsResync == acRhs.IsResync && ServerId == acRhs.ServerId && FormId == acRhs.FormId && BaseId == acRhs.BaseId &&
+                CellId == acRhs.CellId && Position == acRhs.Position && Rotation == acRhs.Rotation &&
+                ChangeFlags == acRhs.ChangeFlags && AppearanceBuffer == acRhs.AppearanceBuffer &&
+                InventoryContent == acRhs.InventoryContent && FactionsContent == acRhs.FactionsContent &&
+@@ -52,6 +52,7 @@ struct CharacterSpawnRequest final : ServerMessage
+     ActorValues InitialActorValues{};
+     uint32_t PlayerId{};
+     uint32_t OwnershipEpoch{};
++    bool IsResync{};
+     bool IsDead{};
+     bool IsPlayer{};
+     bool IsWeaponDrawn{};
 diff --git a/Code/encoding/Messages/ClientMessageFactory.h b/Code/encoding/Messages/ClientMessageFactory.h
-index 4f94d6d1..6d3e4e17 100644
+index 4f94d6d10e647012e41b4bd0b21ecfa914adb84a..6d3e4e1797098bfbe212eda55fcc519df5cc9b8c 100644
 --- a/Code/encoding/Messages/ClientMessageFactory.h
 +++ b/Code/encoding/Messages/ClientMessageFactory.h
 @@ -45,6 +45,8 @@
@@ -1198,7 +1453,7 @@ index 4f94d6d1..6d3e4e17 100644
      }
 diff --git a/Code/encoding/Messages/NotifyWorldItem.cpp b/Code/encoding/Messages/NotifyWorldItem.cpp
 new file mode 100644
-index 00000000..43f7aa33
+index 0000000000000000000000000000000000000000..43f7aa33b39e4cead4b57658a83f093138e9a99d
 --- /dev/null
 +++ b/Code/encoding/Messages/NotifyWorldItem.cpp
 @@ -0,0 +1,14 @@
@@ -1218,7 +1473,7 @@ index 00000000..43f7aa33
 +}
 diff --git a/Code/encoding/Messages/NotifyWorldItem.h b/Code/encoding/Messages/NotifyWorldItem.h
 new file mode 100644
-index 00000000..21bf1881
+index 0000000000000000000000000000000000000000..21bf1881aa6c589e753d6bb2c4502739eb61e2cb
 --- /dev/null
 +++ b/Code/encoding/Messages/NotifyWorldItem.h
 @@ -0,0 +1,15 @@
@@ -1239,7 +1494,7 @@ index 00000000..21bf1881
 +};
 diff --git a/Code/encoding/Messages/RequestTimeSkip.cpp b/Code/encoding/Messages/RequestTimeSkip.cpp
 new file mode 100644
-index 00000000..ea9fbd37
+index 0000000000000000000000000000000000000000..ea9fbd370cec727d2c5999138ae2944e20130bba
 --- /dev/null
 +++ b/Code/encoding/Messages/RequestTimeSkip.cpp
 @@ -0,0 +1,10 @@
@@ -1255,7 +1510,7 @@ index 00000000..ea9fbd37
 +}
 diff --git a/Code/encoding/Messages/RequestTimeSkip.h b/Code/encoding/Messages/RequestTimeSkip.h
 new file mode 100644
-index 00000000..80209bad
+index 0000000000000000000000000000000000000000..80209badd977d26939897d595e7aa4ce27c0fb0d
 --- /dev/null
 +++ b/Code/encoding/Messages/RequestTimeSkip.h
 @@ -0,0 +1,16 @@
@@ -1277,7 +1532,7 @@ index 00000000..80209bad
 +};
 diff --git a/Code/encoding/Messages/RequestWorldItem.cpp b/Code/encoding/Messages/RequestWorldItem.cpp
 new file mode 100644
-index 00000000..ca252e9f
+index 0000000000000000000000000000000000000000..ca252e9fc856ed0b6b8f74796df46dd7a0f4ee98
 --- /dev/null
 +++ b/Code/encoding/Messages/RequestWorldItem.cpp
 @@ -0,0 +1,14 @@
@@ -1297,7 +1552,7 @@ index 00000000..ca252e9f
 +}
 diff --git a/Code/encoding/Messages/RequestWorldItem.h b/Code/encoding/Messages/RequestWorldItem.h
 new file mode 100644
-index 00000000..7455a51c
+index 0000000000000000000000000000000000000000..7455a51c0c1873a3ab8c309d9ab46a81d6a71325
 --- /dev/null
 +++ b/Code/encoding/Messages/RequestWorldItem.h
 @@ -0,0 +1,15 @@
@@ -1317,7 +1572,7 @@ index 00000000..7455a51c
 +    void DeserializeRaw(Buffer::Reader&) noexcept override;
 +};
 diff --git a/Code/encoding/Messages/ServerMessageFactory.h b/Code/encoding/Messages/ServerMessageFactory.h
-index 516878b1..466a714e 100644
+index 516878b1d992944c650ccdd2b3fc0962f3441741..466a714e1abce237485802b48ef2c9cdc10fe85e 100644
 --- a/Code/encoding/Messages/ServerMessageFactory.h
 +++ b/Code/encoding/Messages/ServerMessageFactory.h
 @@ -59,6 +59,7 @@
@@ -1349,7 +1604,7 @@ index 516878b1..466a714e 100644
          return s_visitor(std::forward<T>(func));
      }
 diff --git a/Code/encoding/Opcodes.h b/Code/encoding/Opcodes.h
-index baab493c..78c235c5 100644
+index baab493ccbfb8816c5d8c8ac6759f42d4154f2c7..78c235c58a938c202bb4f688eabacdad802d9f83 100644
 --- a/Code/encoding/Opcodes.h
 +++ b/Code/encoding/Opcodes.h
 @@ -54,6 +54,8 @@ enum ClientOpcode : unsigned char
@@ -1370,7 +1625,7 @@ index baab493c..78c235c5 100644
  };
 diff --git a/Code/encoding/Structs/WorldItemData.cpp b/Code/encoding/Structs/WorldItemData.cpp
 new file mode 100644
-index 00000000..d2917587
+index 0000000000000000000000000000000000000000..d2917587e22fd1b7a39c2efd76d71861af772b6d
 --- /dev/null
 +++ b/Code/encoding/Structs/WorldItemData.cpp
 @@ -0,0 +1,35 @@
@@ -1411,10 +1666,10 @@ index 00000000..d2917587
 +}
 diff --git a/Code/encoding/Structs/WorldItemData.h b/Code/encoding/Structs/WorldItemData.h
 new file mode 100644
-index 00000000..bc7ad588
+index 0000000000000000000000000000000000000000..d1dc7d98b85751ede98c4fd4e61e4563546ee992
 --- /dev/null
 +++ b/Code/encoding/Structs/WorldItemData.h
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,27 @@
 +#pragma once
 +#include <Structs/GameId.h>
 +#include <Structs/Inventory.h>
@@ -1428,7 +1683,9 @@ index 00000000..bc7ad588
 +    Pickup,
 +    Snapshot,
 +    State,
-+    Reject
++    Reject,
++    Resync,
++    Physics
 +};
 +struct WorldItemData
 +{
@@ -1441,7 +1698,7 @@ index 00000000..bc7ad588
 +    void Deserialize(Buffer::Reader&) noexcept;
 +};
 diff --git a/Code/server/Services/CalendarService.cpp b/Code/server/Services/CalendarService.cpp
-index 7014c285..6d367d94 100644
+index 7014c285359200b6c662f6cc781fa52bd838284e..6d367d94289b4f576f996c40e94d1d07175f0f98 100644
 --- a/Code/server/Services/CalendarService.cpp
 +++ b/Code/server/Services/CalendarService.cpp
 @@ -7,6 +7,14 @@
@@ -1492,7 +1749,7 @@ index 7014c285..6d367d94 100644
  {
      ServerTimeSettings timeMsg;
 diff --git a/Code/server/Services/CalendarService.h b/Code/server/Services/CalendarService.h
-index 43804904..41542476 100644
+index 4380490449fc10238c8db505da7373fae07cd53a..41542476da51e259c5c3dbd82ef5d8d184d171eb 100644
 --- a/Code/server/Services/CalendarService.h
 +++ b/Code/server/Services/CalendarService.h
 @@ -7,6 +7,7 @@
@@ -1519,14 +1776,16 @@ index 43804904..41542476 100644
  };
 diff --git a/Code/server/Services/WorldItemService.cpp b/Code/server/Services/WorldItemService.cpp
 new file mode 100644
-index 00000000..41b1a744
+index 0000000000000000000000000000000000000000..3e08178d0deb3dbaf0b14db9ee442ab3d323e64f
 --- /dev/null
 +++ b/Code/server/Services/WorldItemService.cpp
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,201 @@
 +#include <Services/WorldItemService.h>
 +#include <World.h>
 +#include <Components.h>
 +#include <GameServer.h>
++#include <Services/CharacterService.h>
++#include <Messages/CharacterSpawnRequest.h>
 +#include <Messages/RequestWorldItem.h>
 +#include <Messages/NotifyWorldItem.h>
 +#include <Messages/NotifyInventoryChanges.h>
@@ -1566,7 +1825,25 @@ index 00000000..41b1a744
 +    auto* owner = m_world.try_get<OwnerComponent>(actor);
 +    if (!inv || !owner || owner->GetOwner() != p)
 +        return;
-+    if (q.Action == WorldItemAction::Snapshot)
++    if (q.Action == WorldItemAction::Resync)
++    {
++        const auto now = GameServer::Get()->GetTick();
++        if (now < m_nextResyncTick[p->GetId()])
++            return;
++        m_nextResyncTick[p->GetId()] = now + 10000;
++        auto view = m_world.view<CharacterComponent, CellIdComponent, OwnerComponent, AnimationComponent>();
++        for (auto entity : view)
++        {
++            const auto& cell = view.get<CellIdComponent>(entity);
++            if (view.get<OwnerComponent>(entity).GetOwner() == p || !p->GetCellComponent().IsInRange(cell, false))
++                continue;
++            CharacterSpawnRequest state;
++            CharacterService::Serialize(m_world, entity, &state);
++            state.IsResync = true;
++            p->Send(state);
++        }
++    }
++    if (q.Action == WorldItemAction::Snapshot || q.Action == WorldItemAction::Resync)
 +    {
 +        for (const auto& [id, r] : m_items)
 +            if (InRange(p, r.Data))
@@ -1595,7 +1872,7 @@ index 00000000..41b1a744
 +            }
 +        }
 +    }
-+    if (!id && (q.Action == WorldItemAction::Drop || q.Action == WorldItemAction::Register || q.Action == WorldItemAction::Pickup))
++    if (!id && (q.Action == WorldItemAction::Drop || q.Action == WorldItemAction::Register || q.Action == WorldItemAction::Physics || q.Action == WorldItemAction::Pickup))
 +    {
 +        if (!InRange(p, q.Data) || !q.Data.Item.BaseId || q.Data.Item.Count <= 0 || q.Data.Item.Count > 32767 || q.Data.Item.IsQuestItem || m_items.size() >= 4096)
 +        {
@@ -1650,6 +1927,8 @@ index 00000000..41b1a744
 +            GameServer::Get()->SendToPlayers(n, p);
 +            row.Claim.Grab(p->GetId(), GameServer::Get()->GetTick());
 +        }
++        if (q.Action == WorldItemAction::Physics)
++            row.Claim.Grab(p->GetId(), GameServer::Get()->GetTick());
 +        id = row.Data.Id;
 +        m_items.emplace(id, std::move(row));
 +    }
@@ -1662,6 +1941,7 @@ index 00000000..41b1a744
 +    {
 +    case WorldItemAction::Drop:
 +    case WorldItemAction::Register: break;
++    case WorldItemAction::Physics:
 +    case WorldItemAction::Grab:
 +        if (!row.Claim.Grab(p->GetId(), now))
 +            return;
@@ -1703,10 +1983,10 @@ index 00000000..41b1a744
 +}
 diff --git a/Code/server/Services/WorldItemService.h b/Code/server/Services/WorldItemService.h
 new file mode 100644
-index 00000000..972b70aa
+index 0000000000000000000000000000000000000000..ef938418e8922acdb010c14a77f27733a4066bc7
 --- /dev/null
 +++ b/Code/server/Services/WorldItemService.h
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,27 @@
 +#pragma once
 +#include <Events/PacketEvent.h>
 +#include <Structs/WorldItemData.h>
@@ -1726,6 +2006,7 @@ index 00000000..972b70aa
 +        SharedItems::Claim Claim;
 +    };
 +    Map<uint32_t, Record> m_items;
++    Map<uint32_t, uint64_t> m_nextResyncTick;
 +    uint32_t m_nextId = 1;
 +    World& m_world;
 +    entt::scoped_connection m_request;
@@ -1734,7 +2015,7 @@ index 00000000..972b70aa
 +    void Broadcast(const Record&);
 +};
 diff --git a/Code/server/World.cpp b/Code/server/World.cpp
-index 8bfd5104..996a5fc9 100644
+index 8bfd5104995f86d20b6eff170800aa30c7a6fe26..996a5fc9240beb2de7a0eda65e5c39b7530b46d8 100644
 --- a/Code/server/World.cpp
 +++ b/Code/server/World.cpp
 @@ -3,6 +3,7 @@
@@ -1753,8 +2034,85 @@ index 8bfd5104..996a5fc9 100644
      ctx().emplace<ModsComponent>();
      ctx().emplace<ServerListService>(*this, m_dispatcher);
      ctx().emplace<QuestService>(*this, m_dispatcher);
+diff --git a/Code/skyrim_ui/src/app/components/root/root.component.html b/Code/skyrim_ui/src/app/components/root/root.component.html
+index e660fa4c601907ccc138b84df00cc34b9295928c..47982a3b93898824498b4170455a735de96c7dcb 100644
+--- a/Code/skyrim_ui/src/app/components/root/root.component.html
++++ b/Code/skyrim_ui/src/app/components/root/root.component.html
+@@ -25,6 +25,10 @@
+         {{ 'COMPONENT.ROOT.CONNECT' | transloco }}
+       </button>
+       <ng-container *ngIf="connected$ | async">
++        <button data-style-ornament="inverted" (click)="resync()" [disabled]="resyncPending"
++          title="Refresh nearby remote NPC positions, animations and world items from the server">
++          {{ resyncPending ? 'Resync requested' : 'Resync with host' }}
++        </button>
+         <button
+           data-style-ornament="inverted"
+           [attr.data-style-active]="(view$ | async) === RootView.DISCONNECT"
+diff --git a/Code/skyrim_ui/src/app/components/root/root.component.ts b/Code/skyrim_ui/src/app/components/root/root.component.ts
+index 79393f7978afa751ce206f54377db54345d5b5a9..657d861b2a2d2ea3a2467bddaf86d1936fdbba24 100644
+--- a/Code/skyrim_ui/src/app/components/root/root.component.ts
++++ b/Code/skyrim_ui/src/app/components/root/root.component.ts
+@@ -121,6 +121,15 @@ export class RootComponent implements OnInit {
+     this.uiRepository.openView(null);
+   }
+ 
++  public resyncPending = false;
++
++  public resync(): void {
++    if (this.resyncPending) return;
++    this.resyncPending = true;
++    this.client.resync();
++    setTimeout(() => { this.resyncPending = false; }, 10000);
++  }
++
+   public reconnect(): void {
+     this.client.reconnect();
+   }
+diff --git a/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts b/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts
+index 9a2ec37900b82920e3017036645ac29684bc335f..edcded00e8bceb5651b1ea33003e5a09ab4f93db 100644
+--- a/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts
++++ b/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts
+@@ -101,6 +101,10 @@ export class SkyrimtogetherMock extends EventEmitter implements SkyrimTogether {
+     }
+   }
+ 
++  resync(): void {
++    console.info("Client resync requested");
++  }
++
+   reconnect(): void {
+     throw new Error('NOT YET IMPLEMENTED');
+   }
+diff --git a/Code/skyrim_ui/src/app/services/client.service.ts b/Code/skyrim_ui/src/app/services/client.service.ts
+index cb696249226f447910066af430198b620a6cf458..77dfbf4d7f1729d2964d8dd4a583674e608dbbae 100644
+--- a/Code/skyrim_ui/src/app/services/client.service.ts
++++ b/Code/skyrim_ui/src/app/services/client.service.ts
+@@ -280,6 +280,10 @@ export class ClientService implements OnDestroy {
+   /**
+    * Reconnect
+    */
++  public resync(): void {
++    skyrimtogether.resync();
++  }
++
+   public reconnect(): void {
+     skyrimtogether.reconnect();
+     this._remainingReconnectionAttempt = 0;
+diff --git a/Code/skyrim_ui/src/typings.d.ts b/Code/skyrim_ui/src/typings.d.ts
+index be7779236405bf7cb0b24df4c945b146fc494a4c..bf1af4cd94b55aac1cf999b2f161ea6a6cdd0e63 100644
+--- a/Code/skyrim_ui/src/typings.d.ts
++++ b/Code/skyrim_ui/src/typings.d.ts
+@@ -406,6 +406,7 @@ interface SkyrimTogether {
+    * Reconnect the client.
+    */
+   reconnect(): void;
++  resync(): void;
+ 
+   /**
+    * Launch a party.
 diff --git a/Code/tests/encoding.cpp b/Code/tests/encoding.cpp
-index defb8084..b30e96ac 100644
+index defb80841827c44b3cdb04f4200e3fd45cd5d988..2a647df503212ffb66f5a20f80acaa8c167bf5b2 100644
 --- a/Code/tests/encoding.cpp
 +++ b/Code/tests/encoding.cpp
 @@ -276,10 +276,11 @@ TEST_CASE("Differential structures", "[encoding.differential]")
@@ -1772,7 +2130,7 @@ index defb8084..b30e96ac 100644
          vars.String_to_VectorBool(testString, vars.Booleans);
  
          vars.Floats.push_back(1.f);
-@@ -552,3 +553,78 @@ TEST_CASE("StringCache", "[encoding.string_cache]")
+@@ -552,3 +553,120 @@ TEST_CASE("StringCache", "[encoding.string_cache]")
          REQUIRE(update == recvUpdate);
      }
  }
@@ -1851,8 +2209,50 @@ index defb8084..b30e96ac 100644
 +    REQUIRE(result->Data.Consumed);
 +    REQUIRE(result->Data.Item.Count == 12);
 +}
++
++TEST_CASE("Manual resync request and actor snapshot retain their mode", "[encoding.worlditems]")
++{
++    for (bool refresh : {false, true})
++    {
++        CharacterSpawnRequest snapshot;
++        snapshot.ServerId = 19;
++        snapshot.OwnershipEpoch = 3;
++        snapshot.IsResync = refresh;
++        snapshot.ActionsToReplay.ResetAnimationGraph = true;
++        ActionEvent idle;
++        idle.ActorId = 0x12345;
++        idle.IdleId = 0xABC;
++        idle.EventName = "IdleFluteStart";
++        snapshot.ActionsToReplay.Actions.push_back(idle);
++        Buffer buffer(16384);
++        Buffer::Writer writer(&buffer);
++        snapshot.Serialize(writer);
++        Buffer::Reader reader(&buffer);
++        ServerMessageFactory factory;
++        auto decoded = factory.Extract(reader);
++        REQUIRE(decoded);
++        REQUIRE(decoded->GetOpcode() == CharacterSpawnRequest::Opcode);
++        auto result = CastUnique<CharacterSpawnRequest>(std::move(decoded));
++        REQUIRE(result->IsResync == refresh);
++        REQUIRE(result->ServerId == 19);
++        REQUIRE(result->OwnershipEpoch == 3);
++        REQUIRE(result->ActionsToReplay == snapshot.ActionsToReplay);
++    }
++    RequestWorldItem request;
++    request.Action = WorldItemAction::Resync;
++    Buffer buffer(4096);
++    Buffer::Writer writer(&buffer);
++    request.Serialize(writer);
++    Buffer::Reader reader(&buffer);
++    ClientMessageFactory factory;
++    auto decoded = factory.Extract(reader);
++    REQUIRE(decoded);
++    REQUIRE(decoded->GetOpcode() == RequestWorldItem::Opcode);
++    auto result = CastUnique<RequestWorldItem>(std::move(decoded));
++    REQUIRE(result->Action == WorldItemAction::Resync);
++}
 diff --git a/Code/tests/xmake.lua b/Code/tests/xmake.lua
-index 19abce57..8188e595 100644
+index 19abce574791c5508f4a8f5a15bed8ae5f42d2ef..8188e595de6a295a0bead0c99f4371101ef7020c 100644
 --- a/Code/tests/xmake.lua
 +++ b/Code/tests/xmake.lua
 @@ -1,3 +1,4 @@
@@ -1871,9 +2271,21 @@ index 19abce57..8188e595 100644
 +    set_group("Tests")
 +    add_files("../../Tests/world_items.cpp")
 +    add_undefines("NDEBUG")
+diff --git a/Code/tp_process/ProcessHandler.cpp b/Code/tp_process/ProcessHandler.cpp
+index 9c67fd1ec440dd7b3fe676c945f35246c8a919e5..d440761b8591a0c76cfef07a25289801f8d655f0 100644
+--- a/Code/tp_process/ProcessHandler.cpp
++++ b/Code/tp_process/ProcessHandler.cpp
+@@ -15,6 +15,7 @@ void ProcessHandler::OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<C
+ 
+     m_pCoreObject->SetValue("connect", CefV8Value::CreateFunction("connect", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
+     m_pCoreObject->SetValue("disconnect", CefV8Value::CreateFunction("disconnect", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
++    m_pCoreObject->SetValue("resync", CefV8Value::CreateFunction("resync", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
+     m_pCoreObject->SetValue("revealPlayers", CefV8Value::CreateFunction("revealPlayers", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
+     m_pCoreObject->SetValue("sendMessage", CefV8Value::CreateFunction("sendMessage", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
+     m_pCoreObject->SetValue("setTime", CefV8Value::CreateFunction("setTime", m_pOverlayHandler),V8_PROPERTY_ATTRIBUTE_NONE);
 diff --git a/Tests/date_time.cpp b/Tests/date_time.cpp
 new file mode 100644
-index 00000000..01cbf8ae
+index 0000000000000000000000000000000000000000..01cbf8ae26bbeba0420c6d291361036abd9cf25a
 --- /dev/null
 +++ b/Tests/date_time.cpp
 @@ -0,0 +1,29 @@
@@ -1908,7 +2320,7 @@ index 00000000..01cbf8ae
 +}
 diff --git a/Tests/stubs/TiltedCore/Buffer.hpp b/Tests/stubs/TiltedCore/Buffer.hpp
 new file mode 100644
-index 00000000..d5f179bb
+index 0000000000000000000000000000000000000000..d5f179bb120bb2d8bde50c43e8366eddac01579c
 --- /dev/null
 +++ b/Tests/stubs/TiltedCore/Buffer.hpp
 @@ -0,0 +1,10 @@
@@ -1924,7 +2336,7 @@ index 00000000..d5f179bb
 +} // namespace TiltedPhoques
 diff --git a/Tests/survival_time.cpp b/Tests/survival_time.cpp
 new file mode 100644
-index 00000000..27c10fd3
+index 0000000000000000000000000000000000000000..27c10fd34026b363469a8f8cef918eebef0127fc
 --- /dev/null
 +++ b/Tests/survival_time.cpp
 @@ -0,0 +1,36 @@
@@ -1966,7 +2378,7 @@ index 00000000..27c10fd3
 +}
 diff --git a/Tests/world_items.cpp b/Tests/world_items.cpp
 new file mode 100644
-index 00000000..1f826732
+index 0000000000000000000000000000000000000000..1f826732dabd98ad4eeac4eff68c94a61ee4cc62
 --- /dev/null
 +++ b/Tests/world_items.cpp
 @@ -0,0 +1,53 @@
@@ -2025,7 +2437,7 @@ index 00000000..1f826732
 +}
 diff --git a/Tools/modules/version.lua b/Tools/modules/version.lua
 new file mode 100644
-index 00000000..cb02a67a
+index 0000000000000000000000000000000000000000..cb02a67aacc3d969446ae9bfd3f205ae96055a2c
 --- /dev/null
 +++ b/Tools/modules/version.lua
 @@ -0,0 +1,8 @@
@@ -2038,7 +2450,7 @@ index 00000000..cb02a67a
 +           os.iorunv(git, {"describe", "--tags", "--always"}):trim()
 +end
 diff --git a/xmake.lua b/xmake.lua
-index 8568b89d..4f9a1bc0 100644
+index 8568b89d995c01c99457a1c0838b8b9134eeed70..4f9a1bc0411d7c73fe8c68f54b267af1f5ac3b49 100644
 --- a/xmake.lua
 +++ b/xmake.lua
 @@ -1,4 +1,5 @@
