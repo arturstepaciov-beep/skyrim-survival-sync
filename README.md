@@ -10,7 +10,9 @@ Disable the old build, deploy, and use the same custom client AND server on both
 - Drops get one server identity, with inventory deduction checked before publication.
 - Pickup is approved by the server; simultaneous or repeated pickups award the stack once.
 - Grabbing transfers exclusive movement control. Position/rotation updates are sent at 10 Hz.
-- Remote copies use keyframed physics. Settled/released items retain the last shared pose.
+- Copies retain dynamic, activatable physics so either player can grab them.
+  Non-owners correct toward the shared pose; the server only accepts the owner's movement.
+  After release, the owner continues updates until the item settles.
 - Snapshots restore the current state for nearby players and hide already-consumed items.
 - Creation acknowledgement prevents picking up an unpublished local drop.
 

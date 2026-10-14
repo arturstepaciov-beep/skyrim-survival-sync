@@ -241,7 +241,7 @@ index 448a179f..963d4d67 100644
      EventDispatcher<TESFastTravelEndEvent> fastTravelEndEvent;
  };
 diff --git a/Code/client/Games/Skyrim/TESObjectREFR.cpp b/Code/client/Games/Skyrim/TESObjectREFR.cpp
-index 9032a69a..af5509e6 100644
+index 9032a69a..cd57d83d 100644
 --- a/Code/client/Games/Skyrim/TESObjectREFR.cpp
 +++ b/Code/client/Games/Skyrim/TESObjectREFR.cpp
 @@ -6,6 +6,7 @@
@@ -330,7 +330,7 @@ index 9032a69a..af5509e6 100644
 +    if (fn)
 +    {
 +        PapyrusFunction<void, TESObjectREFR, int32_t, bool> motion(fn);
-+        motion(this, aDynamic ? 1 : 4, false);
++        motion(this, aDynamic ? 1 : 4, true);
 +    }
 +}
 +
@@ -625,10 +625,10 @@ index 585d034d..f2c517cb 100644
          pGameTime->GameMonth->f = m_onlineTime.m_timeModel.Month;
 diff --git a/Code/client/Services/Generic/WorldItemService.cpp b/Code/client/Services/Generic/WorldItemService.cpp
 new file mode 100644
-index 00000000..3774a467
+index 00000000..809f0bba
 --- /dev/null
 +++ b/Code/client/Services/Generic/WorldItemService.cpp
-@@ -0,0 +1,314 @@
+@@ -0,0 +1,315 @@
 +#include <Services/WorldItemService.h>
 +#include <World.h>
 +#include <Services/TransportService.h>
@@ -796,7 +796,7 @@ index 00000000..3774a467
 +    const bool owned = l.Data.Owner == m_transport.GetLocalPlayerId();
 +    if (l.MotionOwner != l.Data.Owner)
 +    {
-+        ref->SetWorldMotion(owned);
++        ref->SetWorldMotion(true);
 +        l.MotionOwner = l.Data.Owner;
 +    }
 +    if (!owned || l.NewlyCreated)
@@ -830,7 +830,7 @@ index 00000000..3774a467
 +    if (!n.Data.Id)
 +        return;
 +    auto [it, inserted] = m_items.try_emplace(n.Data.Id);
-+    auto& l = it->second;
++    auto& l = it.value();
 +    if (inserted && n.Data.Creator == m_transport.GetLocalPlayerId() && !n.Data.Reference)
 +    {
 +        if (m_pendingDrops.contains(n.Data.SourceRef) && m_pendingDrops.at(n.Data.SourceRef).Token == n.Data.Token)
@@ -889,8 +889,9 @@ index 00000000..3774a467
 +    m_timer = 0;
 +    auto* grabbed = Grabbed();
 +    bool foundGrab = false;
-+    for (auto& [id, l] : m_items)
++    for (auto itemIt = m_items.begin(); itemIt != m_items.end(); ++itemIt)
 +    {
++        auto& l = itemIt.value();
 +        if (l.Data.Consumed)
 +            continue;
 +        if (!l.FormId)
@@ -1518,7 +1519,7 @@ index 43804904..41542476 100644
  };
 diff --git a/Code/server/Services/WorldItemService.cpp b/Code/server/Services/WorldItemService.cpp
 new file mode 100644
-index 00000000..5d698070
+index 00000000..41b1a744
 --- /dev/null
 +++ b/Code/server/Services/WorldItemService.cpp
 @@ -0,0 +1,178 @@
@@ -1655,7 +1656,7 @@ index 00000000..5d698070
 +    auto it = m_items.find(id);
 +    if (it == m_items.end() || !InRange(p, it->second.Data))
 +        return;
-+    auto& row = it->second;
++    auto& row = it.value();
 +    const auto now = GameServer::Get()->GetTick();
 +    switch (q.Action)
 +    {
