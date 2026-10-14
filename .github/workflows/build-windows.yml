@@ -1,0 +1,36 @@
+name: Build Survival Sync Windows
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'survival-sync-v0.1.patch'
+      - 'Build-Windows.ps1'
+      - '.github/workflows/build-windows.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: '3.1.0'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build and package custom client and server
+        shell: pwsh
+        run: ./Build-Windows.ps1 -WorkDirectory "${{ runner.temp }}/survival-build"
+      - name: Upload Windows install package
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurvivalSync-v0.1-Windows
+          path: ${{ runner.temp }}/survival-build/SurvivalSync-v0.1-Windows.zip
+          if-no-files-found: error
+          retention-days: 14

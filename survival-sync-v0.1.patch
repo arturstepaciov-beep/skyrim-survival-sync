@@ -1,0 +1,703 @@
+diff --git a/.github/workflows/survival-windows.yml b/.github/workflows/survival-windows.yml
+new file mode 100644
+index 00000000..1f974648
+--- /dev/null
++++ b/.github/workflows/survival-windows.yml
+@@ -0,0 +1,32 @@
++name: Build Survival Sync Windows package
++
++on:
++  workflow_dispatch:
++
++permissions:
++  contents: read
++
++jobs:
++  survival-logic-tests:
++    runs-on: windows-2022
++    steps:
++      - uses: actions/checkout@v4
++      - name: Compile and run survival logic tests with MSVC
++        shell: cmd
++        run: |
++          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
++          if errorlevel 1 exit /b 1
++          cl /nologo /std:c++20 /EHsc /W4 /WX Tests\survival_time.cpp /Fe:survival-time-test.exe
++          if errorlevel 1 exit /b 1
++          survival-time-test.exe
++          if errorlevel 1 exit /b 1
++          cl /nologo /std:c++20 /EHsc /W4 /WX /I Tests\stubs /I Code Tests\date_time.cpp Code\common\DateTime.cpp /Fe:date-time-test.exe
++          if errorlevel 1 exit /b 1
++          date-time-test.exe
++          if errorlevel 1 exit /b 1
++  windows-package:
++    needs: survival-logic-tests
++    uses: ./.github/workflows/windows.yml
++    with:
++      build-mode: releasedbg
++      upload-build-for-next-job: true
+diff --git a/.github/workflows/windows.yml b/.github/workflows/windows.yml
+index 807dab47..cfe9254a 100644
+--- a/.github/workflows/windows.yml
++++ b/.github/workflows/windows.yml
+@@ -78,6 +78,9 @@ jobs:
+           xmake -y
+           echo "STR_BUILD_DIR=build/windows/${{ matrix.arch }}/${BUILD_MODE}/" >> "$GITHUB_ENV"
+ 
++      - name: Verify Survival Sync packet encoding
++        run: xmake run TPTests "[encoding.survival]"
++
+       # Create distrib
+       - name: Output distrib binaries via xmake
+         run: |
+diff --git a/Code/client/Games/Skyrim/Events/EventDispatcher.h b/Code/client/Games/Skyrim/Events/EventDispatcher.h
+index 448a179f..963d4d67 100644
+--- a/Code/client/Games/Skyrim/Events/EventDispatcher.h
++++ b/Code/client/Games/Skyrim/Events/EventDispatcher.h
+@@ -208,10 +208,24 @@ struct TESSellEvent
+ 
+ struct TESSleepStartEvent
+ {
++    float sleepStartTime;
++    float desiredSleepEndTime;
+ };
+ 
+ struct TESSleepStopEvent
+ {
++    bool interrupted;
++};
++
++struct TESWaitStartEvent
++{
++    float waitStartTime;
++    float desiredWaitEndTime;
++};
++
++struct TESWaitStopEvent
++{
++    bool interrupted;
+ };
+ 
+ struct TESSpellCastEvent
+@@ -312,7 +326,7 @@ struct EventDispatcherManager
+     EventDispatcher<TESSceneActionEvent> sceneActionEvent;
+     EventDispatcher<TESScenePhaseEvent> scenePhaseEvent;
+     EventDispatcher<TESSellEvent> sellEvent;
+-    EventDispatcher<TESSleepStartEvent> unknownDispatcher39;
++    EventDispatcher<TESSleepStartEvent> sleepStartEvent;
+     EventDispatcher<TESSleepStopEvent> sleepStopEvent;
+     EventDispatcher<TESSpellCastEvent> spellCastEvent;
+     EventDispatcher<TESPlayerBowShotEvent> unknownDispatcher42;
+@@ -323,8 +337,8 @@ struct EventDispatcherManager
+     EventDispatcher<TESTriggerEnterEvent> triggerEnterEvent;
+     EventDispatcher<TESTriggerLeaveEvent> triggerLeaveEvent;
+     EventDispatcher<TESUniqueIDChangeEvent> uniqueIDChangeEvent;
+-    EventDispatcher<UnknownEvent> unknownDispatcher50; // waitevent
+-    EventDispatcher<UnknownEvent> unknownDispatcher51; // TESWaitStopEvent
++    EventDispatcher<TESWaitStartEvent> waitStartEvent;
++    EventDispatcher<TESWaitStopEvent> waitStopEvent;
+     EventDispatcher<TESSwitchRaceCompleteEvent> switchRaceCompleteEvent;
+     EventDispatcher<TESFastTravelEndEvent> fastTravelEndEvent;
+ };
+diff --git a/Code/client/Services/CalendarService.h b/Code/client/Services/CalendarService.h
+index dd442b60..a9a9d7d5 100644
+--- a/Code/client/Services/CalendarService.h
++++ b/Code/client/Services/CalendarService.h
+@@ -13,14 +13,27 @@ struct TransportService;
+ /**
+  * @brief Handles time sync.
+  */
+-class CalendarService final : public BSTEventSink<TESActivateEvent>
++class CalendarService final : public BSTEventSink<TESSleepStartEvent>,
++                              public BSTEventSink<TESSleepStopEvent>,
++                              public BSTEventSink<TESWaitStartEvent>,
++                              public BSTEventSink<TESWaitStopEvent>
+ {
+ public:
+     CalendarService(World&, entt::dispatcher&, TransportService&);
++    ~CalendarService() override;
+ 
+     static bool AllowGameTick() noexcept;
+ 
++    // Sleeping and waiting are turned into a shared time skip (#467).
++    BSTEventResult OnEvent(const TESSleepStartEvent* apEvent, const EventDispatcher<TESSleepStartEvent>*) override;
++    BSTEventResult OnEvent(const TESSleepStopEvent* apEvent, const EventDispatcher<TESSleepStopEvent>*) override;
++    BSTEventResult OnEvent(const TESWaitStartEvent* apEvent, const EventDispatcher<TESWaitStartEvent>*) override;
++    BSTEventResult OnEvent(const TESWaitStopEvent* apEvent, const EventDispatcher<TESWaitStopEvent>*) override;
++
+ private:
++    void BeginTimeSkip(float aStartTimeInDays, float aDesiredEndTimeInDays, const char* apKind) noexcept;
++    void EndTimeSkip(bool aInterrupted, const char* apKind) noexcept;
++
+     void OnTimeUpdate(const ServerTimeSettings&) noexcept;
+     void HandleUpdate(const UpdateEvent&) noexcept;
+     void OnDisconnected(const DisconnectedEvent&) noexcept;
+@@ -34,11 +47,16 @@ private:
+ 
+     DateTime m_onlineTime;
+     DateTime m_offlineTime;
++    // Mirror of the server clock (date included, whatever bSyncPlayerCalendar says) to measure time jumps.
++    DateTime m_serverTime;
++    bool m_hasServerTime = false;
+     float m_fadeTimer = 0.f;
+     static bool s_gameClockLocked;
+ 
+     uint64_t m_lastTick = 0;
+     uint64_t m_lastLogTick = 0;
++    float m_pendingSkipHours = 0.f;
++    DateTime m_pendingSkipTarget;
+     World& m_world;
+     TransportService& m_transport;
+ };
+diff --git a/Code/client/Services/Generic/CalendarService.cpp b/Code/client/Services/Generic/CalendarService.cpp
+index 585d034d..f2c517cb 100644
+--- a/Code/client/Services/Generic/CalendarService.cpp
++++ b/Code/client/Services/Generic/CalendarService.cpp
+@@ -3,7 +3,11 @@
+ #include <Events/DisconnectedEvent.h>
+ #include <Events/UpdateEvent.h>
+ #include <Messages/ServerTimeSettings.h>
++#include <Messages/RequestTimeSkip.h>
++#include <Services/TransportService.h>
+ #include <World.h>
++#include <SurvivalTimePolicy.h>
++#include <cmath>
+ 
+ #include <Forms/TESObjectCELL.h>
+ #include <PlayerCharacter.h>
+@@ -19,17 +23,116 @@ bool CalendarService::AllowGameTick() noexcept
+ }
+ 
+ CalendarService::CalendarService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport)
+-    : m_world(aWorld), m_transport(aTransport)
++    : m_world(aWorld)
++    , m_transport(aTransport)
+ {
+     m_timeUpdateConnection = aDispatcher.sink<ServerTimeSettings>().connect<&CalendarService::OnTimeUpdate>(this);
+     m_updateConnection = aDispatcher.sink<UpdateEvent>().connect<&CalendarService::HandleUpdate>(this);
+     m_disconnectedConnection = aDispatcher.sink<DisconnectedEvent>().connect<&CalendarService::OnDisconnected>(this);
++
++    auto* pEventList = EventDispatcherManager::Get();
++    pEventList->sleepStartEvent.RegisterSink(this);
++    pEventList->sleepStopEvent.RegisterSink(this);
++    pEventList->waitStartEvent.RegisterSink(this);
++    pEventList->waitStopEvent.RegisterSink(this);
++}
++
++CalendarService::~CalendarService()
++{
++    auto* pEventList = EventDispatcherManager::Get();
++    pEventList->sleepStartEvent.UnRegisterSink(this);
++    pEventList->sleepStopEvent.UnRegisterSink(this);
++    pEventList->waitStartEvent.UnRegisterSink(this);
++    pEventList->waitStopEvent.UnRegisterSink(this);
++}
++
++BSTEventResult CalendarService::OnEvent(const TESSleepStartEvent* apEvent, const EventDispatcher<TESSleepStartEvent>*)
++{
++    if (apEvent)
++        BeginTimeSkip(apEvent->sleepStartTime, apEvent->desiredSleepEndTime, "sleep");
++    return BSTEventResult::kOk;
++}
++
++BSTEventResult CalendarService::OnEvent(const TESSleepStopEvent* apEvent, const EventDispatcher<TESSleepStopEvent>*)
++{
++    EndTimeSkip(apEvent && apEvent->interrupted, "sleep");
++    return BSTEventResult::kOk;
++}
++
++BSTEventResult CalendarService::OnEvent(const TESWaitStartEvent* apEvent, const EventDispatcher<TESWaitStartEvent>*)
++{
++    if (apEvent)
++        BeginTimeSkip(apEvent->waitStartTime, apEvent->desiredWaitEndTime, "wait");
++    return BSTEventResult::kOk;
++}
++
++BSTEventResult CalendarService::OnEvent(const TESWaitStopEvent* apEvent, const EventDispatcher<TESWaitStopEvent>*)
++{
++    EndTimeSkip(apEvent && apEvent->interrupted, "wait");
++    return BSTEventResult::kOk;
++}
++
++void CalendarService::BeginTimeSkip(float aStartTimeInDays, float aDesiredEndTimeInDays, const char* apKind) noexcept
++{
++    m_pendingSkipHours = 0.f;
++    if (!s_gameClockLocked || !m_transport.IsOnline() || !m_hasServerTime)
++        return;
++    const float hours = (aDesiredEndTimeInDays - aStartTimeInDays) * 24.f;
++    if (!std::isfinite(hours) || hours <= 0.f || hours > 24.01f)
++        return;
++    m_pendingSkipHours = hours;
++    m_pendingSkipTarget = m_serverTime;
++    m_pendingSkipTarget.AddHours(hours);
++
++    spdlog::info("{} started: game time {} -> {} days, {} hours requested, online {}", apKind, aStartTimeInDays, aDesiredEndTimeInDays, m_pendingSkipHours, s_gameClockLocked);
++}
++
++void CalendarService::EndTimeSkip(bool aInterrupted, const char* apKind) noexcept
++{
++    const float hours = m_pendingSkipHours;
++    m_pendingSkipHours = 0.f;
++
++    // Offline the game advanced its own clock; online the clock is driven by the server, so ask it to skip.
++    if (!s_gameClockLocked || !m_transport.IsOnline())
++        return;
++
++    if (aInterrupted || !(hours > 0.f) || hours > 24.01f)
++    {
++        spdlog::info("{} ended without a time skip: interrupted {}, hours {}", apKind, aInterrupted, hours);
++        return;
++    }
++
++    RequestTimeSkip request{};
++    request.TargetTime = m_pendingSkipTarget.m_timeModel;
++    m_transport.Send(request);
++
++    spdlog::info("{} ended: requested a shared time skip of {} hours", apKind, hours);
+ }
+ 
+ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
+ {
+-    // disable the game clock
+-    ToggleGameClock(false);
++    // A jump of the shared clock (sleep, wait, /settime) must also move GameDaysPassed, which drives script
++    // timers, the way the game itself does when the player sleeps. Regular ticks are handled in HandleUpdate.
++    // The comparison uses a mirror of the server clock, not m_onlineTime: with bSyncPlayerCalendar off the
++    // online date is the local one and a midnight crossed on the server would count as a whole extra day.
++    const DateTime newServerTime{acMessage.timeModel};
++    if (s_gameClockLocked && m_hasServerTime)
++    {
++        const double skippedDays = SurvivalTime::InDays(newServerTime.m_timeModel) - SurvivalTime::InDays(m_serverTime.m_timeModel);
++        if (skippedDays > 0.f && skippedDays <= 2.0)
++        {
++            TimeData::Get()->GameDaysPassed->f += static_cast<float>(skippedDays);
++            spdlog::info("Shared time jumped forward by {} days", skippedDays);
++        }
++    }
++    m_serverTime = newServerTime;
++    m_hasServerTime = true;
++
++    // Establish a new tick baseline so elapsed time already included in this packet is not counted twice.
++    m_lastTick = m_world.GetTick();
++    // Capture offline state only when entering online mode.
++    if (!s_gameClockLocked)
++        ToggleGameClock(false);
+     m_onlineTime.m_timeModel.TimeScale = acMessage.timeModel.TimeScale;
+     m_onlineTime.m_timeModel.Time = acMessage.timeModel.Time;
+ 
+@@ -49,6 +152,9 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
+ 
+ void CalendarService::OnDisconnected(const DisconnectedEvent&) noexcept
+ {
++    m_hasServerTime = false;
++    m_lastTick = 0;
++    m_pendingSkipHours = 0.f;
+     // signal a time transition
+     m_fadeTimer = 0.f;
+     ToggleGameClock(true);
+@@ -101,6 +207,7 @@ void CalendarService::HandleUpdate(const UpdateEvent& aEvent) noexcept
+         m_lastTick = now;
+ 
+         m_onlineTime.Update(delta);
++        m_serverTime.Update(delta);
+         pGameTime->TimeScale->f = m_onlineTime.m_timeModel.TimeScale;
+         pGameTime->GameDay->f = m_onlineTime.m_timeModel.Day;
+         pGameTime->GameMonth->f = m_onlineTime.m_timeModel.Month;
+diff --git a/Code/common/DateTime.cpp b/Code/common/DateTime.cpp
+index b091ef61..bfb1eeb4 100644
+--- a/Code/common/DateTime.cpp
++++ b/Code/common/DateTime.cpp
+@@ -15,7 +15,12 @@ uint32_t DateTime::GetNumberOfDaysByMonthIndex(int aIndex)
+ 
+ void DateTime::Update(uint64_t aDeltaTick)
+ {
+-    m_timeModel.Time += GetDeltaTime(aDeltaTick);
++    AddHours(GetDeltaTime(aDeltaTick));
++}
++
++void DateTime::AddHours(float aHours)
++{
++    m_timeModel.Time += aHours;
+ 
+     m_timeModel.Day += static_cast<uint32_t>(m_timeModel.Time / 24.f);
+     m_timeModel.Time = std::fmod(m_timeModel.Time, 24.f);
+diff --git a/Code/common/DateTime.h b/Code/common/DateTime.h
+index e5e7a758..502de7a1 100644
+--- a/Code/common/DateTime.h
++++ b/Code/common/DateTime.h
+@@ -10,10 +10,12 @@ struct DateTime
+     DateTime() = default;
+     DateTime(TimeModel aTimeModel)
+         : m_timeModel(aTimeModel)
+-    {}
++    {
++    }
+ 
+     bool operator==(const DateTime& other) const;
+     void Update(uint64_t aDeltaTick);
++    void AddHours(float aHours);
+     float GetDeltaTime(uint64_t aDeltaTick) const noexcept;
+     float GetTimeInDays() const noexcept;
+ 
+diff --git a/Code/common/SurvivalTimePolicy.h b/Code/common/SurvivalTimePolicy.h
+new file mode 100644
+index 00000000..824b2508
+--- /dev/null
++++ b/Code/common/SurvivalTimePolicy.h
+@@ -0,0 +1,30 @@
++#pragma once
++#include <cmath>
++#include <cstdint>
++
++namespace SurvivalTime
++{
++constexpr uint32_t MonthDays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
++template <class T> bool Valid(const T& t) noexcept
++{
++    return t.Year <= 10000 && t.Month < 12 && t.Day >= 1 && t.Day <= MonthDays[t.Month] && std::isfinite(t.Time) && t.Time >= 0 && t.Time < 24;
++}
++template <class T> double InDays(const T& t) noexcept
++{
++    double days = static_cast<double>(t.Year) * 365.0 + t.Day;
++    for (uint32_t m = 0; m < t.Month && m < 12; ++m)
++        days += MonthDays[m];
++    return days + static_cast<double>(t.Time) / 24.0;
++}
++// Return only the remaining distance to the desired wake-up time. Replayed or
++// overlapping requests never add the full requested duration a second time.
++template <class T> float HoursToTarget(const T& current, const T& target) noexcept
++{
++    if (!Valid(current) || !Valid(target))
++        return 0.f;
++    const double hours = (InDays(target) - InDays(current)) * 24.0;
++    if (!std::isfinite(hours) || hours <= 0.0 || hours > 24.01)
++        return 0.f;
++    return static_cast<float>(hours);
++}
++} // namespace SurvivalTime
+diff --git a/Code/encoding/Messages/ClientMessageFactory.h b/Code/encoding/Messages/ClientMessageFactory.h
+index 4f94d6d1..0115b384 100644
+--- a/Code/encoding/Messages/ClientMessageFactory.h
++++ b/Code/encoding/Messages/ClientMessageFactory.h
+@@ -45,6 +45,7 @@
+ #include <Messages/TeleportCommandRequest.h>
+ #include <Messages/SetTimeCommandRequest.h>
+ #include <Messages/RequestActionEvents.h>
++#include <Messages/RequestTimeSkip.h>
+ #include <Messages/PlayerRespawnRequest.h>
+ #include <Messages/DialogueRequest.h>
+ #include <Messages/SubtitleRequest.h>
+@@ -66,11 +67,14 @@ struct ClientMessageFactory
+     template <class T> static auto Visit(T&& func)
+     {
+         auto s_visitor = CreateMessageVisitor<
+-            AuthenticationRequest, AssignCharacterRequest, ClientReferencesMoveRequest, EnterInteriorCellRequest, RequestInventoryChanges, RequestFactionsChanges, RequestQuestUpdate, PartyInviteRequest, PartyAcceptInviteRequest, PartyLeaveRequest, PartyCreateRequest,
+-            PartyChangeLeaderRequest, PartyKickRequest, RequestActorValueChanges, RequestActorMaxValueChanges, EnterExteriorCellRequest, RequestHealthChangeBroadcast, ActivateRequest, LockChangeRequest, AssignObjectsRequest, RequestDeathStateChange, ShiftGridCellRequest,
+-            RequestOwnershipTransfer, RequestOwnershipClaim, RequestObjectInventoryChanges, SpellCastRequest, ProjectileLaunchRequest, InterruptCastRequest, AddTargetRequest, ScriptAnimationRequest, DrawWeaponRequest, MountRequest, NewPackageRequest, RequestRespawn, SyncExperienceRequest,
+-            RequestEquipmentChanges, SendChatMessageRequest, TeleportCommandRequest, PlayerRespawnRequest, DialogueRequest, SubtitleRequest, PlayerDialogueRequest, PlayerLevelRequest, TeleportRequest, RequestPlayerHealthUpdate, RequestWeatherChange, RequestCurrentWeather, RequestSetWaypoint,
+-            RequestRemoveWaypoint, RemoveSpellRequest, SetTimeCommandRequest, RequestActionEvents>;
++            AuthenticationRequest, AssignCharacterRequest, ClientReferencesMoveRequest, EnterInteriorCellRequest, RequestInventoryChanges, RequestFactionsChanges,
++            RequestQuestUpdate, PartyInviteRequest, PartyAcceptInviteRequest, PartyLeaveRequest, PartyCreateRequest, PartyChangeLeaderRequest, PartyKickRequest,
++            RequestActorValueChanges, RequestActorMaxValueChanges, EnterExteriorCellRequest, RequestHealthChangeBroadcast, ActivateRequest, LockChangeRequest, AssignObjectsRequest,
++            RequestDeathStateChange, ShiftGridCellRequest, RequestOwnershipTransfer, RequestOwnershipClaim, RequestObjectInventoryChanges, SpellCastRequest,
++            ProjectileLaunchRequest, InterruptCastRequest, AddTargetRequest, ScriptAnimationRequest, DrawWeaponRequest, MountRequest, NewPackageRequest, RequestRespawn,
++            SyncExperienceRequest, RequestEquipmentChanges, SendChatMessageRequest, TeleportCommandRequest, PlayerRespawnRequest, DialogueRequest, SubtitleRequest,
++            PlayerDialogueRequest, PlayerLevelRequest, TeleportRequest, RequestPlayerHealthUpdate, RequestWeatherChange, RequestCurrentWeather, RequestSetWaypoint,
++            RequestRemoveWaypoint, RemoveSpellRequest, SetTimeCommandRequest, RequestActionEvents, RequestTimeSkip>;
+ 
+         return s_visitor(std::forward<T>(func));
+     }
+diff --git a/Code/encoding/Messages/RequestTimeSkip.cpp b/Code/encoding/Messages/RequestTimeSkip.cpp
+new file mode 100644
+index 00000000..ea9fbd37
+--- /dev/null
++++ b/Code/encoding/Messages/RequestTimeSkip.cpp
+@@ -0,0 +1,10 @@
++#include "RequestTimeSkip.h"
++void RequestTimeSkip::SerializeRaw(TiltedPhoques::Buffer::Writer& writer) const noexcept
++{
++    TargetTime.Serialize(writer);
++}
++void RequestTimeSkip::DeserializeRaw(TiltedPhoques::Buffer::Reader& reader) noexcept
++{
++    ClientMessage::DeserializeRaw(reader);
++    TargetTime.Deserialize(reader);
++}
+diff --git a/Code/encoding/Messages/RequestTimeSkip.h b/Code/encoding/Messages/RequestTimeSkip.h
+new file mode 100644
+index 00000000..80209bad
+--- /dev/null
++++ b/Code/encoding/Messages/RequestTimeSkip.h
+@@ -0,0 +1,16 @@
++#pragma once
++#include "Message.h"
++#include <Structs/TimeModel.h>
++// Protocol extension: every participant must use this custom client/server build.
++struct RequestTimeSkip final : ClientMessage
++{
++    static constexpr ClientOpcode Opcode = kRequestTimeSkip;
++    RequestTimeSkip()
++        : ClientMessage(Opcode)
++    {
++    }
++    void SerializeRaw(TiltedPhoques::Buffer::Writer&) const noexcept override;
++    void DeserializeRaw(TiltedPhoques::Buffer::Reader&) noexcept override;
++    bool operator==(const RequestTimeSkip& rhs) const noexcept { return GetOpcode() == rhs.GetOpcode() && TargetTime == rhs.TargetTime; }
++    TimeModel TargetTime;
++};
+diff --git a/Code/encoding/Opcodes.h b/Code/encoding/Opcodes.h
+index baab493c..b569ceec 100644
+--- a/Code/encoding/Opcodes.h
++++ b/Code/encoding/Opcodes.h
+@@ -54,6 +54,7 @@ enum ClientOpcode : unsigned char
+     kRequestRemoveWaypoint,
+     kSetTimeCommandRequest,
+     kRequestActionEvents,
++    kRequestTimeSkip,
+     kClientOpcodeMax
+ };
+ 
+diff --git a/Code/server/Services/CalendarService.cpp b/Code/server/Services/CalendarService.cpp
+index 7014c285..6d367d94 100644
+--- a/Code/server/Services/CalendarService.cpp
++++ b/Code/server/Services/CalendarService.cpp
+@@ -7,6 +7,14 @@
+ #include <Events/UpdateEvent.h>
+ 
+ #include <Messages/ServerTimeSettings.h>
++#include <Messages/RequestTimeSkip.h>
++#include <SurvivalTimePolicy.h>
++#include <Setting.h>
++
++namespace
++{
++Console::Setting bEnableSurvivalTimeSync{"Gameplay:bEnableSurvivalTimeSync", "Experimental shared sleep/wait time for Survival Mode; use matching custom clients", false};
++}
+ 
+ #include "Game/Player.h"
+ 
+@@ -15,6 +23,7 @@ CalendarService::CalendarService(World& aWorld, entt::dispatcher& aDispatcher)
+ {
+     m_updateConnection = aDispatcher.sink<UpdateEvent>().connect<&CalendarService::OnUpdate>(this);
+     m_joinConnection = aDispatcher.sink<PlayerJoinEvent>().connect<&CalendarService::OnPlayerJoin>(this);
++    m_timeSkipConnection = aDispatcher.sink<PacketEvent<RequestTimeSkip>>().connect<&CalendarService::OnTimeSkip>(this);
+ }
+ 
+ void CalendarService::OnUpdate(const UpdateEvent&) noexcept
+@@ -99,6 +108,23 @@ bool CalendarService::SetDate(int aDay, int aMonth, float aYear) noexcept
+     return false;
+ }
+ 
++void CalendarService::OnTimeSkip(const PacketEvent<RequestTimeSkip>& event) noexcept
++{
++    if (!bEnableSurvivalTimeSync || !event.pPlayer || !event.pPlayer->GetCharacter())
++        return;
++    // Account for real time before comparing, preventing a stale server baseline.
++    const auto now = GameServer::Get()->GetTick();
++    if (m_lastTick && now >= m_lastTick)
++        m_dateTime.Update(now - m_lastTick);
++    m_lastTick = now;
++    const float hours = SurvivalTime::HoursToTarget(m_dateTime.m_timeModel, event.Packet.TargetTime);
++    if (hours <= 0.f)
++        return;
++    m_dateTime.AddHours(hours);
++    spdlog::info("Survival time: player {} advanced the shared clock by {} hours", event.pPlayer->GetId(), hours);
++    SendTimeResync();
++}
++
+ void CalendarService::SendTimeResync() noexcept
+ {
+     ServerTimeSettings timeMsg;
+diff --git a/Code/server/Services/CalendarService.h b/Code/server/Services/CalendarService.h
+index 43804904..41542476 100644
+--- a/Code/server/Services/CalendarService.h
++++ b/Code/server/Services/CalendarService.h
+@@ -7,6 +7,7 @@
+ struct World;
+ struct UpdateEvent;
+ struct PlayerJoinEvent;
++struct RequestTimeSkip;
+ 
+ /**
+  * @brief Manages time and date of the world.
+@@ -37,6 +38,7 @@ public:
+ 
+ private:
+     void OnUpdate(const UpdateEvent&) noexcept;
++    void OnTimeSkip(const PacketEvent<RequestTimeSkip>&) noexcept;
+     void OnPlayerJoin(const PlayerJoinEvent&) noexcept;
+     void SendTimeResync() noexcept;
+ 
+@@ -48,4 +50,5 @@ private:
+ 
+     entt::scoped_connection m_updateConnection;
+     entt::scoped_connection m_joinConnection;
++    entt::scoped_connection m_timeSkipConnection;
+ };
+diff --git a/Code/tests/encoding.cpp b/Code/tests/encoding.cpp
+index defb8084..d68b73cd 100644
+--- a/Code/tests/encoding.cpp
++++ b/Code/tests/encoding.cpp
+@@ -276,10 +276,11 @@ TEST_CASE("Differential structures", "[encoding.differential]")
+     GIVEN("AnimationVariables")
+     {
+         AnimationVariables vars, recvVars;
+- 
++
+         vars.Booleans.resize(76);
+-        String testString("\xDE\xAD\xBE\xEF"
+-                          "\xDE\xAD\xBE\xEF\x76\xB");
++        String testString(
++            "\xDE\xAD\xBE\xEF"
++            "\xDE\xAD\xBE\xEF\x76\xB");
+         vars.String_to_VectorBool(testString, vars.Booleans);
+ 
+         vars.Floats.push_back(1.f);
+@@ -552,3 +553,21 @@ TEST_CASE("StringCache", "[encoding.string_cache]")
+         REQUIRE(update == recvUpdate);
+     }
+ }
++
++TEST_CASE("Survival target time request round trip", "[encoding.survival]")
++{
++    Buffer buff(1000);
++    RequestTimeSkip request;
++    request.TargetTime.Year = 202;
++    request.TargetTime.Month = 0;
++    request.TargetTime.Day = 1;
++    request.TargetTime.Time = 7.5f;
++    Buffer::Writer writer(&buff);
++    request.Serialize(writer);
++    Buffer::Reader reader(&buff);
++    ClientMessageFactory factory;
++    auto decoded = factory.Extract(reader);
++    REQUIRE(decoded);
++    REQUIRE(decoded->GetOpcode() == RequestTimeSkip::Opcode);
++    REQUIRE(*CastUnique<RequestTimeSkip>(std::move(decoded)) == request);
++}
+diff --git a/Code/tests/xmake.lua b/Code/tests/xmake.lua
+index 19abce57..5a483d86 100644
+--- a/Code/tests/xmake.lua
++++ b/Code/tests/xmake.lua
+@@ -1,3 +1,4 @@
++add_requires("catch2 v2.13.10")
+ 
+ target("TPTests")
+     set_kind("binary")
+diff --git a/Tests/date_time.cpp b/Tests/date_time.cpp
+new file mode 100644
+index 00000000..01cbf8ae
+--- /dev/null
++++ b/Tests/date_time.cpp
+@@ -0,0 +1,29 @@
++#include "../Code/common/DateTime.h"
++#include "../Code/common/SurvivalTimePolicy.h"
++#include <cassert>
++#include <cmath>
++#include <iostream>
++int main()
++{
++    TimeModel m;
++    m.Year = 201;
++    m.Month = 11;
++    m.Day = 31;
++    m.Time = 23;
++    m.TimeScale = 20;
++    DateTime t(m);
++    t.AddHours(8);
++    assert(t.m_timeModel.Year == 202 && t.m_timeModel.Month == 0 && t.m_timeModel.Day == 1);
++    assert(std::abs(t.m_timeModel.Time - 7) < 0.001);
++    DateTime before(t);
++    t.Update(3600000);
++    assert(std::abs((SurvivalTime::InDays(t.m_timeModel) - SurvivalTime::InDays(before.m_timeModel)) * 24 - 20) < 0.001);
++    assert(t.m_timeModel.TimeScale == 20);
++    auto target = t.m_timeModel;
++    target.Time = 20;
++    const auto hours = SurvivalTime::HoursToTarget(t.m_timeModel, target);
++    t.AddHours(hours);
++    assert(std::abs(t.m_timeModel.Time - 20) < 0.001);
++    assert(SurvivalTime::HoursToTarget(t.m_timeModel, target) == 0);
++    std::cout << "PASS: actual DateTime.cpp advance, calendar rollover, scaled ticking, target replay\n";
++}
+diff --git a/Tests/stubs/TiltedCore/Buffer.hpp b/Tests/stubs/TiltedCore/Buffer.hpp
+new file mode 100644
+index 00000000..d5f179bb
+--- /dev/null
++++ b/Tests/stubs/TiltedCore/Buffer.hpp
+@@ -0,0 +1,10 @@
++#pragma once
++// Standalone test declaration stub only. No networking implementation.
++namespace TiltedPhoques
++{
++struct Buffer
++{
++    struct Writer;
++    struct Reader;
++};
++} // namespace TiltedPhoques
+diff --git a/Tests/survival_time.cpp b/Tests/survival_time.cpp
+new file mode 100644
+index 00000000..27c10fd3
+--- /dev/null
++++ b/Tests/survival_time.cpp
+@@ -0,0 +1,36 @@
++#include "../Code/common/SurvivalTimePolicy.h"
++#include <cassert>
++#include <limits>
++#include <iostream>
++struct Clock
++{
++    unsigned Year = 201, Month = 7, Day = 17;
++    float Time = 20.f;
++};
++int main()
++{
++    using namespace SurvivalTime;
++    Clock now, target{201, 7, 18, 4};
++    assert(std::abs(HoursToTarget(now, target) - 8.f) < 0.001f);
++    now = target;
++    assert(HoursToTarget(now, target) == 0); // duplicate / second sleeper
++    Clock longer{201, 7, 18, 8};
++    assert(std::abs(HoursToTarget(now, longer) - 4.f) < 0.001f);
++    assert(HoursToTarget(longer, target) == 0);            // out-of-order packet
++    assert(HoursToTarget(now, Clock{201, 7, 20, 4}) == 0); // over 24h
++    assert(std::abs(HoursToTarget(Clock{201, 11, 31, 23}, Clock{202, 0, 1, 1}) - 2.f) < 0.001f);
++    assert(std::abs(HoursToTarget(Clock{201, 1, 28, 23}, Clock{201, 2, 1, 1}) - 2.f) < 0.001f);
++    assert(HoursToTarget(now, Clock{201, 12, 1, 4}) == 0);
++    assert(HoursToTarget(now, Clock{201, 1, 30, 4}) == 0);
++    assert(HoursToTarget(now, Clock{201, 7, 18, std::numeric_limits<float>::quiet_NaN()}) == 0);
++    assert(HoursToTarget(now, Clock{201, 7, 18, std::numeric_limits<float>::infinity()}) == 0);
++    assert(HoursToTarget(now, Clock{201, 7, 18, -1}) == 0);
++    // FPS-independent policy: the same wake target yields the same final time.
++    for (int fps : {20, 30, 60, 120, 144})
++    {
++        Clock start{201, 7, 17, 20.f + 1.f / fps};
++        const auto hours = HoursToTarget(start, target);
++        assert(std::abs(InDays(start) + hours / 24.0 - InDays(target)) < 1e-7);
++    }
++    std::cout << "PASS: overlapping sleeps, replay, out-of-order requests, midnight/year/month rollover, invalid requests and frame rates\n";
++}
+diff --git a/Tools/modules/version.lua b/Tools/modules/version.lua
+new file mode 100644
+index 00000000..cb02a67a
+--- /dev/null
++++ b/Tools/modules/version.lua
+@@ -0,0 +1,8 @@
++-- Local build metadata helper required by the root xmake before_build hook.
++function main()
++    import("detect.tools.find_git")
++    local git = find_git()
++    if not git then return "unknown", "unknown" end
++    return os.iorunv(git, {"rev-parse", "--abbrev-ref", "HEAD"}):trim(),
++           os.iorunv(git, {"describe", "--tags", "--always"}):trim()
++end
+diff --git a/xmake.lua b/xmake.lua
+index 8568b89d..4f9a1bc0 100644
+--- a/xmake.lua
++++ b/xmake.lua
+@@ -1,4 +1,5 @@
+ set_xmakever("3.0.0")
++add_moduledirs("Tools")
+ 
+ -- If newer version of xmake, remove ccache until it actually works
+ if set_policy ~= nil then
