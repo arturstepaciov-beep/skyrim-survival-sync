@@ -968,10 +968,10 @@ index 6806a990..57a9247a 100644
          spdlog::warn("Character with remote id {:X} is already spawned.", acMessage.ServerId);
 diff --git a/Code/client/Services/Generic/HomesteadService.cpp b/Code/client/Services/Generic/HomesteadService.cpp
 new file mode 100644
-index 00000000..c271aeda
+index 00000000..07e3181e
 --- /dev/null
 +++ b/Code/client/Services/Generic/HomesteadService.cpp
-@@ -0,0 +1,231 @@
+@@ -0,0 +1,243 @@
 +#include <Services/HomesteadService.h>
 +#include <Services/TransportService.h>
 +#include <World.h>
@@ -990,6 +990,7 @@ index 00000000..c271aeda
 +#include <fstream>
 +#include <cstring>
 +#include <HearthfireIndex.h>
++#include <HomesteadInventory.h>
 +namespace
 +{
 +bool Structure(const TESObjectREFR* ref)
@@ -1070,6 +1071,11 @@ index 00000000..c271aeda
 +    if (!mods.GetServerModId(chest->formID, q.Reference) || !mods.GetServerModId(base->formID, q.Item.BaseId)) return true;
 +    if (extra) { ScopedExtraDataOverride guard; source->GetItemFromExtraData(q.Item, extra); }
 +    q.Item.Count = count;
++    if (!HomesteadInventory::Supported(q.Item))
++    {
++        spdlog::warn("Shared storage: dynamically generated forms and quest items stay local");
++        return true;
++    }
 +    Send(std::move(q));
 +    // Leave both inventories untouched until the server commits the exact variant.
 +    return true;
@@ -1116,7 +1122,7 @@ index 00000000..c271aeda
 +            // Quest-bound construction/resource chests must keep their native scripts.
 +            if (ref->extraData.HasQuestObjectAlias()) continue;
 +            if (!cell->IsAttached()) continue;
-+            record.HasInventory = true; record.Contents = ref->GetInventory();
++            record.HasInventory = true; record.Contents = HomesteadInventory::SharedPart(ref->GetInventory());
 +        }
 +        m_published[id] = disabled;
 +        if (!HomesteadWire::ValidInventory(record.Contents)) { m_published.erase(id); continue; }
@@ -1143,14 +1149,15 @@ index 00000000..c271aeda
 +    {
 +        if (record.Disabled) ref->Disable(); else ref->Enable();
 +    }
-+    if (record.HasInventory && cell && cell->IsAttached() && !ref->IsDisabled())
++    if (record.HasInventory && (!guest || (cell && cell->IsAttached())) && !ref->IsDisabled())
 +    {
 +        Inventory current = ref->GetInventory();
 +        if (current != record.Contents)
 +        {
 +            if (guest && !m_original[id].HasInventory) { m_original[id].HasInventory = true; m_original[id].Contents = current; }
-+            if (current.ContainsQuestItems()) ref->SetInventoryRetainingQuestItems(current, record.Contents);
-+            else ref->SetInventory(record.Contents);
++            ScopedInventoryOverride guard;
++            for (const auto& change : HomesteadInventory::Difference(current, record.Contents).Entries)
++                ref->AddOrRemoveItem(change, true);
 +        }
 +    }
 +}
@@ -1197,7 +1204,12 @@ index 00000000..c271aeda
 +    {
 +        auto* ref = Cast<TESObjectREFR>(TESForm::GetById(id)); if (!ref) continue;
 +        if (ref->IsDisabled() != original.Disabled) { if (original.Disabled) ref->Disable(); else ref->Enable(); }
-+        if (original.HasInventory) ref->SetInventory(original.Contents);
++        if (original.HasInventory)
++        {
++            ScopedInventoryOverride guard;
++            for (const auto& change : HomesteadInventory::Difference(ref->GetInventory(), original.Contents).Entries)
++                ref->AddOrRemoveItem(change, true);
++        }
 +    }
 +    m_remote.clear(); m_published.clear(); m_original.clear(); m_assembler.Pending.clear();
 +    m_authority = m_pendingOpen = m_pendingRef = 0;
@@ -3379,10 +3391,10 @@ index 43804904..41542476 100644
  };
 diff --git a/Code/server/Services/HomesteadService.cpp b/Code/server/Services/HomesteadService.cpp
 new file mode 100644
-index 00000000..f96fd1d1
+index 00000000..6eb20113
 --- /dev/null
 +++ b/Code/server/Services/HomesteadService.cpp
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,116 @@
 +#include <Services/HomesteadService.h>
 +#include <World.h>
 +#include <Components.h>
@@ -3391,6 +3403,7 @@ index 00000000..f96fd1d1
 +#include <Messages/NotifyHomestead.h>
 +#include <Messages/NotifyInventoryChanges.h>
 +#include <HomesteadPolicy.h>
++#include <HomesteadInventory.h>
 +#include <cmath>
 +namespace
 +{
@@ -3480,7 +3493,7 @@ index 00000000..f96fd1d1
 +    item.ExtraWorn = item.ExtraWornLeft = false;
 +    const auto source = q.Deposit ? Count(inv->Content, item) : Count(chest.Contents, item);
 +    const auto destination = q.Deposit ? Count(chest.Contents, item) : Count(inv->Content, item);
-+    const bool accepted = item.EnchantData.Effects.size() <= 64 &&
++    const bool accepted = HomesteadInventory::Supported(item) && item.EnchantData.Effects.size() <= 64 &&
 +        (q.Deposit ? chest.Contents.Entries.size() : inv->Content.Entries.size()) < HomesteadWire::MaxEntries && !item.IsQuestItem && item.BaseId && std::isfinite(item.ExtraCharge) && std::isfinite(item.ExtraHealth) &&
 +        HomesteadPolicy::CanTransfer(source, destination, item.Count);
 +    if (accepted)
@@ -4125,18 +4138,19 @@ index be777923..3cfe9faa 100644
    /**
     * Launch a party.
 diff --git a/Code/tests/encoding.cpp b/Code/tests/encoding.cpp
-index defb8084..7ed6322a 100644
+index defb8084..9373e19f 100644
 --- a/Code/tests/encoding.cpp
 +++ b/Code/tests/encoding.cpp
-@@ -16,6 +16,7 @@
+@@ -16,6 +16,8 @@
  #include <Messages/ClientMessageFactory.h>
  #include <Messages/ServerMessageFactory.h>
  #include <Structs/Vector2_NetQuantize.h>
 +#include <HomesteadWire.h>
++#include <HomesteadInventory.h>
  
  #include <TiltedCore/Math.hpp>
  #include <TiltedCore/Platform.hpp>
-@@ -276,10 +277,11 @@ TEST_CASE("Differential structures", "[encoding.differential]")
+@@ -276,10 +278,11 @@ TEST_CASE("Differential structures", "[encoding.differential]")
      GIVEN("AnimationVariables")
      {
          AnimationVariables vars, recvVars;
@@ -4151,7 +4165,7 @@ index defb8084..7ed6322a 100644
          vars.String_to_VectorBool(testString, vars.Booleans);
  
          vars.Floats.push_back(1.f);
-@@ -552,3 +554,221 @@ TEST_CASE("StringCache", "[encoding.string_cache]")
+@@ -552,3 +555,238 @@ TEST_CASE("StringCache", "[encoding.string_cache]")
          REQUIRE(update == recvUpdate);
      }
  }
@@ -4372,6 +4386,23 @@ index defb8084..7ed6322a 100644
 +    Inventory::EffectItem effect; effect.EffectId = GameId{0, 2}; effect.Magnitude = 10; a.EnchantData.Effects.push_back(effect);
 +    auto b = a; b.EnchantData.Effects.front().Magnitude = 20;
 +    REQUIRE_FALSE(a.CanBeMerged(b)); Inventory inv; inv.AddOrRemoveEntry(a); inv.AddOrRemoveEntry(b); REQUIRE(inv.Entries.size() == 2);
++}
++
++TEST_CASE("Shared chest reconciliation preserves local dynamic and quest items", "[encoding.homestead]")
++{
++    Inventory current, wanted;
++    Inventory::Entry normal; normal.BaseId = GameId{0, 0x123}; normal.Count = 4;
++    auto dynamic = normal; dynamic.BaseId = GameId{UINT32_MAX, 0x800};
++    auto enchant = normal; enchant.ExtraEnchantId = GameId{UINT32_MAX, 0x900};
++    auto quest = normal; quest.IsQuestItem = true;
++    current.Entries = {normal, dynamic, enchant, quest};
++    auto target = normal; target.Count = 2; wanted.Entries = {target};
++    auto changes = HomesteadInventory::Difference(current, wanted);
++    REQUIRE(changes.Entries.size() == 1); REQUIRE(changes.Entries.front().Count == -2);
++    REQUIRE(changes.Entries.front().BaseId == normal.BaseId);
++    REQUIRE_FALSE(HomesteadInventory::Supported(dynamic)); REQUIRE_FALSE(HomesteadInventory::Supported(enchant));
++    auto share = HomesteadInventory::SharedPart(current); REQUIRE(share.Entries.size() == 1);
++    auto repeated = HomesteadInventory::Difference(wanted, wanted); REQUIRE(repeated.Entries.empty());
 +}
 diff --git a/Code/tests/xmake.lua b/Code/tests/xmake.lua
 index 19abce57..36896abe 100644
