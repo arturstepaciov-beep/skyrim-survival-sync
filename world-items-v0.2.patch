@@ -2618,6 +2618,50 @@ index 00000000..4c381e59
 +    return file && file.tellg() == length && !out.empty();
 +}
 +}
+diff --git a/Code/common/HomesteadInventory.h b/Code/common/HomesteadInventory.h
+new file mode 100644
+index 00000000..bc876f72
+--- /dev/null
++++ b/Code/common/HomesteadInventory.h
+@@ -0,0 +1,38 @@
++#pragma once
++#include <Structs/Inventory.h>
++#include <cstdint>
++namespace HomesteadInventory
++{
++inline bool Supported(const Inventory::Entry& e)
++{
++    return bool(e.BaseId) && e.BaseId.ModId != UINT32_MAX && e.ExtraEnchantId.ModId != UINT32_MAX &&
++           e.ExtraPoisonId.ModId != UINT32_MAX && !e.IsQuestItem;
++}
++inline Inventory SharedPart(const Inventory& original)
++{
++    Inventory result;
++    for (const auto& e : original.Entries) if (Supported(e) && e.Count > 0) result.AddOrRemoveEntry(e);
++    return result;
++}
++// Return precise variant deltas. Never clear a whole inventory: locally generated
++// forms and quest items cannot safely be removed and reconstructed from GameIds.
++inline Inventory Difference(const Inventory& current, const Inventory& desired)
++{
++    auto before = SharedPart(current); auto after = SharedPart(desired);
++    Inventory result;
++    for (const auto& entry : before.Entries)
++    {
++        int64_t target{};
++        for (const auto& e : after.Entries) if (e.CanBeMerged(entry)) target += e.Count;
++        const int64_t delta = target - entry.Count;
++        if (delta) { auto change = entry; change.Count = static_cast<int32_t>(delta); result.Entries.push_back(change); }
++    }
++    for (const auto& entry : after.Entries)
++    {
++        bool found{};
++        for (const auto& e : before.Entries) if (e.CanBeMerged(entry)) { found = true; break; }
++        if (!found) result.Entries.push_back(entry);
++    }
++    return result;
++}
++}
 diff --git a/Code/common/HomesteadPolicy.h b/Code/common/HomesteadPolicy.h
 new file mode 100644
 index 00000000..317bbea6
