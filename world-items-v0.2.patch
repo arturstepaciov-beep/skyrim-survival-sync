@@ -1045,7 +1045,7 @@ index a0378612..de5e52be 100644
          else if (eventName == "sendMessage")
 diff --git a/Code/client/Services/Generic/VolcanoService.cpp b/Code/client/Services/Generic/VolcanoService.cpp
 new file mode 100644
-index 00000000..9dde80b2
+index 00000000..d5ebac95
 --- /dev/null
 +++ b/Code/client/Services/Generic/VolcanoService.cpp
 @@ -0,0 +1,193 @@
@@ -1201,8 +1201,8 @@ index 00000000..9dde80b2
 +            Send(pose); // Heartbeat restores late join and removes dropped-packet dependence.
 +        }
 +    }
-+    for (auto& [id, old] : m_localVisuals)
-+        if (!found.contains(id)) { old.Consumed = true; Send(old); }
++    for (const auto& [id, old] : m_localVisuals)
++        if (!found.contains(id)) { auto ended = old; ended.Consumed = true; Send(ended); }
 +    m_localVisuals = std::move(found);
 +}
 +void VolcanoService::OnNotify(const NotifyWorldItem& n)
