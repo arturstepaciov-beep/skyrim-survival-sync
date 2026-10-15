@@ -1,3 +1,36 @@
+# Survival Sync alpha 0.3 — test build
+
+- F2: optional auto resync interval (1–300 seconds, default 10).
+- F2: bind or clear a single resync hotkey. F2 and modifier-only bindings are reserved.
+- Manual and automatic refresh cooldown reduced to one second on client and server.
+- Weather uses the earliest connected loaded player as a single server-wide source,
+  independent of party membership/range; refresh/recovery every five seconds.
+  It synchronizes the selected weather, not the exact visual blend progress.
+- Native local sleep/wait time simulation is allowed; elapsed days already processed
+  locally are deducted from the server skip, including overlap during another sleep.
+  Awake players still accrue elapsed Survival fatigue; they do not receive sleep benefits.
+- Experimental TK Dodge graph-input adapter forwards TKDodge-prefixed player events
+  and standard animation variables; old dodges are not replayed on resync.
+  Identical TK Dodge SE assets/behavior generation required on both PCs.
+  This is not general compatibility with all animation mods or custom graph variables.
+- Remote casts resolve the spell in the packet rather than stale equipped-hand state.
+- Item movement remains 15 Hz with a three-second settling ownership delay.
+
+## Open issues
+
+Volcano's scripted eruption/secondary-source replication is NOT resolved. Added logging
+for spell routing and projectiles launched by non-actor sources to diagnose it.
+The matching Apocalypse 10.3 spell/plugin/script files are needed to finish its adapter.
+
+Inn rental/shared-bed ownership is NOT fixed. The winning rental script and exact inn
+must be inspected before changing per-player ownership or rental state.
+
+Sleep, weather and TK Dodge behavior require two-player in-game validation. Automated
+policy and packet tests do not establish game-engine behavior. Use the same custom
+build on both PCs and server; weather packet format changed.
+
+---
+
 # Skyrim Together: Survival + World Items alpha 0.2
 
 Unofficial Windows build with the previous Survival time changes plus server-tracked

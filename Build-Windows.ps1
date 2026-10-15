@@ -23,7 +23,7 @@ try {
     Run -Program 'xmake' -Arguments @('config','--plat=windows','--arch=x64','--mode=releasedbg','--yes')
     Run -Program 'xmake' -Arguments @('-y')
     # Native encoding tests include the new request packet round trip.
-    Run -Program 'xmake' -Arguments @('run','TPTests','[encoding.survival],[encoding.worlditems]')
+    Run -Program 'xmake' -Arguments @('run','TPTests','[encoding.survival],[encoding.worlditems],[encoding.weather]')
     Run -Program 'xmake' -Arguments @('run','WorldItemPolicyTests')
     Run -Program 'pnpm' -Arguments @('--prefix','Code/skyrim_ui','install')
     Run -Program 'pnpm' -Arguments @('--prefix','Code/skyrim_ui','deploy:production')
@@ -52,7 +52,7 @@ try {
     Set-Content -Path $configPath -Value $ini -Encoding utf8
     Copy-Item -Path (Join-Path $PSScriptRoot 'README.md') -Destination (Join-Path $package 'SurvivalSync-README.md')
     Copy-Item -Path (Join-Path $PSScriptRoot 'LICENSE') -Destination (Join-Path $package 'LICENSE')
-    $zip = Join-Path $WorkDirectory 'SurvivalSync-WorldItems-v0.2-Windows.zip'
+    $zip = Join-Path $WorkDirectory 'SurvivalSync-v0.3-Windows.zip'
     Compress-Archive -Path (Join-Path $package '*') -DestinationPath $zip -Force
     Write-Host "Windows package created: $zip"
     Write-Host 'This script never changes your installed Skyrim files.'

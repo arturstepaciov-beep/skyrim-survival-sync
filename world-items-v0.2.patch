@@ -1,6 +1,6 @@
 diff --git a/.github/workflows/survival-windows.yml b/.github/workflows/survival-windows.yml
 new file mode 100644
-index 0000000000000000000000000000000000000000..1f974648d34e3d5f92bf2f1c559e62b30e656a26
+index 00000000..1f974648
 --- /dev/null
 +++ b/.github/workflows/survival-windows.yml
 @@ -0,0 +1,32 @@
@@ -37,7 +37,7 @@ index 0000000000000000000000000000000000000000..1f974648d34e3d5f92bf2f1c559e62b3
 +      build-mode: releasedbg
 +      upload-build-for-next-job: true
 diff --git a/.github/workflows/windows.yml b/.github/workflows/windows.yml
-index 807dab4718ecc89a29849e1388072b2063bc8f57..cfe9254a2917d8c2450ff5cb9cb9abd2a271d6f7 100644
+index 807dab47..cfe9254a 100644
 --- a/.github/workflows/windows.yml
 +++ b/.github/workflows/windows.yml
 @@ -78,6 +78,9 @@ jobs:
@@ -51,7 +51,7 @@ index 807dab4718ecc89a29849e1388072b2063bc8f57..cfe9254a2917d8c2450ff5cb9cb9abd2
        - name: Output distrib binaries via xmake
          run: |
 diff --git a/Code/client/Components/RemoteAnimationComponent.h b/Code/client/Components/RemoteAnimationComponent.h
-index 26ff80d2783dd2e55a2c757a7f0c12d2369439a2..f3640943853da5e7aa9bbe9e6434d7a45fafea14 100644
+index 26ff80d2..f3640943 100644
 --- a/Code/client/Components/RemoteAnimationComponent.h
 +++ b/Code/client/Components/RemoteAnimationComponent.h
 @@ -9,6 +9,6 @@ struct RemoteAnimationComponent
@@ -64,7 +64,7 @@ index 26ff80d2783dd2e55a2c757a7f0c12d2369439a2..f3640943853da5e7aa9bbe9e6434d7a4
  };
 diff --git a/Code/client/Events/WorldItemDropEvent.h b/Code/client/Events/WorldItemDropEvent.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..5afab1244b2ae1c620aa9d7b9bd5376c4f904a1a
+index 00000000..5afab124
 --- /dev/null
 +++ b/Code/client/Events/WorldItemDropEvent.h
 @@ -0,0 +1,7 @@
@@ -76,10 +76,21 @@ index 0000000000000000000000000000000000000000..5afab1244b2ae1c620aa9d7b9bd5376c
 +    Inventory::Entry Item;
 +};
 diff --git a/Code/client/Games/Animation.cpp b/Code/client/Games/Animation.cpp
-index 0714b2b88df20ce28e3939403a8bfd39bc5170d7..4621d178203101f6730b53a6e00a1c1eec64ca9e 100644
+index 0714b2b8..3680490d 100644
 --- a/Code/client/Games/Animation.cpp
 +++ b/Code/client/Games/Animation.cpp
-@@ -33,7 +33,7 @@ uint8_t TP_MAKE_THISCALL(HookPerformAction, ActorMediator, TESActionData* apActi
+@@ -13,6 +13,10 @@
+ #include <Misc/BSFixedString.h>
+ 
+ #include <World.h>
++#include <PlayerCharacter.h>
++#include <Services/TransportService.h>
++#include <Events/UpdateEvent.h>
++#include <cstring>
+ 
+ TP_THIS_FUNCTION(TPerformAction, uint8_t, ActorMediator, TESActionData* apAction);
+ static TPerformAction* RealPerformAction;
+@@ -33,7 +37,7 @@ uint8_t TP_MAKE_THISCALL(HookPerformAction, ActorMediator, TESActionData* apActi
          action.Type = apAction->unkInput | (apAction->someFlag ? 0x4 : 0);
          action.Tick = World::Get().GetTick();
          action.ActorId = pActor->formID;
@@ -88,7 +99,7 @@ index 0714b2b88df20ce28e3939403a8bfd39bc5170d7..4621d178203101f6730b53a6e00a1c1e
          action.TargetId = apAction->target ? apAction->target->formID : 0;
  
          pActor->SaveAnimationVariables(action.Variables);
-@@ -43,12 +43,16 @@ uint8_t TP_MAKE_THISCALL(HookPerformAction, ActorMediator, TESActionData* apActi
+@@ -43,12 +47,16 @@ uint8_t TP_MAKE_THISCALL(HookPerformAction, ActorMediator, TESActionData* apActi
          // spdlog::debug("Action event name: {}, target name: {}", apAction->eventName.AsAscii(), apAction->targetEventName.AsAscii());
  
          // This is a weird case where it gets spammed and doesn't do much, not sure if it still needs to be sent over the network
@@ -106,8 +117,66 @@ index 0714b2b88df20ce28e3939403a8bfd39bc5170d7..4621d178203101f6730b53a6e00a1c1e
  
          // Save for later
          if (res)
+@@ -165,3 +173,57 @@ static TiltedPhoques::Initializer s_animationHook(
+ 
+         TP_HOOK(&RealPerformAction, HookPerformAction);
+     });
++
++namespace
++{
++TP_THIS_FUNCTION(TSendPlayerGraphEvent, bool, IAnimationGraphManagerHolder, BSFixedString*);
++TSendPlayerGraphEvent* s_sendPlayerGraphEvent = nullptr;
++thread_local bool s_inGraphEvent = false;
++
++bool TP_MAKE_THISCALL(HookPlayerGraphEvent, IAnimationGraphManagerHolder, BSFixedString* eventName)
++{
++    if (s_inGraphEvent)
++        return TiltedPhoques::ThisCall(s_sendPlayerGraphEvent, apThis, eventName);
++    s_inGraphEvent = true;
++    const bool result = TiltedPhoques::ThisCall(s_sendPlayerGraphEvent, apThis, eventName);
++    auto* player = PlayerCharacter::Get();
++    const char* name = eventName ? eventName->AsAscii() : nullptr;
++    // Explicit adapter for TK Dodge's directional graph inputs. Do not broadcast all graph
++    // notifications: vanilla actions already have a separate replication path.
++    if (result && player && apThis == &player->animationGraphHolder && name &&
++        _strnicmp(name, "TKDodge", 7) == 0 && std::strlen(name) <= 64 && World::Get().GetTransport().IsOnline())
++    {
++        ActionEvent event;
++        event.Type = 0x100; // transient direct graph input, not a BGSAction
++        event.Tick = World::Get().GetTick();
++        event.ActorId = player->formID;
++        event.EventName = name;
++        event.State1 = player->actorState.flags1;
++        event.State2 = player->actorState.flags2;
++        player->SaveAnimationVariables(event.Variables);
++        World::Get().GetRunner().Trigger(event);
++        spdlog::info("TK Dodge graph input queued: {}", name);
++    }
++    s_inGraphEvent = false;
++    return result;
++}
++struct PlayerGraphHook
++{
++    entt::scoped_connection update;
++    void OnUpdate(const UpdateEvent&)
++    {
++        if (s_sendPlayerGraphEvent) return;
++        auto* player = PlayerCharacter::Get();
++        if (!player || !player->GetNiNode()) return;
++        auto** vtable = *reinterpret_cast<void***>(&player->animationGraphHolder);
++        s_sendPlayerGraphEvent = reinterpret_cast<TSendPlayerGraphEvent*>(vtable[1]);
++        TP_HOOK(&s_sendPlayerGraphEvent, HookPlayerGraphEvent);
++        spdlog::info("Installed TK Dodge player graph event hook");
++    }
++};
++}
++void InstallPlayerGraphSync(entt::dispatcher& dispatcher)
++{
++    static PlayerGraphHook hook;
++    hook.update = dispatcher.sink<UpdateEvent>().connect<&PlayerGraphHook::OnUpdate>(&hook);
++}
 diff --git a/Code/client/Games/Skyrim/Actor.cpp b/Code/client/Games/Skyrim/Actor.cpp
-index c3f3d1adf9c741922265892f59e14a82d60f76d4..0f7887db95a7329d3ca6b01049f79d1acd9a9615 100644
+index c3f3d1ad..0f7887db 100644
 --- a/Code/client/Games/Skyrim/Actor.cpp
 +++ b/Code/client/Games/Skyrim/Actor.cpp
 @@ -14,6 +14,8 @@
@@ -237,7 +306,7 @@ index c3f3d1adf9c741922265892f59e14a82d60f76d4..0f7887db95a7329d3ca6b01049f79d1a
  }
  
 diff --git a/Code/client/Games/Skyrim/Events/EventDispatcher.h b/Code/client/Games/Skyrim/Events/EventDispatcher.h
-index 448a179fa9eb651bcbaeb5fb726555715924b878..3b91ae42cde5b1b7349e0d6f0b23fd500c6afed6 100644
+index 448a179f..3b91ae42 100644
 --- a/Code/client/Games/Skyrim/Events/EventDispatcher.h
 +++ b/Code/client/Games/Skyrim/Events/EventDispatcher.h
 @@ -100,7 +100,11 @@ struct TESFurnitureEvent
@@ -297,8 +366,23 @@ index 448a179fa9eb651bcbaeb5fb726555715924b878..3b91ae42cde5b1b7349e0d6f0b23fd50
      EventDispatcher<TESSwitchRaceCompleteEvent> switchRaceCompleteEvent;
      EventDispatcher<TESFastTravelEndEvent> fastTravelEndEvent;
  };
+diff --git a/Code/client/Games/Skyrim/Projectiles/Projectile.cpp b/Code/client/Games/Skyrim/Projectiles/Projectile.cpp
+index 201b640f..0eda27cf 100644
+--- a/Code/client/Games/Skyrim/Projectiles/Projectile.cpp
++++ b/Code/client/Games/Skyrim/Projectiles/Projectile.cpp
+@@ -52,6 +52,10 @@ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projec
+         }
+     }
+ 
++    if (arData.pShooter && !Cast<Actor>(arData.pShooter) && arData.pSpell)
++        spdlog::info("Mod projectile from non-actor source: shooter {:X}, spell {:X}, projectile {:X}",
++                     arData.pShooter->formID, arData.pSpell->formID,
++                     arData.pProjectileBase ? arData.pProjectileBase->formID : 0);
+     if (arData.pShooter)
+     {
+         Actor* pActor = Cast<Actor>(arData.pShooter);
 diff --git a/Code/client/Games/Skyrim/TESObjectREFR.cpp b/Code/client/Games/Skyrim/TESObjectREFR.cpp
-index 9032a69a918309ee7de9949ab9cdcbe8ba41057c..1f07926b0ab298451fefbfe464b1d8fee68556f6 100644
+index 9032a69a..1f07926b 100644
 --- a/Code/client/Games/Skyrim/TESObjectREFR.cpp
 +++ b/Code/client/Games/Skyrim/TESObjectREFR.cpp
 @@ -6,6 +6,7 @@
@@ -463,7 +547,7 @@ index 9032a69a918309ee7de9949ab9cdcbe8ba41057c..1f07926b0ab298451fefbfe464b1d8fe
      else
          World::Get().GetRunner().Trigger(LockChangeEvent(apThis->formID, false, 0));
 diff --git a/Code/client/Games/Skyrim/TESObjectREFR.h b/Code/client/Games/Skyrim/TESObjectREFR.h
-index 2ebd9b2195c7d4993b28bc25f1c9c0917aaa46f9..85e1330a1434f1c439ad506456d813f6a7e86484 100644
+index 2ebd9b21..85e1330a 100644
 --- a/Code/client/Games/Skyrim/TESObjectREFR.h
 +++ b/Code/client/Games/Skyrim/TESObjectREFR.h
 @@ -91,7 +91,9 @@ struct TESObjectREFR : TESForm
@@ -488,7 +572,7 @@ index 2ebd9b2195c7d4993b28bc25f1c9c0917aaa46f9..85e1330a1434f1c439ad506456d813f6
      void Disable() const noexcept;
      void Enable() const noexcept;
 diff --git a/Code/client/Services/CalendarService.h b/Code/client/Services/CalendarService.h
-index dd442b6019c79f8a5e96b5f6143527cae39d1a91..a9a9d7d55ff08e2dcec2cb60248e659ba1e72026 100644
+index dd442b60..7e86c133 100644
 --- a/Code/client/Services/CalendarService.h
 +++ b/Code/client/Services/CalendarService.h
 @@ -13,14 +13,27 @@ struct TransportService;
@@ -520,7 +604,7 @@ index dd442b6019c79f8a5e96b5f6143527cae39d1a91..a9a9d7d55ff08e2dcec2cb60248e659b
      void OnTimeUpdate(const ServerTimeSettings&) noexcept;
      void HandleUpdate(const UpdateEvent&) noexcept;
      void OnDisconnected(const DisconnectedEvent&) noexcept;
-@@ -34,11 +47,16 @@ private:
+@@ -34,11 +47,20 @@ private:
  
      DateTime m_onlineTime;
      DateTime m_offlineTime;
@@ -529,6 +613,10 @@ index dd442b6019c79f8a5e96b5f6143527cae39d1a91..a9a9d7d55ff08e2dcec2cb60248e659b
 +    bool m_hasServerTime = false;
      float m_fadeTimer = 0.f;
      static bool s_gameClockLocked;
++    static bool s_localTimeSkip;
++    float m_skipStartDays{};
++    float m_accountedSkipDays{};
++    float m_deferredSkipDays{};
  
      uint64_t m_lastTick = 0;
      uint64_t m_lastLogTick = 0;
@@ -538,7 +626,7 @@ index dd442b6019c79f8a5e96b5f6143527cae39d1a91..a9a9d7d55ff08e2dcec2cb60248e659b
      TransportService& m_transport;
  };
 diff --git a/Code/client/Services/Generic/CalendarService.cpp b/Code/client/Services/Generic/CalendarService.cpp
-index 585d034dc6fac3d1cb57d63e0df75877bec4bf33..f2c517cbd1a151a8570a490559a697f71d15ae80 100644
+index 585d034d..ac24ad06 100644
 --- a/Code/client/Services/Generic/CalendarService.cpp
 +++ b/Code/client/Services/Generic/CalendarService.cpp
 @@ -3,7 +3,11 @@
@@ -553,7 +641,16 @@ index 585d034dc6fac3d1cb57d63e0df75877bec4bf33..f2c517cbd1a151a8570a490559a697f7
  
  #include <Forms/TESObjectCELL.h>
  #include <PlayerCharacter.h>
-@@ -19,17 +23,116 @@ bool CalendarService::AllowGameTick() noexcept
+@@ -12,24 +16,148 @@
+ constexpr float kTransitionSpeed = 5.f;
+ 
+ bool CalendarService::s_gameClockLocked = false;
++bool CalendarService::s_localTimeSkip = false;
+ 
+ bool CalendarService::AllowGameTick() noexcept
+ {
+-    return !s_gameClockLocked;
++    return !s_gameClockLocked || s_localTimeSkip;
  }
  
  CalendarService::CalendarService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport)
@@ -615,6 +712,9 @@ index 585d034dc6fac3d1cb57d63e0df75877bec4bf33..f2c517cbd1a151a8570a490559a697f7
 +    const float hours = (aDesiredEndTimeInDays - aStartTimeInDays) * 24.f;
 +    if (!std::isfinite(hours) || hours <= 0.f || hours > 24.01f)
 +        return;
++    s_localTimeSkip = true;
++    m_deferredSkipDays = 0;
++    m_skipStartDays = TimeData::Get()->GameDaysPassed->f;
 +    m_pendingSkipHours = hours;
 +    m_pendingSkipTarget = m_serverTime;
 +    m_pendingSkipTarget.AddHours(hours);
@@ -624,14 +724,28 @@ index 585d034dc6fac3d1cb57d63e0df75877bec4bf33..f2c517cbd1a151a8570a490559a697f7
 +
 +void CalendarService::EndTimeSkip(bool aInterrupted, const char* apKind) noexcept
 +{
-+    const float hours = m_pendingSkipHours;
++    float hours = m_pendingSkipHours;
++    if (s_localTimeSkip)
++    {
++        const float elapsedDays = std::max(0.f, TimeData::Get()->GameDaysPassed->f - m_skipStartDays);
++        TimeData::Get()->GameDaysPassed->f += std::max(0.f, m_deferredSkipDays - elapsedDays);
++        m_accountedSkipDays += std::max(0.f, elapsedDays - m_deferredSkipDays);
++        m_deferredSkipDays = 0;
++        if (aInterrupted)
++        {
++            hours = elapsedDays * 24.f;
++            m_pendingSkipTarget = m_serverTime;
++            m_pendingSkipTarget.AddHours(hours);
++        }
++    }
++    s_localTimeSkip = false;
 +    m_pendingSkipHours = 0.f;
 +
 +    // Offline the game advanced its own clock; online the clock is driven by the server, so ask it to skip.
 +    if (!s_gameClockLocked || !m_transport.IsOnline())
 +        return;
 +
-+    if (aInterrupted || !(hours > 0.f) || hours > 24.01f)
++    if (!(hours > 0.f) || hours > 24.01f)
 +    {
 +        spdlog::info("{} ended without a time skip: interrupted {}, hours {}", apKind, aInterrupted, hours);
 +        return;
@@ -658,7 +772,14 @@ index 585d034dc6fac3d1cb57d63e0df75877bec4bf33..f2c517cbd1a151a8570a490559a697f7
 +        const double skippedDays = SurvivalTime::InDays(newServerTime.m_timeModel) - SurvivalTime::InDays(m_serverTime.m_timeModel);
 +        if (skippedDays > 0.f && skippedDays <= 2.0)
 +        {
-+            TimeData::Get()->GameDaysPassed->f += static_cast<float>(skippedDays);
++            if (s_localTimeSkip)
++                m_deferredSkipDays += static_cast<float>(skippedDays);
++            else
++            {
++                const float alreadyAccounted = std::min(m_accountedSkipDays, static_cast<float>(skippedDays));
++                m_accountedSkipDays -= alreadyAccounted;
++                TimeData::Get()->GameDaysPassed->f += static_cast<float>(skippedDays) - alreadyAccounted;
++            }
 +            spdlog::info("Shared time jumped forward by {} days", skippedDays);
 +        }
 +    }
@@ -673,29 +794,43 @@ index 585d034dc6fac3d1cb57d63e0df75877bec4bf33..f2c517cbd1a151a8570a490559a697f7
      m_onlineTime.m_timeModel.TimeScale = acMessage.timeModel.TimeScale;
      m_onlineTime.m_timeModel.Time = acMessage.timeModel.Time;
  
-@@ -49,6 +152,9 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
+@@ -49,6 +177,12 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
  
  void CalendarService::OnDisconnected(const DisconnectedEvent&) noexcept
  {
++    s_localTimeSkip = false;
++    m_accountedSkipDays = 0;
++    m_deferredSkipDays = 0;
 +    m_hasServerTime = false;
 +    m_lastTick = 0;
 +    m_pendingSkipHours = 0.f;
      // signal a time transition
      m_fadeTimer = 0.f;
      ToggleGameClock(true);
-@@ -101,6 +207,7 @@ void CalendarService::HandleUpdate(const UpdateEvent& aEvent) noexcept
+@@ -101,6 +235,9 @@ void CalendarService::HandleUpdate(const UpdateEvent& aEvent) noexcept
          m_lastTick = now;
  
          m_onlineTime.Update(delta);
 +        m_serverTime.Update(delta);
++        if (s_localTimeSkip)
++            return; // Native sleep/wait drives the local clock and fires rest events.
          pGameTime->TimeScale->f = m_onlineTime.m_timeModel.TimeScale;
          pGameTime->GameDay->f = m_onlineTime.m_timeModel.Day;
          pGameTime->GameMonth->f = m_onlineTime.m_timeModel.Month;
 diff --git a/Code/client/Services/Generic/CharacterService.cpp b/Code/client/Services/Generic/CharacterService.cpp
-index 6806a9907e14a7fb8dd33d65af8602109223a7cc..ed0ee1e35148a942cf9d112cef329c0f76bfda3c 100644
+index 6806a990..57a9247a 100644
 --- a/Code/client/Services/Generic/CharacterService.cpp
 +++ b/Code/client/Services/Generic/CharacterService.cpp
-@@ -503,6 +503,30 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage)
+@@ -78,6 +78,8 @@ CharacterService::CharacterService(World& aWorld, entt::dispatcher& aDispatcher,
+ 
+     m_updateConnection = m_dispatcher.sink<UpdateEvent>().connect<&CharacterService::OnUpdate>(this);
+     m_actionConnection = m_dispatcher.sink<ActionEvent>().connect<&CharacterService::OnActionEvent>(this);
++    extern void InstallPlayerGraphSync(entt::dispatcher&);
++    InstallPlayerGraphSync(m_dispatcher);
+ 
+     m_connectedConnection = m_dispatcher.sink<ConnectedEvent>().connect<&CharacterService::OnConnected>(this);
+     m_disconnectedConnection = m_dispatcher.sink<DisconnectedEvent>().connect<&CharacterService::OnDisconnected>(this);
+@@ -503,6 +505,30 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage)
      auto remoteView = m_world.view<RemoteComponent>();
      const auto remoteItor = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.ServerId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
  
@@ -726,8 +861,59 @@ index 6806a9907e14a7fb8dd33d65af8602109223a7cc..ed0ee1e35148a942cf9d112cef329c0f
      if (remoteItor != std::end(remoteView))
      {
          spdlog::warn("Character with remote id {:X} is already spawned.", acMessage.ServerId);
+diff --git a/Code/client/Services/Generic/MagicService.cpp b/Code/client/Services/Generic/MagicService.cpp
+index cfbbe104..2124339f 100644
+--- a/Code/client/Services/Generic/MagicService.cpp
++++ b/Code/client/Services/Generic/MagicService.cpp
+@@ -84,7 +84,8 @@ void MagicService::OnSpellCastEvent(const SpellCastEvent& acEvent) const noexcep
+     {
+         if ((pSpell->eCastingType != MagicSystem::CastingType::CONCENTRATION || pSpell->IsHealingSpell()) && !pSpell->IsWardSpell() && !pSpell->IsInvisibilitySpell())
+         {
+-            spdlog::debug("Canceled magic spell");
++            spdlog::info("Spell {:X} ({}) delegated to projectile sync; casting type {}, delivery {}",
++                         acEvent.SpellId, pSpell->fullName.value.AsAscii(), static_cast<int>(pSpell->eCastingType), static_cast<int>(pSpell->eDelivery));
+             return;
+         }
+     }
+@@ -147,11 +148,13 @@ void MagicService::OnNotifySpellCast(const NotifySpellCast& acMessage) const noe
+     auto formIdComponent = remoteView.get<FormIdComponent>(*remoteIt);
+     TESForm* pForm = TESForm::GetById(formIdComponent.Id);
+     Actor* pActor = Cast<Actor>(pForm);
++    if (!pActor || !pActor->GetNiNode()) return;
+ 
+     pActor->GenerateMagicCasters();
+ 
+     // Only left hand casters need dual casting (?)
+-    pActor->casters[CS::LEFT_HAND]->SetDualCasting(acMessage.IsDualCasting);
++    if (pActor->casters[CS::LEFT_HAND])
++        pActor->casters[CS::LEFT_HAND]->SetDualCasting(acMessage.IsDualCasting);
+ 
+     if (acMessage.CastingSource >= 4)
+     {
+@@ -159,11 +162,9 @@ void MagicService::OnNotifySpellCast(const NotifySpellCast& acMessage) const noe
+         return;
+     }
+ 
++    // Always resolve the transmitted spell. Equipped spell state can arrive after the cast,
++    // and the remote hand may still contain an unrelated previous spell.
+     MagicItem* pSpell = nullptr;
+-
+-    pSpell = pActor->magicItems[acMessage.CastingSource];
+-
+-    if (!pSpell)
+     {
+         const uint32_t cSpellFormId = World::Get().GetModSystem().GetGameId(acMessage.SpellFormId);
+         if (cSpellFormId == 0)
+@@ -282,6 +283,7 @@ void MagicService::OnNotifyInterruptCast(const NotifyInterruptCast& acMessage) c
+ 
+     const TESForm* pForm = TESForm::GetById(formIdComponent.Id);
+     Actor* pActor = Cast<Actor>(pForm);
++    if (!pActor || !pActor->GetNiNode()) return;
+ 
+     pActor->GenerateMagicCasters();
+ 
 diff --git a/Code/client/Services/Generic/OverlayClient.cpp b/Code/client/Services/Generic/OverlayClient.cpp
-index a0378612faa3c2f7140620d10a5a9206c351a31d..6612b0b6a403631de84c97d383eb3af0489d6053 100644
+index a0378612..de5e52be 100644
 --- a/Code/client/Services/Generic/OverlayClient.cpp
 +++ b/Code/client/Services/Generic/OverlayClient.cpp
 @@ -5,6 +5,7 @@
@@ -738,7 +924,7 @@ index a0378612faa3c2f7140620d10a5a9206c351a31d..6612b0b6a403631de84c97d383eb3af0
  
  #include <Messages/SendChatMessageRequest.h>
  #include <Messages/TeleportRequest.h>
-@@ -45,6 +46,12 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
+@@ -45,6 +46,22 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
              ProcessConnectMessage(eventArgs);
          else if (eventName == "disconnect")
              ProcessDisconnectMessage();
@@ -746,18 +932,290 @@ index a0378612faa3c2f7140620d10a5a9206c351a31d..6612b0b6a403631de84c97d383eb3af0
 +            World::Get().GetRunner().Queue([] { World::Get().ctx().at<WorldItemService>().SetAutoResync(true); });
 +        else if (eventName == "autoResyncOff")
 +            World::Get().GetRunner().Queue([] { World::Get().ctx().at<WorldItemService>().SetAutoResync(false); });
++        else if (eventName == "setResyncInterval")
++        {
++            const int seconds = eventArgs->GetInt(0);
++            World::Get().GetRunner().Queue([seconds] { World::Get().ctx().at<WorldItemService>().SetResyncInterval(seconds); });
++        }
++        else if (eventName == "setResyncHotkey")
++        {
++            const int key = eventArgs->GetInt(0);
++            World::Get().GetRunner().Queue([key] { World::Get().ctx().at<WorldItemService>().SetResyncHotkey(key); });
++        }
 +        else if (eventName == "resync")
 +            World::Get().GetRunner().Queue([] { World::Get().ctx().at<WorldItemService>().Resync(); });
          else if (eventName == "revealPlayers")
              ProcessRevealPlayersMessage();
          else if (eventName == "sendMessage")
+diff --git a/Code/client/Services/Generic/WeatherService.cpp b/Code/client/Services/Generic/WeatherService.cpp
+index 7704ee2d..39d2be3e 100644
+--- a/Code/client/Services/Generic/WeatherService.cpp
++++ b/Code/client/Services/Generic/WeatherService.cpp
+@@ -1,209 +1,82 @@
+ #include <Services/WeatherService.h>
+-
+ #include <Events/UpdateEvent.h>
+ #include <Events/DisconnectedEvent.h>
+-#include <Events/PartyJoinedEvent.h>
+-#include <Events/PartyLeftEvent.h>
+-
+ #include <Messages/RequestWeatherChange.h>
+ #include <Messages/NotifyWeatherChange.h>
+ #include <Messages/RequestCurrentWeather.h>
+-
+ #include <Sky/Sky.h>
+ #include <Forms/TESWeather.h>
+ 
+ WeatherService::WeatherService(World& aWorld, TransportService& aTransport, entt::dispatcher& aDispatcher)
+-    : m_world(aWorld)
+-    , m_transport(aTransport)
++    : m_world(aWorld), m_transport(aTransport)
+ {
+     m_updateConnection = aDispatcher.sink<UpdateEvent>().connect<&WeatherService::OnUpdate>(this);
+     m_disconnectConnection = aDispatcher.sink<DisconnectedEvent>().connect<&WeatherService::OnDisconnected>(this);
+-    m_partyJoinedConnection = aDispatcher.sink<PartyJoinedEvent>().connect<&WeatherService::OnPartyJoinedEvent>(this);
+-    m_partyLeftConnection = aDispatcher.sink<PartyLeftEvent>().connect<&WeatherService::OnPartyLeftEvent>(this);
+-    m_playerAddedConnection = m_world.on_destroy<WaitingFor3D>().connect<&WeatherService::OnWaitingFor3DRemoved>(this);
+-    m_playerRemovedConnection = m_world.on_destroy<PlayerComponent>().connect<&WeatherService::OnPlayerComponentRemoved>(this);
+     m_weatherChangeConnection = aDispatcher.sink<NotifyWeatherChange>().connect<&WeatherService::OnWeatherChange>(this);
+ }
+-
+-void WeatherService::OnUpdate(const UpdateEvent& acEvent) noexcept
+-{
+-    RunWeatherUpdates(acEvent.Delta);
+-}
+-
+-void WeatherService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
+-{
+-    ToggleGameWeatherSystem(true);
+-}
+-
+-void WeatherService::OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept
++void WeatherService::OnUpdate(const UpdateEvent& event) noexcept
+ {
+-    if (!acEvent.IsLeader)
++    if (!m_transport.IsOnline()) return;
++    m_refreshTimer += event.Delta;
++    if (!m_requestedWeather || m_refreshTimer >= 5.0)
+     {
+-        // TODO: why is this loop here? Party should always have a leader.
+-        auto view = m_world.view<PlayerComponent>();
+-        const auto& partyService = m_world.GetPartyService();
+-
+-        for (auto entity : view)
+-        {
+-            const auto& playerComponent = view.get<PlayerComponent>(entity);
+-            if (playerComponent.Id == partyService.GetLeaderPlayerId())
+-            {
+-                ToggleGameWeatherSystem(false);
+-                break;
+-            }
+-        }
+-    }
+-    else
+-    {
+-        Sky* pSky = Sky::Get();
+-        if (!pSky)
+-            return;
+-
+-        TESWeather* pWeather = pSky->GetWeather();
+-        if (!pWeather)
+-        {
+-            m_cachedWeatherId = 0;
+-            return;
+-        }
+-
+-        // Potentially sets cached weather to map weather.
+-        // When the player closes the map, it'll send out the proper weather on the next update.
+-        m_cachedWeatherId = pWeather->formID;
+-
+-        // This is the map weather, should not be synced.
+-        if (pWeather->formID == 0xA6858)
+-            return;
+-
+-        RequestWeatherChange request{};
+-
+-        auto& modSystem = m_world.GetModSystem();
+-        if (!modSystem.GetServerModId(pWeather->formID, request.Id))
+-        {
+-            spdlog::error(__FUNCTION__ ": weather server ID not found, form id: {:X}", pWeather->formID);
+-            return;
+-        }
+-
+-        m_transport.Send(request);
++        m_requestedWeather = true;
++        m_refreshTimer = 0;
++        m_transport.Send(RequestCurrentWeather{});
++        // Heartbeat republishes even unchanged weather, repairing late join and source changes.
++        if (m_isAuthority) m_cachedWeatherId = 0;
+     }
++    RunWeatherUpdates(event.Delta);
+ }
+-
+-void WeatherService::OnPartyLeftEvent(const PartyLeftEvent& acEvent) noexcept
+-{
+-    ToggleGameWeatherSystem(true);
+-}
+-
+-// TODO: OnPlayerComponentAdded() instead? Does PlayerComponent exist already by then?
+-void WeatherService::OnWaitingFor3DRemoved(entt::registry& aRegistry, entt::entity aEntity) noexcept
++void WeatherService::OnDisconnected(const DisconnectedEvent&) noexcept
+ {
+-    const auto* pPlayerComponent = m_world.try_get<PlayerComponent>(aEntity);
+-    if (!pPlayerComponent)
+-        return;
+-
+-    const auto& partyService = m_world.GetPartyService();
+-    if (!partyService.IsInParty() || partyService.IsLeader())
+-        return;
+-
+-    if (partyService.GetLeaderPlayerId() == pPlayerComponent->Id)
+-        ToggleGameWeatherSystem(false);
+-}
+-
+-void WeatherService::OnPlayerComponentRemoved(entt::registry& aRegistry, entt::entity aEntity) noexcept
+-{
+-    const auto& playerComponent = m_world.get<PlayerComponent>(aEntity);
+-
+-    const auto& partyService = m_world.GetPartyService();
+-    if (!partyService.IsInParty() || partyService.IsLeader())
+-        return;
+-
+-    if (partyService.GetLeaderPlayerId() == playerComponent.Id)
+-        ToggleGameWeatherSystem(true);
++    if (auto* sky = Sky::Get()) sky->ReleaseWeatherOverride();
++    m_cachedWeatherId = 0;
++    m_isAuthority = false;
++    m_requestedWeather = false;
++    m_refreshTimer = 0;
+ }
+-
+-void WeatherService::OnWeatherChange(const NotifyWeatherChange& acMessage) noexcept
++void WeatherService::OnWeatherChange(const NotifyWeatherChange& message) noexcept
+ {
+-    auto& modSystem = m_world.GetModSystem();
+-    const uint32_t weatherId = modSystem.GetGameId(acMessage.Id);
+-    TESWeather* pWeather = Cast<TESWeather>(TESForm::GetById(weatherId));
+-
+-    if (!pWeather)
++    const bool authority = message.AuthorityPlayerId == m_transport.GetLocalPlayerId();
++    if (authority && !m_isAuthority)
+     {
+-        spdlog::error(__FUNCTION__ ": weather not found, form id: {:X}", acMessage.Id.ModId + acMessage.Id.BaseId);
+-        return;
++        if (auto* sky = Sky::Get()) sky->ReleaseWeatherOverride();
++        m_cachedWeatherId = 0;
+     }
+-
+-    Sky::Get()->ForceWeather(pWeather);
+-
+-    m_cachedWeatherId = weatherId;
+-}
+-
+-void WeatherService::RunWeatherUpdates(const double acDelta) noexcept
+-{
+-    Sky* pSky = Sky::Get();
+-    if (!pSky)
+-        return;
+-
+-    TESWeather* pWeather = pSky->GetWeather();
+-    if (!pWeather)
++    m_isAuthority = authority;
++    if (!message.Id || authority) return;
++    const auto id = m_world.GetModSystem().GetGameId(message.Id);
++    if (!Cast<TESWeather>(TESForm::GetById(id)))
+     {
+-        if (m_world.GetPartyService().IsLeader())
+-            m_cachedWeatherId = 0;
+-        else
+-            SetCachedWeather();
+-
++        spdlog::warn("Shared weather form could not be resolved: {}", message.Id.LogFormat());
+         return;
+     }
+-
+-    // This is the map weather, should not be synced.
+-    if (pWeather->formID == 0xA6858)
+-        return;
+-
+-    // Have to manually check each frame because there's no singular SetWeather being used in-game.
+-    if (pWeather->formID == m_cachedWeatherId)
+-        return;
+-
+-    if (m_world.GetPartyService().IsLeader())
++    m_cachedWeatherId = id;
++    SetCachedWeather();
++}
++void WeatherService::RunWeatherUpdates(double) noexcept
++{
++    auto* sky = Sky::Get();
++    if (!sky) return;
++    auto* weather = sky->GetWeather();
++    if (!weather || weather->formID == 0xA6858) return; // World map weather is local.
++    if (m_isAuthority)
+     {
+-        m_cachedWeatherId = pWeather->formID;
+-
++        if (weather->formID == m_cachedWeatherId) return;
+         RequestWeatherChange request{};
+-
+-        auto& modSystem = m_world.GetModSystem();
+-        if (!modSystem.GetServerModId(pWeather->formID, request.Id))
++        if (m_world.GetModSystem().GetServerModId(weather->formID, request.Id))
+         {
+-            spdlog::error(__FUNCTION__ ": weather server ID not found, form id: {:X}", pWeather->formID);
+-            return;
++            m_cachedWeatherId = weather->formID;
++            m_transport.Send(request);
+         }
+-
+-        m_transport.Send(request);
+-    }
+-    else
+-    {
+-        SetCachedWeather();
+     }
++    else if (weather->formID != m_cachedWeatherId) SetCachedWeather();
+ }
+-
+-void WeatherService::ToggleGameWeatherSystem(bool aToggle) noexcept
+-{
+-    if (aToggle)
+-        Sky::Get()->ReleaseWeatherOverride();
+-    else
+-        m_transport.Send(RequestCurrentWeather());
+-
+-    m_cachedWeatherId = 0;
+-}
+-
+ void WeatherService::SetCachedWeather() noexcept
+ {
+-    if (m_cachedWeatherId == 0)
+-        return;
+-
+-    TESWeather* pWeather = Cast<TESWeather>(TESForm::GetById(m_cachedWeatherId));
+-
+-    if (!pWeather)
+-    {
+-        spdlog::error(__FUNCTION__ ": weather not found, form id: {:X}", m_cachedWeatherId);
+-        return;
+-    }
+-
+-    Sky::Get()->ForceWeather(pWeather);
++    if (!m_cachedWeatherId) return;
++    auto* sky = Sky::Get();
++    auto* weather = Cast<TESWeather>(TESForm::GetById(m_cachedWeatherId));
++    if (sky && weather && sky->GetWeather() != weather) sky->ForceWeather(weather);
+ }
 diff --git a/Code/client/Services/Generic/WorldItemService.cpp b/Code/client/Services/Generic/WorldItemService.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..fcdefb1ca498bc4e408bd87e9d884dab0459d0ce
+index 00000000..61e24689
 --- /dev/null
 +++ b/Code/client/Services/Generic/WorldItemService.cpp
-@@ -0,0 +1,421 @@
+@@ -0,0 +1,443 @@
 +#include <Services/WorldItemService.h>
++#include <Services/OverlayService.h>
++#include <Messages/RequestCurrentWeather.h>
 +#include <World.h>
 +#include <Services/TransportService.h>
 +#include <Events/UpdateEvent.h>
@@ -854,15 +1312,26 @@ index 0000000000000000000000000000000000000000..fcdefb1ca498bc4e408bd87e9d884dab
 +    q.Data = data;
 +    m_transport.Send(q);
 +}
++void WorldItemService::SetResyncInterval(int seconds)
++{
++    m_resyncInterval = seconds < 1 ? 1 : seconds > 300 ? 300 : seconds;
++    m_autoResyncTimer = 0;
++}
++void WorldItemService::SetResyncHotkey(int key)
++{
++    m_resyncHotkey = key >= 0 && key <= 255 && key != VK_F2 && key != VK_ESCAPE ? key : 0;
++    m_resyncKeyDown = m_resyncHotkey && (GetAsyncKeyState(m_resyncHotkey) & 0x8000);
++}
 +void WorldItemService::Resync()
 +{
 +    const auto now = m_world.GetTick();
 +    if (!m_transport.IsOnline() || now < m_nextResyncTick)
 +        return;
-+    m_nextResyncTick = now + 10000;
++    m_nextResyncTick = now + 1000;
 +    for (auto i = m_items.begin(); i != m_items.end(); ++i)
 +        i.value().HasAppliedPose = false;
 +    Send(WorldItemAction::Resync, {});
++    m_transport.Send(RequestCurrentWeather{});
 +    spdlog::info("Client resync requested: remote actor poses, idle replay and world items");
 +}
 +bool WorldItemService::IsTracked(TESObjectREFR* ref) const
@@ -1091,10 +1560,19 @@ index 0000000000000000000000000000000000000000..fcdefb1ca498bc4e408bd87e9d884dab
 +        m_observedProps.clear();
 +        return;
 +    }
++    DWORD foregroundProcess = 0;
++    GetWindowThreadProcessId(GetForegroundWindow(), &foregroundProcess);
++    const bool down = m_resyncHotkey && (GetAsyncKeyState(m_resyncHotkey) & 0x8000);
++    if (down && !m_resyncKeyDown && foregroundProcess == GetCurrentProcessId() &&
++        !m_world.ctx().at<OverlayService>().GetActive() &&
++        (!UI::Get() || (UI::Get()->numItemMenus == 0 && !UI::Get()->GetMenuOpen(BSFixedString("Console")) &&
++                       !UI::Get()->GetMenuOpen(BSFixedString("Dialogue Menu")))))
++        Resync();
++    m_resyncKeyDown = down;
 +    if (m_autoResync)
 +    {
 +        m_autoResyncTimer += e.Delta;
-+        if (m_autoResyncTimer >= 10.0)
++        if (m_autoResyncTimer >= m_resyncInterval)
 +        {
 +            m_autoResyncTimer = 0;
 +            Resync();
@@ -1178,12 +1656,42 @@ index 0000000000000000000000000000000000000000..fcdefb1ca498bc4e408bd87e9d884dab
 +    if (grabbed && !foundGrab && Eligible(grabbed) && !grabbed->IsTemporary())
 +        Send(WorldItemAction::Register, Describe(grabbed));
 +}
+diff --git a/Code/client/Services/WeatherService.h b/Code/client/Services/WeatherService.h
+index 1fcc9945..0a607801 100644
+--- a/Code/client/Services/WeatherService.h
++++ b/Code/client/Services/WeatherService.h
+@@ -21,15 +21,10 @@ struct WeatherService
+ protected:
+     void OnUpdate(const UpdateEvent& acEvent) noexcept;
+     void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
+-    void OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept;
+-    void OnPartyLeftEvent(const PartyLeftEvent& acEvent) noexcept;
+-    void OnWaitingFor3DRemoved(entt::registry& aRegistry, entt::entity aEntity) noexcept;
+-    void OnPlayerComponentRemoved(entt::registry& aRegistry, entt::entity aEntity) noexcept;
+     void OnWeatherChange(const NotifyWeatherChange& acMessage) noexcept;
+ 
+     void RunWeatherUpdates(const double acDelta) noexcept;
+ 
+-    void ToggleGameWeatherSystem(bool aToggle) noexcept;
+     void SetCachedWeather() noexcept;
+ 
+ private:
+@@ -42,6 +37,9 @@ private:
+     * For non-leaders, it is used to reapply the server weather if it changes.
+     */
+     uint32_t m_cachedWeatherId{};
++    bool m_isAuthority{};
++    bool m_requestedWeather{};
++    double m_refreshTimer{};
+ 
+     entt::scoped_connection m_updateConnection;
+     entt::scoped_connection m_disconnectConnection;
 diff --git a/Code/client/Services/WorldItemService.h b/Code/client/Services/WorldItemService.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..b0a517ddf4034bd4e5d1460b4d640284fa2d7969
+index 00000000..478a19ee
 --- /dev/null
 +++ b/Code/client/Services/WorldItemService.h
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,62 @@
 +#pragma once
 +#include <Structs/WorldItemData.h>
 +#include <Games/Events.h>
@@ -1201,6 +1709,8 @@ index 0000000000000000000000000000000000000000..b0a517ddf4034bd4e5d1460b4d640284
 +    WorldItemService(World&, entt::dispatcher&, TransportService&);
 +    void Resync();
 +    void SetAutoResync(bool enabled) { m_autoResync = enabled; m_autoResyncTimer = 0; }
++    void SetResyncInterval(int seconds);
++    void SetResyncHotkey(int key);
 +    bool TryPickup(TESObjectREFR*);
 +    bool IsTracked(TESObjectREFR*) const;
 +
@@ -1225,6 +1735,9 @@ index 0000000000000000000000000000000000000000..b0a517ddf4034bd4e5d1460b4d640284
 +    void ObservePhysics();
 +    bool m_autoResync{};
 +    double m_autoResyncTimer{};
++    double m_resyncInterval = 10.0;
++    int m_resyncHotkey{};
++    bool m_resyncKeyDown{};
 +    uint64_t m_nextResyncTick{};
 +    uint32_t m_dropCounter{};
 +    uint32_t m_grabbedFormId{};
@@ -1242,10 +1755,28 @@ index 0000000000000000000000000000000000000000..b0a517ddf4034bd4e5d1460b4d640284
 +    void Materialize(Local&);
 +};
 diff --git a/Code/client/Systems/AnimationSystem.cpp b/Code/client/Systems/AnimationSystem.cpp
-index 5d2a12b1dfabddcd1892da3030455abee4b6cee1..ae6e1abb75246d6d7f031ae823405fe5a1322f86 100644
+index 5d2a12b1..011782b8 100644
 --- a/Code/client/Systems/AnimationSystem.cpp
 +++ b/Code/client/Systems/AnimationSystem.cpp
-@@ -57,6 +57,7 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
+@@ -41,6 +41,17 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
+ 
+         const auto& first = *it;
+ 
++        if (first.Type == 0x100)
++        {
++            // Only the matching mod graph on the remote actor executes this input.
++            apActor->LoadAnimationVariables(first.Variables);
++            BSFixedString eventName(first.EventName.c_str());
++            const bool accepted = apActor->SendAnimationEvent(&eventName);
++            if (!accepted) spdlog::warn("Remote graph rejected custom animation {}", first.EventName.c_str());
++            if (aAnimationComponent.ReplayCount > 0) aAnimationComponent.ReplayCount--;
++            actions.pop_front();
++            return;
++        }
+         const auto actionId = first.ActionId;
+         const auto targetId = first.TargetId;
+ 
+@@ -57,6 +68,7 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
          // Play the animation
          TESActionData actionData(first.Type & 0x3, apActor, pAction, pTarget);
          actionData.eventName = BSFixedString(first.EventName.c_str());
@@ -1253,8 +1784,22 @@ index 5d2a12b1dfabddcd1892da3030455abee4b6cee1..ae6e1abb75246d6d7f031ae823405fe5
          actionData.idleForm = Cast<TESIdleForm>(TESForm::GetById(first.IdleId));
          actionData.someFlag = ((first.Type & 0x4) != 0) ? 1 : 0;
  
+@@ -86,11 +98,12 @@ void AnimationSystem::AddActionsForReplay(RemoteAnimationComponent& aAnimationCo
+     // A replay rebuilds past state, so it is due right away rather than when playback reaches the original ticks
+     for (auto action : acReplay.Actions)
+     {
++        if (action.Type == 0x100) continue; // Do not redodge on manual/automatic resync.
+         action.Tick = 0;
+         aAnimationComponent.TimePoints.push_back(std::move(action));
+     }
+ 
+-    aAnimationComponent.ReplayCount = acReplay.Actions.size();
++    aAnimationComponent.ReplayCount = static_cast<uint32_t>(aAnimationComponent.TimePoints.size());
+     aAnimationComponent.ResetAnimationGraphForReplay = acReplay.ResetAnimationGraph;
+ }
+ 
 diff --git a/Code/client/World.cpp b/Code/client/World.cpp
-index b0596604b504f429648fa5072f4bac592cbe1193..05a06350c626749f977a80ae10e2a60fd4b68b0b 100644
+index b0596604..05a06350 100644
 --- a/Code/client/World.cpp
 +++ b/Code/client/World.cpp
 @@ -10,6 +10,7 @@
@@ -1283,7 +1828,7 @@ index b0596604b504f429648fa5072f4bac592cbe1193..05a06350c626749f977a80ae10e2a60f
      ctx().emplace<QuestService>(*this, m_dispatcher);
      ctx().emplace<PartyService>(*this, m_dispatcher, m_transport);
 diff --git a/Code/common/BuildInfo.h.in b/Code/common/BuildInfo.h.in
-index 5db8d876f831b28e1c3b326ed18721358d1f2aae..8f4aac9827959afaf5568edcd86352bc432be67b 100644
+index 5db8d876..8f4aac98 100644
 --- a/Code/common/BuildInfo.h.in
 +++ b/Code/common/BuildInfo.h.in
 @@ -1,4 +1,4 @@
@@ -1294,7 +1839,7 @@ index 5db8d876f831b28e1c3b326ed18721358d1f2aae..8f4aac9827959afaf5568edcd86352bc
 +#define BUILD_BRANCH "survival-worlditems"
 +#define BUILD_COMMIT "survival-worlditems-v04-physics"
 diff --git a/Code/common/DateTime.cpp b/Code/common/DateTime.cpp
-index b091ef6158f2859feae706298abe5c44e802ee60..bfb1eeb42605cd97c132d5dec0450ab111f03ecd 100644
+index b091ef61..bfb1eeb4 100644
 --- a/Code/common/DateTime.cpp
 +++ b/Code/common/DateTime.cpp
 @@ -15,7 +15,12 @@ uint32_t DateTime::GetNumberOfDaysByMonthIndex(int aIndex)
@@ -1312,7 +1857,7 @@ index b091ef6158f2859feae706298abe5c44e802ee60..bfb1eeb42605cd97c132d5dec0450ab1
      m_timeModel.Day += static_cast<uint32_t>(m_timeModel.Time / 24.f);
      m_timeModel.Time = std::fmod(m_timeModel.Time, 24.f);
 diff --git a/Code/common/DateTime.h b/Code/common/DateTime.h
-index e5e7a758abf9447546774933f0110dbc0fa248cb..502de7a19c934f42666564701208dd678e8c673f 100644
+index e5e7a758..502de7a1 100644
 --- a/Code/common/DateTime.h
 +++ b/Code/common/DateTime.h
 @@ -10,10 +10,12 @@ struct DateTime
@@ -1331,7 +1876,7 @@ index e5e7a758abf9447546774933f0110dbc0fa248cb..502de7a19c934f42666564701208dd67
  
 diff --git a/Code/common/SurvivalTimePolicy.h b/Code/common/SurvivalTimePolicy.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..824b2508ff00212e8db3dd4c99216569a97255f5
+index 00000000..824b2508
 --- /dev/null
 +++ b/Code/common/SurvivalTimePolicy.h
 @@ -0,0 +1,30 @@
@@ -1367,7 +1912,7 @@ index 0000000000000000000000000000000000000000..824b2508ff00212e8db3dd4c99216569
 +} // namespace SurvivalTime
 diff --git a/Code/common/WorldItemPolicy.h b/Code/common/WorldItemPolicy.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..cc774ebed65735f06688edfd0b6d513564fe1b60
+index 00000000..cc774ebe
 --- /dev/null
 +++ b/Code/common/WorldItemPolicy.h
 @@ -0,0 +1,52 @@
@@ -1424,7 +1969,7 @@ index 0000000000000000000000000000000000000000..cc774ebed65735f06688edfd0b6d5135
 +}
 +} // namespace SharedItems
 diff --git a/Code/encoding/Messages/CharacterSpawnRequest.cpp b/Code/encoding/Messages/CharacterSpawnRequest.cpp
-index 3a739be59abac3e684e372fca33586d0d2de77e3..1a0245afdccb194c6eab9eee3f89ad9f895e950f 100644
+index 3a739be5..1a0245af 100644
 --- a/Code/encoding/Messages/CharacterSpawnRequest.cpp
 +++ b/Code/encoding/Messages/CharacterSpawnRequest.cpp
 @@ -22,6 +22,7 @@ void CharacterSpawnRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter)
@@ -1442,7 +1987,7 @@ index 3a739be59abac3e684e372fca33586d0d2de77e3..1a0245afdccb194c6eab9eee3f89ad9f
 +    IsResync = Serialization::ReadBool(aReader);
  }
 diff --git a/Code/encoding/Messages/CharacterSpawnRequest.h b/Code/encoding/Messages/CharacterSpawnRequest.h
-index d6485177da29e66f2611f230aba1937996242653..5b9203cb2cd9e0bd206db2c039c234ee6f040534 100644
+index d6485177..5b9203cb 100644
 --- a/Code/encoding/Messages/CharacterSpawnRequest.h
 +++ b/Code/encoding/Messages/CharacterSpawnRequest.h
 @@ -27,7 +27,7 @@ struct CharacterSpawnRequest final : ServerMessage
@@ -1463,7 +2008,7 @@ index d6485177da29e66f2611f230aba1937996242653..5b9203cb2cd9e0bd206db2c039c234ee
      bool IsPlayer{};
      bool IsWeaponDrawn{};
 diff --git a/Code/encoding/Messages/ClientMessageFactory.h b/Code/encoding/Messages/ClientMessageFactory.h
-index 4f94d6d10e647012e41b4bd0b21ecfa914adb84a..6d3e4e1797098bfbe212eda55fcc519df5cc9b8c 100644
+index 4f94d6d1..6d3e4e17 100644
 --- a/Code/encoding/Messages/ClientMessageFactory.h
 +++ b/Code/encoding/Messages/ClientMessageFactory.h
 @@ -45,6 +45,8 @@
@@ -1495,9 +2040,41 @@ index 4f94d6d10e647012e41b4bd0b21ecfa914adb84a..6d3e4e1797098bfbe212eda55fcc519d
  
          return s_visitor(std::forward<T>(func));
      }
+diff --git a/Code/encoding/Messages/NotifyWeatherChange.cpp b/Code/encoding/Messages/NotifyWeatherChange.cpp
+index 1fe2e245..92a13f6f 100644
+--- a/Code/encoding/Messages/NotifyWeatherChange.cpp
++++ b/Code/encoding/Messages/NotifyWeatherChange.cpp
+@@ -3,6 +3,7 @@
+ void NotifyWeatherChange::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
+ {
+     Id.Serialize(aWriter);
++    Serialization::WriteVarInt(aWriter, AuthorityPlayerId);
+ }
+ 
+ void NotifyWeatherChange::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
+@@ -10,4 +11,5 @@ void NotifyWeatherChange::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader)
+     ServerMessage::DeserializeRaw(aReader);
+ 
+     Id.Deserialize(aReader);
++    AuthorityPlayerId = Serialization::ReadVarInt(aReader);
+ }
+diff --git a/Code/encoding/Messages/NotifyWeatherChange.h b/Code/encoding/Messages/NotifyWeatherChange.h
+index c6a6e503..4ef8fe16 100644
+--- a/Code/encoding/Messages/NotifyWeatherChange.h
++++ b/Code/encoding/Messages/NotifyWeatherChange.h
+@@ -16,7 +16,8 @@ struct NotifyWeatherChange final : ServerMessage
+     void SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept override;
+     void DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept override;
+ 
+-    bool operator==(const NotifyWeatherChange& acRhs) const noexcept { return GetOpcode() == acRhs.GetOpcode() && Id == acRhs.Id; }
++    bool operator==(const NotifyWeatherChange& acRhs) const noexcept { return GetOpcode() == acRhs.GetOpcode() && Id == acRhs.Id && AuthorityPlayerId == acRhs.AuthorityPlayerId; }
+ 
+     GameId Id{};
++    uint32_t AuthorityPlayerId{};
+ };
 diff --git a/Code/encoding/Messages/NotifyWorldItem.cpp b/Code/encoding/Messages/NotifyWorldItem.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..43f7aa33b39e4cead4b57658a83f093138e9a99d
+index 00000000..43f7aa33
 --- /dev/null
 +++ b/Code/encoding/Messages/NotifyWorldItem.cpp
 @@ -0,0 +1,14 @@
@@ -1517,7 +2094,7 @@ index 0000000000000000000000000000000000000000..43f7aa33b39e4cead4b57658a83f0931
 +}
 diff --git a/Code/encoding/Messages/NotifyWorldItem.h b/Code/encoding/Messages/NotifyWorldItem.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..21bf1881aa6c589e753d6bb2c4502739eb61e2cb
+index 00000000..21bf1881
 --- /dev/null
 +++ b/Code/encoding/Messages/NotifyWorldItem.h
 @@ -0,0 +1,15 @@
@@ -1538,7 +2115,7 @@ index 0000000000000000000000000000000000000000..21bf1881aa6c589e753d6bb2c4502739
 +};
 diff --git a/Code/encoding/Messages/RequestTimeSkip.cpp b/Code/encoding/Messages/RequestTimeSkip.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ea9fbd370cec727d2c5999138ae2944e20130bba
+index 00000000..ea9fbd37
 --- /dev/null
 +++ b/Code/encoding/Messages/RequestTimeSkip.cpp
 @@ -0,0 +1,10 @@
@@ -1554,7 +2131,7 @@ index 0000000000000000000000000000000000000000..ea9fbd370cec727d2c5999138ae2944e
 +}
 diff --git a/Code/encoding/Messages/RequestTimeSkip.h b/Code/encoding/Messages/RequestTimeSkip.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..80209badd977d26939897d595e7aa4ce27c0fb0d
+index 00000000..80209bad
 --- /dev/null
 +++ b/Code/encoding/Messages/RequestTimeSkip.h
 @@ -0,0 +1,16 @@
@@ -1576,7 +2153,7 @@ index 0000000000000000000000000000000000000000..80209badd977d26939897d595e7aa4ce
 +};
 diff --git a/Code/encoding/Messages/RequestWorldItem.cpp b/Code/encoding/Messages/RequestWorldItem.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ca252e9fc856ed0b6b8f74796df46dd7a0f4ee98
+index 00000000..ca252e9f
 --- /dev/null
 +++ b/Code/encoding/Messages/RequestWorldItem.cpp
 @@ -0,0 +1,14 @@
@@ -1596,7 +2173,7 @@ index 0000000000000000000000000000000000000000..ca252e9fc856ed0b6b8f74796df46dd7
 +}
 diff --git a/Code/encoding/Messages/RequestWorldItem.h b/Code/encoding/Messages/RequestWorldItem.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..7455a51c0c1873a3ab8c309d9ab46a81d6a71325
+index 00000000..7455a51c
 --- /dev/null
 +++ b/Code/encoding/Messages/RequestWorldItem.h
 @@ -0,0 +1,15 @@
@@ -1616,7 +2193,7 @@ index 0000000000000000000000000000000000000000..7455a51c0c1873a3ab8c309d9ab46a81
 +    void DeserializeRaw(Buffer::Reader&) noexcept override;
 +};
 diff --git a/Code/encoding/Messages/ServerMessageFactory.h b/Code/encoding/Messages/ServerMessageFactory.h
-index 516878b1d992944c650ccdd2b3fc0962f3441741..466a714e1abce237485802b48ef2c9cdc10fe85e 100644
+index 516878b1..466a714e 100644
 --- a/Code/encoding/Messages/ServerMessageFactory.h
 +++ b/Code/encoding/Messages/ServerMessageFactory.h
 @@ -59,6 +59,7 @@
@@ -1648,7 +2225,7 @@ index 516878b1d992944c650ccdd2b3fc0962f3441741..466a714e1abce237485802b48ef2c9cd
          return s_visitor(std::forward<T>(func));
      }
 diff --git a/Code/encoding/Opcodes.h b/Code/encoding/Opcodes.h
-index baab493ccbfb8816c5d8c8ac6759f42d4154f2c7..78c235c58a938c202bb4f688eabacdad802d9f83 100644
+index baab493c..78c235c5 100644
 --- a/Code/encoding/Opcodes.h
 +++ b/Code/encoding/Opcodes.h
 @@ -54,6 +54,8 @@ enum ClientOpcode : unsigned char
@@ -1669,7 +2246,7 @@ index baab493ccbfb8816c5d8c8ac6759f42d4154f2c7..78c235c58a938c202bb4f688eabacdad
  };
 diff --git a/Code/encoding/Structs/WorldItemData.cpp b/Code/encoding/Structs/WorldItemData.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..d2917587e22fd1b7a39c2efd76d71861af772b6d
+index 00000000..d2917587
 --- /dev/null
 +++ b/Code/encoding/Structs/WorldItemData.cpp
 @@ -0,0 +1,35 @@
@@ -1710,7 +2287,7 @@ index 0000000000000000000000000000000000000000..d2917587e22fd1b7a39c2efd76d71861
 +}
 diff --git a/Code/encoding/Structs/WorldItemData.h b/Code/encoding/Structs/WorldItemData.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..d1dc7d98b85751ede98c4fd4e61e4563546ee992
+index 00000000..d1dc7d98
 --- /dev/null
 +++ b/Code/encoding/Structs/WorldItemData.h
 @@ -0,0 +1,27 @@
@@ -1742,7 +2319,7 @@ index 0000000000000000000000000000000000000000..d1dc7d98b85751ede98c4fd4e61e4563
 +    void Deserialize(Buffer::Reader&) noexcept;
 +};
 diff --git a/Code/server/Services/CalendarService.cpp b/Code/server/Services/CalendarService.cpp
-index 7014c285359200b6c662f6cc781fa52bd838284e..6d367d94289b4f576f996c40e94d1d07175f0f98 100644
+index 7014c285..6d367d94 100644
 --- a/Code/server/Services/CalendarService.cpp
 +++ b/Code/server/Services/CalendarService.cpp
 @@ -7,6 +7,14 @@
@@ -1793,7 +2370,7 @@ index 7014c285359200b6c662f6cc781fa52bd838284e..6d367d94289b4f576f996c40e94d1d07
  {
      ServerTimeSettings timeMsg;
 diff --git a/Code/server/Services/CalendarService.h b/Code/server/Services/CalendarService.h
-index 4380490449fc10238c8db505da7373fae07cd53a..41542476da51e259c5c3dbd82ef5d8d184d171eb 100644
+index 43804904..41542476 100644
 --- a/Code/server/Services/CalendarService.h
 +++ b/Code/server/Services/CalendarService.h
 @@ -7,6 +7,7 @@
@@ -1818,9 +2395,113 @@ index 4380490449fc10238c8db505da7373fae07cd53a..41542476da51e259c5c3dbd82ef5d8d1
      entt::scoped_connection m_joinConnection;
 +    entt::scoped_connection m_timeSkipConnection;
  };
+diff --git a/Code/server/Services/WeatherService.cpp b/Code/server/Services/WeatherService.cpp
+index 1f0351fd..67262f09 100644
+--- a/Code/server/Services/WeatherService.cpp
++++ b/Code/server/Services/WeatherService.cpp
+@@ -1,47 +1,47 @@
+ #include <Services/WeatherService.h>
+-
+-#include <Components.h>
+ #include <GameServer.h>
+ #include <World.h>
+-
++#include <Game/Player.h>
++#include <Game/PlayerManager.h>
+ #include <Messages/RequestWeatherChange.h>
+ #include <Messages/NotifyWeatherChange.h>
+ #include <Messages/RequestCurrentWeather.h>
+ 
+-WeatherService::WeatherService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
+-    : m_world(aWorld)
++WeatherService::WeatherService(World& aWorld, entt::dispatcher& aDispatcher) noexcept : m_world(aWorld)
+ {
+     m_weatherChangeConnection = aDispatcher.sink<PacketEvent<RequestWeatherChange>>().connect<&WeatherService::OnWeatherChange>(this);
+     m_currentWeatherConnection = aDispatcher.sink<PacketEvent<RequestCurrentWeather>>().connect<&WeatherService::OnRequestCurrentWeather>(this);
+ }
+-
+-void WeatherService::OnWeatherChange(const PacketEvent<RequestWeatherChange>& acMessage) const noexcept
++uint32_t WeatherService::RefreshAuthority() const noexcept
+ {
+-    NotifyWeatherChange notify{};
+-    notify.Id = acMessage.Packet.Id;
+-
+-    auto* pParty = m_world.GetPartyService().GetPlayerParty(acMessage.pPlayer);
+-    if (!pParty)
+-        return;
+-
+-    pParty->CachedWeather = notify.Id;
+-
+-    if (!acMessage.pPlayer->GetCharacter())
+-        return;
+-
+-    const auto origin = *acMessage.pPlayer->GetCharacter();
+-
+-    GameServer::Get()->SendToPartyInRange(notify, acMessage.pPlayer->GetParty(), origin, acMessage.pPlayer);
++    // One source for this private co-op server, independent of party membership/range.
++    uint32_t authority = 0;
++    for (auto* player : *PlayerManager::Get())
++        if (player->GetCharacter() && (!authority || player->GetId() < authority))
++            authority = player->GetId();
++    if (authority != m_authority)
++    {
++        m_authority = authority;
++        m_weather = {};
++    }
++    return authority;
+ }
+-
+-void WeatherService::OnRequestCurrentWeather(const PacketEvent<RequestCurrentWeather>& acMessage) const noexcept
++void WeatherService::OnWeatherChange(const PacketEvent<RequestWeatherChange>& event) const noexcept
+ {
+-    auto* pParty = m_world.GetPartyService().GetPlayerParty(acMessage.pPlayer);
+-    if (!pParty)
++    const auto authority = RefreshAuthority();
++    if (!event.pPlayer || event.pPlayer->GetId() != authority || !event.Packet.Id)
+         return;
+-
++    m_weather = event.Packet.Id;
+     NotifyWeatherChange notify{};
+-    notify.Id = pParty->CachedWeather;
+-
+-    acMessage.pPlayer->Send(notify);
++    notify.Id = m_weather;
++    notify.AuthorityPlayerId = authority;
++    GameServer::Get()->SendToPlayers(notify);
++}
++void WeatherService::OnRequestCurrentWeather(const PacketEvent<RequestCurrentWeather>& event) const noexcept
++{
++    if (!event.pPlayer) return;
++    NotifyWeatherChange notify{};
++    notify.AuthorityPlayerId = RefreshAuthority();
++    notify.Id = m_weather;
++    event.pPlayer->Send(notify);
+ }
+diff --git a/Code/server/Services/WeatherService.h b/Code/server/Services/WeatherService.h
+index 901679a9..d9196f8b 100644
+--- a/Code/server/Services/WeatherService.h
++++ b/Code/server/Services/WeatherService.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include <Events/PacketEvent.h>
++#include <Structs/GameId.h>
+ 
+ struct World;
+ struct RequestWeatherChange;
+@@ -19,6 +20,9 @@ protected:
+ 
+ private:
+     World& m_world;
++    mutable uint32_t m_authority{};
++    mutable GameId m_weather{};
++    uint32_t RefreshAuthority() const noexcept;
+ 
+     entt::scoped_connection m_weatherChangeConnection;
+     entt::scoped_connection m_currentWeatherConnection;
 diff --git a/Code/server/Services/WorldItemService.cpp b/Code/server/Services/WorldItemService.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..3e08178d0deb3dbaf0b14db9ee442ab3d323e64f
+index 00000000..0e3c40a1
 --- /dev/null
 +++ b/Code/server/Services/WorldItemService.cpp
 @@ -0,0 +1,201 @@
@@ -1874,7 +2555,7 @@ index 0000000000000000000000000000000000000000..3e08178d0deb3dbaf0b14db9ee442ab3
 +        const auto now = GameServer::Get()->GetTick();
 +        if (now < m_nextResyncTick[p->GetId()])
 +            return;
-+        m_nextResyncTick[p->GetId()] = now + 10000;
++        m_nextResyncTick[p->GetId()] = now + 1000;
 +        auto view = m_world.view<CharacterComponent, CellIdComponent, OwnerComponent, AnimationComponent>();
 +        for (auto entity : view)
 +        {
@@ -2027,7 +2708,7 @@ index 0000000000000000000000000000000000000000..3e08178d0deb3dbaf0b14db9ee442ab3
 +}
 diff --git a/Code/server/Services/WorldItemService.h b/Code/server/Services/WorldItemService.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..ef938418e8922acdb010c14a77f27733a4066bc7
+index 00000000..ef938418
 --- /dev/null
 +++ b/Code/server/Services/WorldItemService.h
 @@ -0,0 +1,27 @@
@@ -2059,7 +2740,7 @@ index 0000000000000000000000000000000000000000..ef938418e8922acdb010c14a77f27733
 +    void Broadcast(const Record&);
 +};
 diff --git a/Code/server/World.cpp b/Code/server/World.cpp
-index 8bfd5104995f86d20b6eff170800aa30c7a6fe26..996a5fc9240beb2de7a0eda65e5c39b7530b46d8 100644
+index 8bfd5104..996a5fc9 100644
 --- a/Code/server/World.cpp
 +++ b/Code/server/World.cpp
 @@ -3,6 +3,7 @@
@@ -2079,10 +2760,10 @@ index 8bfd5104995f86d20b6eff170800aa30c7a6fe26..996a5fc9240beb2de7a0eda65e5c39b7
      ctx().emplace<ServerListService>(*this, m_dispatcher);
      ctx().emplace<QuestService>(*this, m_dispatcher);
 diff --git a/Code/skyrim_ui/src/app/components/root/root.component.html b/Code/skyrim_ui/src/app/components/root/root.component.html
-index e660fa4c601907ccc138b84df00cc34b9295928c..47982a3b93898824498b4170455a735de96c7dcb 100644
+index e660fa4c..413d914b 100644
 --- a/Code/skyrim_ui/src/app/components/root/root.component.html
 +++ b/Code/skyrim_ui/src/app/components/root/root.component.html
-@@ -25,6 +25,14 @@
+@@ -25,6 +25,22 @@
          {{ 'COMPONENT.ROOT.CONNECT' | transloco }}
        </button>
        <ng-container *ngIf="connected$ | async">
@@ -2092,20 +2773,66 @@ index e660fa4c601907ccc138b84df00cc34b9295928c..47982a3b93898824498b4170455a735d
 +        </button>
 +        <label>
 +          <input type="checkbox" [checked]="autoResync" (change)="setAutoResync(!autoResync)">
-+          Auto resync every 10 seconds
++          Auto resync
 +        </label>
++        <label>Interval (seconds)
++          <input type="number" min="1" max="300" step="1" [value]="resyncInterval"
++            (change)="setResyncInterval($any($event.target).value)">
++        </label>
++        <button data-style-ornament="inverted" (click)="bindingResyncKey = true">
++          {{ bindingResyncKey ? 'Press a key (Esc cancels)' : 'Bind resync: ' + resyncKeyLabel }}
++        </button>
++        <button data-style-ornament="inverted" (click)="clearResyncKey()">Clear key</button>
          <button
            data-style-ornament="inverted"
            [attr.data-style-active]="(view$ | async) === RootView.DISCONNECT"
 diff --git a/Code/skyrim_ui/src/app/components/root/root.component.ts b/Code/skyrim_ui/src/app/components/root/root.component.ts
-index 79393f7978afa751ce206f54377db54345d5b5a9..657d861b2a2d2ea3a2467bddaf86d1936fdbba24 100644
+index 79393f79..7ca2706f 100644
 --- a/Code/skyrim_ui/src/app/components/root/root.component.ts
 +++ b/Code/skyrim_ui/src/app/components/root/root.component.ts
-@@ -121,6 +121,22 @@ export class RootComponent implements OnInit {
+@@ -1,5 +1,5 @@
+ import { Overlay } from '@angular/cdk/overlay';
+-import { Component, OnInit, ViewChild } from '@angular/core';
++import { Component, HostListener, OnInit, ViewChild } from '@angular/core';
+ import { TranslocoService } from '@ngneat/transloco';
+ import { takeUntil } from 'rxjs';
+ import { environment } from '../../../environments/environment';
+@@ -121,6 +121,53 @@ export class RootComponent implements OnInit {
      this.uiRepository.openView(null);
    }
  
 +  public autoResync = false;
++  public resyncInterval = 10;
++  public bindingResyncKey = false;
++  public resyncKeyLabel = 'Unbound';
++
++  public setResyncInterval(value: string): void {
++    const seconds = Number(value);
++    if (!Number.isFinite(seconds)) return;
++    this.resyncInterval = Math.max(1, Math.min(300, Math.round(seconds)));
++    this.client.setResyncInterval(this.resyncInterval);
++  }
++
++  public clearResyncKey(): void {
++    this.bindingResyncKey = false;
++    this.resyncKeyLabel = 'Unbound';
++    this.client.setResyncHotkey(0);
++  }
++
++  @HostListener('window:keydown', ['$event'])
++  public captureResyncKey(event: KeyboardEvent): void {
++    if (!this.bindingResyncKey) return;
++    event.preventDefault();
++    event.stopPropagation();
++    if (event.repeat) return;
++    if (event.key === 'Escape') { this.bindingResyncKey = false; return; }
++    const key = event.keyCode;
++    // Simple keys only; F2 and modifiers retain their existing menu/input roles.
++    if (key === 113 || key < 8 || key > 255 || [16, 17, 18, 91, 92].includes(key)) return;
++    this.client.setResyncHotkey(key);
++    this.resyncKeyLabel = event.key.toUpperCase();
++    this.bindingResyncKey = false;
++  }
 +
 +  public setAutoResync(enabled: boolean): void {
 +    this.autoResync = enabled;
@@ -2118,20 +2845,22 @@ index 79393f7978afa751ce206f54377db54345d5b5a9..657d861b2a2d2ea3a2467bddaf86d193
 +    if (this.resyncPending) return;
 +    this.resyncPending = true;
 +    this.client.resync();
-+    setTimeout(() => { this.resyncPending = false; }, 10000);
++    setTimeout(() => { this.resyncPending = false; }, 1000);
 +  }
 +
    public reconnect(): void {
      this.client.reconnect();
    }
 diff --git a/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts b/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts
-index 9a2ec37900b82920e3017036645ac29684bc335f..edcded00e8bceb5651b1ea33003e5a09ab4f93db 100644
+index 9a2ec379..135fed22 100644
 --- a/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts
 +++ b/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts
-@@ -101,6 +101,13 @@ export class SkyrimtogetherMock extends EventEmitter implements SkyrimTogether {
+@@ -101,6 +101,15 @@ export class SkyrimtogetherMock extends EventEmitter implements SkyrimTogether {
      }
    }
  
++  setResyncInterval(seconds: number): void { console.info("Resync interval", seconds); }
++  setResyncHotkey(key: number): void { console.info("Resync hotkey", key); }
 +  autoResyncOn(): void { console.info("Auto resync enabled"); }
 +  autoResyncOff(): void { console.info("Auto resync disabled"); }
 +
@@ -2143,13 +2872,16 @@ index 9a2ec37900b82920e3017036645ac29684bc335f..edcded00e8bceb5651b1ea33003e5a09
      throw new Error('NOT YET IMPLEMENTED');
    }
 diff --git a/Code/skyrim_ui/src/app/services/client.service.ts b/Code/skyrim_ui/src/app/services/client.service.ts
-index cb696249226f447910066af430198b620a6cf458..77dfbf4d7f1729d2964d8dd4a583674e608dbbae 100644
+index cb696249..08d3d578 100644
 --- a/Code/skyrim_ui/src/app/services/client.service.ts
 +++ b/Code/skyrim_ui/src/app/services/client.service.ts
-@@ -280,6 +280,15 @@ export class ClientService implements OnDestroy {
+@@ -280,6 +280,18 @@ export class ClientService implements OnDestroy {
    /**
     * Reconnect
     */
++  public setResyncInterval(seconds: number): void { skyrimtogether.setResyncInterval(seconds); }
++  public setResyncHotkey(key: number): void { skyrimtogether.setResyncHotkey(key); }
++
 +  public setAutoResync(enabled: boolean): void {
 +    if (enabled) skyrimtogether.autoResyncOn();
 +    else skyrimtogether.autoResyncOff();
@@ -2163,21 +2895,23 @@ index cb696249226f447910066af430198b620a6cf458..77dfbf4d7f1729d2964d8dd4a583674e
      skyrimtogether.reconnect();
      this._remainingReconnectionAttempt = 0;
 diff --git a/Code/skyrim_ui/src/typings.d.ts b/Code/skyrim_ui/src/typings.d.ts
-index be7779236405bf7cb0b24df4c945b146fc494a4c..bf1af4cd94b55aac1cf999b2f161ea6a6cdd0e63 100644
+index be777923..3cfe9faa 100644
 --- a/Code/skyrim_ui/src/typings.d.ts
 +++ b/Code/skyrim_ui/src/typings.d.ts
-@@ -406,6 +406,9 @@ interface SkyrimTogether {
+@@ -406,6 +406,11 @@ interface SkyrimTogether {
     * Reconnect the client.
     */
    reconnect(): void;
 +  resync(): void;
++  setResyncInterval(seconds: number): void;
++  setResyncHotkey(key: number): void;
 +  autoResyncOn(): void;
 +  autoResyncOff(): void;
  
    /**
     * Launch a party.
 diff --git a/Code/tests/encoding.cpp b/Code/tests/encoding.cpp
-index defb80841827c44b3cdb04f4200e3fd45cd5d988..2a647df503212ffb66f5a20f80acaa8c167bf5b2 100644
+index defb8084..37fbdb78 100644
 --- a/Code/tests/encoding.cpp
 +++ b/Code/tests/encoding.cpp
 @@ -276,10 +276,11 @@ TEST_CASE("Differential structures", "[encoding.differential]")
@@ -2195,7 +2929,7 @@ index defb80841827c44b3cdb04f4200e3fd45cd5d988..2a647df503212ffb66f5a20f80acaa8c
          vars.String_to_VectorBool(testString, vars.Booleans);
  
          vars.Floats.push_back(1.f);
-@@ -552,3 +553,120 @@ TEST_CASE("StringCache", "[encoding.string_cache]")
+@@ -552,3 +553,152 @@ TEST_CASE("StringCache", "[encoding.string_cache]")
          REQUIRE(update == recvUpdate);
      }
  }
@@ -2316,8 +3050,40 @@ index defb80841827c44b3cdb04f4200e3fd45cd5d988..2a647df503212ffb66f5a20f80acaa8c
 +    auto result = CastUnique<RequestWorldItem>(std::move(decoded));
 +    REQUIRE(result->Action == WorldItemAction::Resync);
 +}
++
++
++TEST_CASE("Server weather source survives serialization", "[encoding.weather]")
++{
++    NotifyWeatherChange original;
++    original.Id = GameId{1, 0x12345};
++    original.AuthorityPlayerId = 42;
++    Buffer buffer(16384);
++    Buffer::Writer writer(&buffer);
++    original.Serialize(writer);
++    Buffer::Reader reader(&buffer);
++    ServerMessageFactory factory;
++    auto decoded = factory.Extract(reader);
++    REQUIRE(decoded);
++    auto weather = CastUnique<NotifyWeatherChange>(std::move(decoded));
++    REQUIRE(*weather == original);
++}
++
++TEST_CASE("Direct mod graph input preserves its transient mode", "[encoding.worlditems]")
++{
++    ActionEvent previous, original, decoded;
++    original.Type = 0x100;
++    original.ActorId = 0x14;
++    original.Tick = 1500;
++    original.EventName = "TKDodgeLeft";
++    Buffer buffer(16384);
++    Buffer::Writer writer(&buffer);
++    original.GenerateDifferential(previous, writer);
++    Buffer::Reader reader(&buffer);
++    decoded.ApplyDifferential(reader);
++    REQUIRE(decoded == original);
++}
 diff --git a/Code/tests/xmake.lua b/Code/tests/xmake.lua
-index 19abce574791c5508f4a8f5a15bed8ae5f42d2ef..8188e595de6a295a0bead0c99f4371101ef7020c 100644
+index 19abce57..8188e595 100644
 --- a/Code/tests/xmake.lua
 +++ b/Code/tests/xmake.lua
 @@ -1,3 +1,4 @@
@@ -2337,14 +3103,16 @@ index 19abce574791c5508f4a8f5a15bed8ae5f42d2ef..8188e595de6a295a0bead0c99f437110
 +    add_files("../../Tests/world_items.cpp")
 +    add_undefines("NDEBUG")
 diff --git a/Code/tp_process/ProcessHandler.cpp b/Code/tp_process/ProcessHandler.cpp
-index 9c67fd1ec440dd7b3fe676c945f35246c8a919e5..d440761b8591a0c76cfef07a25289801f8d655f0 100644
+index 9c67fd1e..a423e00d 100644
 --- a/Code/tp_process/ProcessHandler.cpp
 +++ b/Code/tp_process/ProcessHandler.cpp
-@@ -15,6 +15,9 @@ void ProcessHandler::OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<C
+@@ -15,6 +15,11 @@ void ProcessHandler::OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<C
  
      m_pCoreObject->SetValue("connect", CefV8Value::CreateFunction("connect", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
      m_pCoreObject->SetValue("disconnect", CefV8Value::CreateFunction("disconnect", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
 +    m_pCoreObject->SetValue("resync", CefV8Value::CreateFunction("resync", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
++    m_pCoreObject->SetValue("setResyncInterval", CefV8Value::CreateFunction("setResyncInterval", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
++    m_pCoreObject->SetValue("setResyncHotkey", CefV8Value::CreateFunction("setResyncHotkey", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
 +    m_pCoreObject->SetValue("autoResyncOn", CefV8Value::CreateFunction("autoResyncOn", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
 +    m_pCoreObject->SetValue("autoResyncOff", CefV8Value::CreateFunction("autoResyncOff", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
      m_pCoreObject->SetValue("revealPlayers", CefV8Value::CreateFunction("revealPlayers", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
@@ -2352,7 +3120,7 @@ index 9c67fd1ec440dd7b3fe676c945f35246c8a919e5..d440761b8591a0c76cfef07a25289801
      m_pCoreObject->SetValue("setTime", CefV8Value::CreateFunction("setTime", m_pOverlayHandler),V8_PROPERTY_ATTRIBUTE_NONE);
 diff --git a/Tests/date_time.cpp b/Tests/date_time.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..01cbf8ae26bbeba0420c6d291361036abd9cf25a
+index 00000000..01cbf8ae
 --- /dev/null
 +++ b/Tests/date_time.cpp
 @@ -0,0 +1,29 @@
@@ -2387,7 +3155,7 @@ index 0000000000000000000000000000000000000000..01cbf8ae26bbeba0420c6d291361036a
 +}
 diff --git a/Tests/stubs/TiltedCore/Buffer.hpp b/Tests/stubs/TiltedCore/Buffer.hpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..d5f179bb120bb2d8bde50c43e8366eddac01579c
+index 00000000..d5f179bb
 --- /dev/null
 +++ b/Tests/stubs/TiltedCore/Buffer.hpp
 @@ -0,0 +1,10 @@
@@ -2403,7 +3171,7 @@ index 0000000000000000000000000000000000000000..d5f179bb120bb2d8bde50c43e8366edd
 +} // namespace TiltedPhoques
 diff --git a/Tests/survival_time.cpp b/Tests/survival_time.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..27c10fd34026b363469a8f8cef918eebef0127fc
+index 00000000..27c10fd3
 --- /dev/null
 +++ b/Tests/survival_time.cpp
 @@ -0,0 +1,36 @@
@@ -2445,7 +3213,7 @@ index 0000000000000000000000000000000000000000..27c10fd34026b363469a8f8cef918eeb
 +}
 diff --git a/Tests/world_items.cpp b/Tests/world_items.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..954c8a11a5e832d8f70efd214ee950bf8ff3e95b
+index 00000000..4278d70e
 --- /dev/null
 +++ b/Tests/world_items.cpp
 @@ -0,0 +1,66 @@
@@ -2517,7 +3285,7 @@ index 0000000000000000000000000000000000000000..954c8a11a5e832d8f70efd214ee950bf
 +}
 diff --git a/Tools/modules/version.lua b/Tools/modules/version.lua
 new file mode 100644
-index 0000000000000000000000000000000000000000..cb02a67aacc3d969446ae9bfd3f205ae96055a2c
+index 00000000..cb02a67a
 --- /dev/null
 +++ b/Tools/modules/version.lua
 @@ -0,0 +1,8 @@
@@ -2530,7 +3298,7 @@ index 0000000000000000000000000000000000000000..cb02a67aacc3d969446ae9bfd3f205ae
 +           os.iorunv(git, {"describe", "--tags", "--always"}):trim()
 +end
 diff --git a/xmake.lua b/xmake.lua
-index 8568b89d995c01c99457a1c0838b8b9134eeed70..4f9a1bc0411d7c73fe8c68f54b267af1f5ac3b49 100644
+index 8568b89d..4f9a1bc0 100644
 --- a/xmake.lua
 +++ b/xmake.lua
 @@ -1,4 +1,5 @@

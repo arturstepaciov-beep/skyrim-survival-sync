@@ -35,7 +35,7 @@ jobs:
       - name: Upload Windows install package
         uses: actions/upload-artifact@v4
         with:
-          name: SurvivalSync-WorldItems-v0.2-Windows
-          path: ${{ runner.temp }}/survival-build/SurvivalSync-WorldItems-v0.2-Windows.zip
+          name: SurvivalSync-v0.3-Windows
+          path: ${{ runner.temp }}/survival-build/SurvivalSync-v0.3-Windows.zip
           if-no-files-found: error
           retention-days: 14
