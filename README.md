@@ -28,7 +28,7 @@ TK Dodge and Apocalypse Volcano adapters are retained.
   separate chest plugin to install or console-spawned replacement chest.
 - Open waits for the server's current contents. Deposits and withdrawals are
   intercepted before local mutation; the server commits both inventory changes.
-- Exact item variants and source quantities are checked, transfers have monotonic
+- Networkable item variants and source quantities are checked, transfers have monotonic
   request tokens, and simultaneous withdrawals cannot spend the same last item.
 - Large snapshots are split into bounded chunks and applied only when complete.
   Limits: 4096 distinct entries per inventory, 64 custom effects per entry and
@@ -36,10 +36,13 @@ TK Dodge and Apocalypse Volcano adapters are retained.
   Withdraw to your inventory before dropping items into the world or forwarding
   them to NPCs. Quest-bound construction/resource containers retain their native
   scripts and are excluded from this adapter.
-  Unequip worn items before depositing them. Unmapped dynamic item forms remain
-  subject to Reborn's existing item-serialization limits.
+  Unequip worn items before depositing them. Temporary base forms (including
+  custom potions) and temporary enchantment/poison forms are not transferred.
+  Existing local dynamic and quest items are retained in place during reconciliation;
+  they are not part of the shared inventory.
 - The session state lives in server memory; the host receives committed contents
-  in the native save. Save on the host before stopping the server. On a clean
+  in the native save when its reference is available. Visit affected houses and
+  save on the host before stopping the server. On a clean
   guest disconnect the guest's original house/storage are restored; items acquired
   through completed transfers stay with the player. A crash cannot run that cleanup.
 
