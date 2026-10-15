@@ -439,18 +439,19 @@ index 201b640f..35abd4d9 100644
      Event.UnkBool1 = arData.bUnkBool1;
      Event.Area = arData.iArea;
 diff --git a/Code/client/Games/Skyrim/TESObjectREFR.cpp b/Code/client/Games/Skyrim/TESObjectREFR.cpp
-index 9032a69a..1f07926b 100644
+index 9032a69a..b7b32985 100644
 --- a/Code/client/Games/Skyrim/TESObjectREFR.cpp
 +++ b/Code/client/Games/Skyrim/TESObjectREFR.cpp
-@@ -6,6 +6,7 @@
+@@ -6,6 +6,8 @@
  #include <World.h>
  #include <Services/PapyrusService.h>
  #include <Events/ActivateEvent.h>
 +#include <Services/WorldItemService.h>
++#include <Services/HomesteadService.h>
  #include <Events/InventoryChangeEvent.h>
  #include <Events/ScriptAnimationEvent.h>
  #include <Events/LockChangeEvent.h>
-@@ -74,12 +75,13 @@ void UpdateGraphDescriptorHash(Actor* apActor, BSAnimationGraphManager* apManage
+@@ -74,12 +76,13 @@ void UpdateGraphDescriptorHash(Actor* apActor, BSAnimationGraphManager* apManage
      if (cPreviousHash != 0)
          spdlog::info("Animation graph project of actor {:X} changed, graph descriptor {} -> {}", apActor->formID, cPreviousHash, pExtension->GraphDescriptorHash);
  }
@@ -466,7 +467,7 @@ index 9032a69a..1f07926b 100644
  TP_THIS_FUNCTION(TPlayAnimationAndWait, bool, void, uint32_t auiStackID, TESObjectREFR* apSelf, BSFixedString* apAnimation, BSFixedString* apEventName);
  TP_THIS_FUNCTION(TPlayAnimation, bool, void, uint32_t auiStackID, TESObjectREFR* apSelf, BSFixedString* apEventName);
  TP_THIS_FUNCTION(TRotate, void, TESObjectREFR, float aAngle);
-@@ -146,7 +148,7 @@ TESObjectREFR* TESObjectREFR::GetByHandle(uint32_t aHandle) noexcept
+@@ -146,7 +149,7 @@ TESObjectREFR* TESObjectREFR::GetByHandle(uint32_t aHandle) noexcept
  {
      TESObjectREFR* pResult = nullptr;
  
@@ -475,7 +476,7 @@ index 9032a69a..1f07926b 100644
  
      POINTER_SKYRIMSE(TGetRefrByHandle, s_getRefrByHandle, 17201);
  
-@@ -369,6 +371,69 @@ ExtraDataList* TESObjectREFR::GetExtraDataList() noexcept
+@@ -369,6 +372,69 @@ ExtraDataList* TESObjectREFR::GetExtraDataList() noexcept
      return &extraData;
  }
  
@@ -545,7 +546,7 @@ index 9032a69a..1f07926b 100644
  // Delete() should only be used on temporaries
  void TESObjectREFR::Delete() const noexcept
  {
-@@ -760,7 +825,8 @@ Inventory TESObjectREFR::GetInventory(std::function<bool(TESForm&)> aFilter) con
+@@ -760,7 +826,8 @@ Inventory TESObjectREFR::GetInventory(std::function<bool(TESForm&)> aFilter) con
  
      for (auto& entry : extraInventory.Entries)
      {
@@ -555,7 +556,7 @@ index 9032a69a..1f07926b 100644
  
          if (duplicate == std::end(minimizedExtraInventory.Entries))
          {
-@@ -1032,19 +1098,22 @@ bool TP_MAKE_THISCALL(HookPlayAnimation, void, uint32_t auiStackID, TESObjectREF
+@@ -1032,19 +1099,24 @@ bool TP_MAKE_THISCALL(HookPlayAnimation, void, uint32_t auiStackID, TESObjectREF
  
  bool TP_MAKE_THISCALL(HookActivate, TESObjectREFR, TESObjectREFR* apActivator, uint8_t aUnk1, TESBoundObject* apObjectToGet, int32_t aCount, char aDefaultProcessing)
  {
@@ -564,6 +565,8 @@ index 9032a69a..1f07926b 100644
 +    if (apActivator == PlayerCharacter::Get() && !ScopedActivateOverride::IsOverriden() && World::Get().GetTransport().IsOnline() &&
 +        World::Get().ctx().at<WorldItemService>().TryPickup(apThis))
 +        return true;
++    if (apActivator == PlayerCharacter::Get() && !ScopedActivateOverride::IsOverriden() &&
++        World::Get().ctx().at<HomesteadService>().TryOpen(apThis)) return true;
      Actor* pActivator = Cast<Actor>(apActivator);
  
      // Exclude books from activation since only reading them removes them from the cell
@@ -582,7 +585,7 @@ index 9032a69a..1f07926b 100644
      }
  
      return TiltedPhoques::ThisCall(RealActivate, apThis, apActivator, aUnk1, apObjectToGet, aCount, aDefaultProcessing);
-@@ -1071,8 +1140,9 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, TESObjectREFR, TESBoundObject* apIte
+@@ -1071,9 +1143,15 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, TESObjectREFR, TESBoundObject* apIte
      TiltedPhoques::ThisCall(RealAddInventoryItem, apThis, apItem, apExtraData, aCount, apOldOwner);
  }
  
@@ -592,9 +595,15 @@ index 9032a69a..1f07926b 100644
 +    HookRemoveInventoryItem, TESObjectREFR, BSPointerHandle<TESObjectREFR>* apResult, TESBoundObject* apItem, int32_t aCount, ITEM_REMOVE_REASON aReason,
 +    ExtraDataList* apExtraList, TESObjectREFR* apMoveToRef, const NiPoint3* apDropLoc, const NiPoint3* apRotate)
  {
++    if (World::Get().ctx().at<HomesteadService>().TryTransfer(apThis, apMoveToRef, apItem, apExtraList, aCount))
++    {
++        if (apResult) *apResult = {};
++        return apResult;
++    }
      if (!ScopedInventoryOverride::IsOverriden())
      {
-@@ -1142,7 +1212,7 @@ void TP_MAKE_THISCALL(HookLockChange, TESObjectREFR)
+         auto& modSystem = World::Get().GetModSystem();
+@@ -1142,7 +1220,7 @@ void TP_MAKE_THISCALL(HookLockChange, TESObjectREFR)
  {
      TiltedPhoques::ThisCall(RealLockChange, apThis);
      const auto* pLock = apThis->GetLock();
@@ -957,6 +966,260 @@ index 6806a990..57a9247a 100644
      if (remoteItor != std::end(remoteView))
      {
          spdlog::warn("Character with remote id {:X} is already spawned.", acMessage.ServerId);
+diff --git a/Code/client/Services/Generic/HomesteadService.cpp b/Code/client/Services/Generic/HomesteadService.cpp
+new file mode 100644
+index 00000000..0bca984e
+--- /dev/null
++++ b/Code/client/Services/Generic/HomesteadService.cpp
+@@ -0,0 +1,229 @@
++#include <Services/HomesteadService.h>
++#include <Services/TransportService.h>
++#include <World.h>
++#include <Games/TES.h>
++#include <Games/Overrides.h>
++#include <PlayerCharacter.h>
++#include <Forms/TESObjectCELL.h>
++#include <Forms/TESWorldSpace.h>
++#include <TESObjectREFR.h>
++#include <Forms/TESBoundObject.h>
++#include <Events/UpdateEvent.h>
++#include <Events/DisconnectedEvent.h>
++#include <Messages/RequestHomestead.h>
++#include <Messages/NotifyHomestead.h>
++#include <filesystem>
++#include <fstream>
++#include <cstring>
++#include <HearthfireIndex.h>
++namespace
++{
++bool Structure(const TESObjectREFR* ref)
++{
++    if (!ref || !ref->baseForm || ref->IsDeleted() || ref->IsTemporary()) return false;
++    // Placed architecture, enable-parent markers, furniture, lights, doors and containers.
++    // Actors, loose loot and script activators retain their existing synchronization paths.
++    const auto type = static_cast<uint8_t>(ref->baseForm->formType);
++    return type == 28 || type == 29 || type == 31 || type == 34 || type == 36 || type == 40;
++}
++}
++HomesteadService::HomesteadService(World& w, entt::dispatcher& d, TransportService& t) : m_world(w), m_transport(t)
++{
++    m_update = d.sink<UpdateEvent>().connect<&HomesteadService::OnUpdate>(this);
++    m_notify = d.sink<NotifyHomestead>().connect<&HomesteadService::OnNotify>(this);
++    m_disconnect = d.sink<DisconnectedEvent>().connect<&HomesteadService::OnDisconnected>(this);
++}
++void HomesteadService::BuildIndex()
++{
++    if (m_indexReady || m_world.GetTick() < m_nextIndexAttempt) return;
++    auto* mods = ModManager::Get(); auto* mod = mods ? mods->GetByName("HearthFires.esm") : nullptr;
++    if (!mod || !mod->IsLoaded() || mod->IsLite()) return;
++    m_nextIndexAttempt = m_world.GetTick() + 5000;
++    std::error_code ec;
++    auto root = std::filesystem::current_path(ec);
++    for (int depth = 0; !ec && depth < 5 && !root.empty(); ++depth, root = root.parent_path())
++    {
++        for (const auto& path : {root / "Data" / "HearthFires.esm", root / "HearthFires.esm"})
++        {
++            std::unordered_set<uint32_t> ids;
++            if (HearthfireIndex::ReadReferenceIndex(path, uint32_t(mod->standardId) << 24, ids))
++            {
++                m_ids = std::move(ids); m_indexReady = true;
++                spdlog::info("Hearthfire: indexed {} placed references", m_ids.size()); return;
++            }
++        }
++    }
++}
++bool HomesteadService::IsManaged(const TESObjectREFR* ref)
++{
++    BuildIndex();
++    return ref && ref->baseForm && ref->baseForm->formType == FormType::Container && m_ids.contains(ref->formID);
++}
++void HomesteadService::Send(HomesteadData data)
++{
++    HomesteadWire::Split(data, [this](const HomesteadData& part) { RequestHomestead q; q.Data = part; m_transport.Send(q); });
++}
++bool HomesteadService::TryOpen(TESObjectREFR* ref)
++{
++    if (!m_transport.IsOnline() || !IsManaged(ref)) return false;
++    if (m_pendingOpen && m_world.GetTick() < m_openDeadline) return true;
++    GameId id{}; if (!m_world.GetModSystem().GetServerModId(ref->formID, id)) return true;
++    HomesteadData q; q.Action = HomesteadAction::Open; q.Reference = id; q.Token = ++m_nextToken;
++    m_pendingOpen = q.Token; m_pendingRef = ref->formID; m_openDeadline = m_world.GetTick() + 5000;
++    Send(std::move(q)); return true;
++}
++bool HomesteadService::TryTransfer(TESObjectREFR* source, TESObjectREFR* destination, TESBoundObject* base, ExtraDataList* extra, int32_t count)
++{
++    if (!m_transport.IsOnline() || ScopedInventoryOverride::IsOverriden()) return false;
++    auto* player = PlayerCharacter::Get();
++    const bool deposit = source == player && IsManaged(destination);
++    const bool withdraw = destination == player && IsManaged(source);
++    if (!deposit && !withdraw)
++    {
++        // Do not let unhandled container-to-world or container-to-NPC removal
++        // mutate a replica while the canonical stack remains spendable.
++        if (IsManaged(source) || IsManaged(destination))
++        {
++            spdlog::warn("Shared Hearthfire storage: withdraw to player inventory before dropping or forwarding items");
++            return true;
++        }
++        return false;
++    }
++    if (!base || count <= 0 || count > 32767) return true;
++    auto* chest = deposit ? destination : source;
++    HomesteadData q; q.Action = HomesteadAction::Transfer; q.Deposit = deposit; q.Token = ++m_nextToken;
++    auto& mods = m_world.GetModSystem();
++    if (!mods.GetServerModId(chest->formID, q.Reference) || !mods.GetServerModId(base->formID, q.Item.BaseId)) return true;
++    if (extra) { ScopedExtraDataOverride guard; source->GetItemFromExtraData(q.Item, extra); }
++    q.Item.Count = count;
++    Send(std::move(q));
++    // Leave both inventories untouched until the server commits the exact variant.
++    return true;
++}
++void HomesteadService::OnUpdate(const UpdateEvent&)
++{
++    if (!m_transport.IsOnline()) return;
++    auto* player = PlayerCharacter::Get(); if (!player || !player->parentCell) return;
++    const auto now = m_world.GetTick();
++    if (now >= m_nextPoll)
++    {
++        m_nextPoll = now + (m_authority ? 10000 : 1000);
++        HomesteadData q; q.Action = HomesteadAction::Poll; Send(std::move(q));
++    }
++    if (now < m_nextScan) return;
++    m_nextScan = now + 1000;
++    BuildIndex();
++    if (!m_authority) return;
++    if (m_authority != m_transport.GetLocalPlayerId())
++    {
++        for (const auto& [id, record] : m_remote) Apply(record);
++        return;
++    }
++    // Apply delayed chest commits as their cells become available on the host.
++    for (const auto& [id, record] : m_remote) if (record.HasInventory) Apply(record);
++    HomesteadData q; q.Action = HomesteadAction::Publish;
++    for (uint32_t id : m_ids)
++    {
++        auto* ref = Cast<TESObjectREFR>(TESForm::GetById(id)); if (!Structure(ref)) continue;
++        const bool disabled = ref->IsDisabled();
++        const auto old = m_published.find(id);
++        if (old != m_published.end() && old->second == disabled) continue;
++        HomesteadRecord record;
++        if (!m_world.GetModSystem().GetServerModId(id, record.Reference)) continue;
++        record.Disabled = disabled;
++        auto* cell = ref->GetParentCellEx();
++        if (!cell) continue;
++        if (!m_world.GetModSystem().GetServerModId(cell->formID, record.Cell)) continue;
++        if (auto* space = ref->GetWorldSpace()) m_world.GetModSystem().GetServerModId(space->formID, record.WorldSpace);
++        record.Coords = GridCellCoords::CalculateGridCellCoords(ref->position.x, ref->position.y);
++        // A chest can be seeded only once the host has loaded its actual save inventory.
++        if (ref->baseForm->formType == FormType::Container)
++        {
++            if (!cell->IsAttached()) continue;
++            record.HasInventory = true; record.Contents = ref->GetInventory();
++        }
++        m_published[id] = disabled;
++        if (!HomesteadWire::ValidInventory(record.Contents)) { m_published.erase(id); continue; }
++        q.Records.push_back(std::move(record));
++        if (q.Records.size() == 32) { Send(q); q.Records.clear(); }
++    }
++    if (!q.Records.empty()) Send(std::move(q));
++}
++void HomesteadService::Apply(const HomesteadRecord& record)
++{
++    auto& mods = m_world.GetModSystem();
++    const auto id = mods.GetGameId(record.Reference);
++    if (!m_ids.contains(id)) return;
++    auto* ref = Cast<TESObjectREFR>(TESForm::GetById(id)); if (!Structure(ref)) return;
++    const bool guest = m_authority != m_transport.GetLocalPlayerId();
++    auto* cell = ref->GetParentCellEx();
++    if (guest && !m_original.contains(id))
++    {
++        HomesteadRecord original; original.Reference = record.Reference; original.Disabled = ref->IsDisabled();
++        if (record.HasInventory && cell && cell->IsAttached()) { original.HasInventory = true; original.Contents = ref->GetInventory(); }
++        m_original.emplace(id, std::move(original));
++    }
++    if (guest && ref->IsDisabled() != record.Disabled)
++    {
++        if (record.Disabled) ref->Disable(); else ref->Enable();
++    }
++    if (record.HasInventory && cell && cell->IsAttached() && !ref->IsDisabled())
++    {
++        Inventory current = ref->GetInventory();
++        if (current != record.Contents)
++        {
++            if (guest && !m_original[id].HasInventory) { m_original[id].HasInventory = true; m_original[id].Contents = current; }
++            if (current.ContainsQuestItems()) ref->SetInventoryRetainingQuestItems(current, record.Contents);
++            else ref->SetInventory(record.Contents);
++        }
++    }
++}
++void HomesteadService::OnNotify(const NotifyHomestead& n)
++{
++    if (!m_transport.IsOnline()) return;
++    const auto& data = n.Data;
++    if (m_authority != data.Authority)
++    {
++        // A host change starts a new session. Discard stale state before the new authority seeds it.
++        OnDisconnected(DisconnectedEvent{});
++        m_authority = data.Authority;
++    }
++    BuildIndex();
++    bool completed = data.Records.empty();
++    for (const auto& part : data.Records)
++    {
++        HomesteadRecord record; if (!m_assembler.Accept(part, record)) continue;
++        completed = true;
++        const auto id = m_world.GetModSystem().GetGameId(record.Reference);
++        if (!m_ids.contains(id)) continue;
++        m_remote.insert_or_assign(id, record); Apply(record);
++    }
++    if (completed && data.Action == HomesteadAction::Opened && data.Token == m_pendingOpen &&
++        m_world.GetModSystem().GetGameId(data.Reference) == m_pendingRef)
++    {
++        const auto id = m_pendingRef; m_pendingOpen = m_pendingRef = 0;
++        auto* ref = Cast<TESObjectREFR>(TESForm::GetById(id)); auto* player = PlayerCharacter::Get();
++        if (ref && player && !ref->IsDisabled() && m_world.GetTick() <= m_openDeadline && ref->GetParentCellEx() == player->parentCell)
++            ref->Activate(player, 0, nullptr, 1, 0);
++    }
++    if (data.Action == HomesteadAction::Rejected && data.Token == m_pendingOpen)
++    {
++        m_pendingOpen = m_pendingRef = 0;
++        spdlog::warn("Hearthfire chest unavailable: the host must load this house first");
++    }
++    if (data.Action == HomesteadAction::Result && !data.Accepted)
++        spdlog::warn("Hearthfire transfer rejected: item variant or quantity no longer available");
++}
++void HomesteadService::OnDisconnected(const DisconnectedEvent&)
++{
++    // Preserve the guest's own house and storage when returning to single player.
++    for (const auto& [id, original] : m_original)
++    {
++        auto* ref = Cast<TESObjectREFR>(TESForm::GetById(id)); if (!ref) continue;
++        if (ref->IsDisabled() != original.Disabled) { if (original.Disabled) ref->Disable(); else ref->Enable(); }
++        if (original.HasInventory) ref->SetInventory(original.Contents);
++    }
++    m_remote.clear(); m_published.clear(); m_original.clear(); m_assembler.Pending.clear();
++    m_authority = m_pendingOpen = m_pendingRef = 0;
++    m_nextPoll = m_nextScan = 0;
++}
+diff --git a/Code/client/Services/Generic/InventoryService.cpp b/Code/client/Services/Generic/InventoryService.cpp
+index 8d9f2c78..5b2f79e2 100644
+--- a/Code/client/Services/Generic/InventoryService.cpp
++++ b/Code/client/Services/Generic/InventoryService.cpp
+@@ -1,4 +1,5 @@
+ #include <Services/InventoryService.h>
++#include <Services/HomesteadService.h>
+ 
+ #include <Messages/RequestObjectInventoryChanges.h>
+ #include <Messages/NotifyObjectInventoryChanges.h>
+@@ -49,6 +50,8 @@ void InventoryService::OnInventoryChangeEvent(const InventoryChangeEvent& acEven
+     if (!m_transport.IsConnected())
+         return;
+ 
++    if (m_world.ctx().at<HomesteadService>().IsManaged(Cast<TESObjectREFR>(TESForm::GetById(acEvent.FormId)))) return;
++
+     auto view = m_world.view<FormIdComponent>();
+ 
+     const auto iter = std::find_if(std::begin(view), std::end(view), [view, formId = acEvent.FormId](auto entity) { return view.get<FormIdComponent>(entity).Id == formId; });
 diff --git a/Code/client/Services/Generic/MagicService.cpp b/Code/client/Services/Generic/MagicService.cpp
 index cfbbe104..2124339f 100644
 --- a/Code/client/Services/Generic/MagicService.cpp
@@ -1008,6 +1271,32 @@ index cfbbe104..2124339f 100644
  
      pActor->GenerateMagicCasters();
  
+diff --git a/Code/client/Services/Generic/ObjectService.cpp b/Code/client/Services/Generic/ObjectService.cpp
+index b2140e2e..b56756a7 100644
+--- a/Code/client/Services/Generic/ObjectService.cpp
++++ b/Code/client/Services/Generic/ObjectService.cpp
+@@ -1,4 +1,5 @@
+ #include <Services/ObjectService.h>
++#include <Services/HomesteadService.h>
+ 
+ #include <World.h>
+ #include <Events/DisconnectedEvent.h>
+@@ -153,6 +154,7 @@ void ObjectService::OnCellChange(const CellChangeEvent& acEvent) noexcept
+ 
+     for (TESObjectREFR* pObject : objects)
+     {
++        if (m_world.ctx().at<HomesteadService>().IsManaged(pObject)) continue;
+         if (!ShouldSyncObject(pObject, playerStashContainers))
+         {
+             spdlog::warn("Excluding sync for {:X}", pObject->formID);
+@@ -321,6 +323,7 @@ void ObjectService::OnActivateNotify(const NotifyActivate& acMessage) noexcept
+         return;
+     }
+ 
++    if (m_world.ctx().at<HomesteadService>().IsManaged(pObject)) return;
+     if (pObject->baseForm->formType == FormType::Door)
+     {
+         auto remotePreActivationState = static_cast<TESObjectREFR::OpenState>(acMessage.PreActivationOpenState);
 diff --git a/Code/client/Services/Generic/OverlayClient.cpp b/Code/client/Services/Generic/OverlayClient.cpp
 index a0378612..de5e52be 100644
 --- a/Code/client/Services/Generic/OverlayClient.cpp
@@ -1952,6 +2241,58 @@ index 00000000..5fe1f05f
 +    if (grabbed && !foundGrab && Eligible(grabbed) && !grabbed->IsTemporary())
 +        Send(WorldItemAction::Register, Describe(grabbed));
 +}
+diff --git a/Code/client/Services/HomesteadService.h b/Code/client/Services/HomesteadService.h
+new file mode 100644
+index 00000000..c053b156
+--- /dev/null
++++ b/Code/client/Services/HomesteadService.h
+@@ -0,0 +1,46 @@
++#pragma once
++#include <Structs/HomesteadData.h>
++#include <HomesteadWire.h>
++#include <unordered_map>
++#include <unordered_set>
++struct World;
++struct TransportService;
++struct UpdateEvent;
++struct DisconnectedEvent;
++struct NotifyHomestead;
++struct TESObjectREFR;
++struct TESBoundObject;
++struct ExtraDataList;
++struct HomesteadService
++{
++    HomesteadService(World&, entt::dispatcher&, TransportService&);
++    bool IsManaged(const TESObjectREFR*);
++    bool TryOpen(TESObjectREFR*);
++    bool TryTransfer(TESObjectREFR* source, TESObjectREFR* destination, TESBoundObject*, ExtraDataList*, int32_t count);
++private:
++    void BuildIndex();
++    void OnUpdate(const UpdateEvent&);
++    void OnNotify(const NotifyHomestead&);
++    void OnDisconnected(const DisconnectedEvent&);
++    void Apply(const HomesteadRecord&);
++    void Send(HomesteadData);
++    HomesteadWire::Assembler m_assembler;
++    World& m_world;
++    TransportService& m_transport;
++    std::unordered_set<uint32_t> m_ids;
++    std::unordered_map<uint32_t, bool> m_published;
++    std::unordered_map<uint32_t, HomesteadRecord> m_remote;
++    std::unordered_map<uint32_t, HomesteadRecord> m_original;
++    uint32_t m_authority{};
++    uint32_t m_nextToken{};
++    uint32_t m_pendingOpen{};
++    uint32_t m_pendingRef{};
++    uint64_t m_nextPoll{};
++    uint64_t m_nextScan{};
++    uint64_t m_openDeadline{};
++    bool m_indexReady{};
++    uint64_t m_nextIndexAttempt{};
++    entt::scoped_connection m_update;
++    entt::scoped_connection m_notify;
++    entt::scoped_connection m_disconnect;
++};
 diff --git a/Code/client/Services/VolcanoService.h b/Code/client/Services/VolcanoService.h
 new file mode 100644
 index 00000000..5824454b
@@ -2133,19 +2474,20 @@ index 5d2a12b1..8ba754c3 100644
  }
  
 diff --git a/Code/client/World.cpp b/Code/client/World.cpp
-index b0596604..3bfc6a9a 100644
+index b0596604..f33ed994 100644
 --- a/Code/client/World.cpp
 +++ b/Code/client/World.cpp
-@@ -10,6 +10,8 @@
+@@ -10,6 +10,9 @@
  #include <Services/PapyrusService.h>
  #include <Services/DiscordService.h>
  #include <Services/ObjectService.h>
 +#include <Services/WorldItemService.h>
 +#include <Services/VolcanoService.h>
++#include <Services/HomesteadService.h>
  #include <Services/QuestService.h>
  #include <Services/ActorValueService.h>
  #include <Services/InventoryService.h>
-@@ -25,7 +27,7 @@
+@@ -25,7 +28,7 @@
  #include <Events/PreUpdateEvent.h>
  #include <Events/UpdateEvent.h>
  
@@ -2154,17 +2496,18 @@ index b0596604..3bfc6a9a 100644
  
  World::World()
      : m_runner(m_dispatcher)
-@@ -42,6 +44,8 @@ World::World()
+@@ -42,6 +45,9 @@ World::World()
      ctx().emplace<PapyrusService>(m_dispatcher);
      ctx().emplace<DiscordService>(m_dispatcher);
      ctx().emplace<ObjectService>(*this, m_dispatcher, m_transport);
 +    ctx().emplace<WorldItemService>(*this, m_dispatcher, m_transport);
 +    ctx().emplace<VolcanoService>(*this, m_dispatcher, m_transport);
++    ctx().emplace<HomesteadService>(*this, m_dispatcher, m_transport);
      ctx().emplace<CalendarService>(*this, m_dispatcher, m_transport);
      ctx().emplace<QuestService>(*this, m_dispatcher);
      ctx().emplace<PartyService>(*this, m_dispatcher, m_transport);
 diff --git a/Code/common/BuildInfo.h.in b/Code/common/BuildInfo.h.in
-index 5db8d876..4d78a49e 100644
+index 5db8d876..db54b426 100644
 --- a/Code/common/BuildInfo.h.in
 +++ b/Code/common/BuildInfo.h.in
 @@ -1,4 +1,4 @@
@@ -2173,7 +2516,7 @@ index 5db8d876..4d78a49e 100644
 -#define BUILD_BRANCH "${GIT_BRANCH}"
 -#define BUILD_COMMIT "${GIT_TAG}"
 +#define BUILD_BRANCH "survival-worlditems"
-+#define BUILD_COMMIT "survival-sync-v04-volcano"
++#define BUILD_COMMIT "survival-sync-v05-hearthfire"
 diff --git a/Code/common/DateTime.cpp b/Code/common/DateTime.cpp
 index b091ef61..bfb1eeb4 100644
 --- a/Code/common/DateTime.cpp
@@ -2210,6 +2553,138 @@ index e5e7a758..502de7a1 100644
      float GetDeltaTime(uint64_t aDeltaTick) const noexcept;
      float GetTimeInDays() const noexcept;
  
+diff --git a/Code/common/HearthfireIndex.h b/Code/common/HearthfireIndex.h
+new file mode 100644
+index 00000000..4c381e59
+--- /dev/null
++++ b/Code/common/HearthfireIndex.h
+@@ -0,0 +1,45 @@
++#pragma once
++#include <filesystem>
++#include <fstream>
++#include <unordered_set>
++#include <cstring>
++#include <cstdint>
++namespace HearthfireIndex
++{
++// Read only record headers from the installed master. No Bethesda assets are shipped.
++// GRUP sizes include their 24-byte header; all other sizes exclude the header.
++inline bool ReadReferenceIndex(const std::filesystem::path& path, uint32_t prefix, std::unordered_set<uint32_t>& out)
++{
++    std::ifstream file(path, std::ios::binary);
++    if (!file) return false;
++    file.seekg(0, std::ios::end); const auto length = file.tellg(); file.seekg(0);
++    uint32_t masters{};
++    while (file && file.tellg() >= 0 && file.tellg() + std::streamoff(24) <= length)
++    {
++        char header[24]{}; file.read(header, 24);
++        uint32_t size{}, id{}; std::memcpy(&size, header + 4, 4); std::memcpy(&id, header + 12, 4);
++        if (std::memcmp(header, "GRUP", 4) == 0)
++        {
++            if (size < 24 || file.tellg() + std::streamoff(size - 24) > length) return false;
++            continue;
++        }
++        const auto end = file.tellg() + std::streamoff(size);
++        if (end > length || size > 128 * 1024 * 1024) return false;
++        if (std::memcmp(header, "TES4", 4) == 0)
++        {
++            while (file && file.tellg() + std::streamoff(6) <= end)
++            {
++                char name[4]; uint16_t subSize{};
++                file.read(name, 4); file.read(reinterpret_cast<char*>(&subSize), 2);
++                if (file.tellg() + std::streamoff(subSize) > end) return false;
++                if (std::memcmp(name, "MAST", 4) == 0) ++masters;
++                file.seekg(subSize, std::ios::cur);
++            }
++        }
++        else if (std::memcmp(header, "REFR", 4) == 0 && (id >> 24) == masters)
++            out.insert(prefix | (id & 0xFFFFFF));
++        file.seekg(end);
++    }
++    return file && file.tellg() == length && !out.empty();
++}
++}
+diff --git a/Code/common/HomesteadPolicy.h b/Code/common/HomesteadPolicy.h
+new file mode 100644
+index 00000000..317bbea6
+--- /dev/null
++++ b/Code/common/HomesteadPolicy.h
+@@ -0,0 +1,13 @@
++#pragma once
++#include <cstdint>
++#include <limits>
++namespace HomesteadPolicy
++{
++// Transfer exact variants, never base-id-only matches. Reject overflow and negatives.
++inline bool CanTransfer(int64_t source, int64_t destination, int64_t amount) noexcept
++{
++    return amount > 0 && amount <= 32767 && source >= amount && destination >= 0 &&
++           destination <= std::numeric_limits<int32_t>::max() - amount;
++}
++inline bool FreshToken(uint32_t token, uint32_t previous) noexcept { return token != 0 && token > previous; }
++}
+diff --git a/Code/common/HomesteadWire.h b/Code/common/HomesteadWire.h
+new file mode 100644
+index 00000000..3cd072cc
+--- /dev/null
++++ b/Code/common/HomesteadWire.h
+@@ -0,0 +1,56 @@
++#pragma once
++#include <Structs/HomesteadData.h>
++#include <unordered_map>
++namespace HomesteadWire
++{
++constexpr size_t MaxEntries = 4096;
++constexpr size_t ChunkEntries = 8;
++inline bool ValidInventory(const Inventory& inv)
++{
++    if (inv.Entries.size() > MaxEntries) return false;
++    for (const auto& e : inv.Entries) if (e.Count < 0 || e.EnchantData.Effects.size() > 64) return false;
++    return true;
++}
++template<class Send> void Split(const HomesteadData& data, Send send)
++{
++    if (data.Records.empty()) { send(data); return; }
++    for (const auto& record : data.Records)
++    {
++        if (!ValidInventory(record.Contents)) continue;
++        const auto total = record.HasInventory ? record.Contents.Entries.size() : 0;
++        size_t offset{};
++        do
++        {
++            HomesteadData packet = data; packet.Records.clear();
++            HomesteadRecord part = record; part.Contents.Entries.clear();
++            part.InventoryOffset = static_cast<uint32_t>(offset); part.InventoryTotal = static_cast<uint32_t>(total);
++            const auto end = std::min(total, offset + ChunkEntries);
++            for (size_t i = offset; i < end; ++i) part.Contents.Entries.push_back(record.Contents.Entries[i]);
++            packet.Records.push_back(std::move(part)); send(packet);
++            offset = end;
++        } while (offset < total);
++    }
++}
++struct Assembler
++{
++    std::unordered_map<GameId, HomesteadRecord> Pending;
++    bool Accept(const HomesteadRecord& part, HomesteadRecord& out)
++    {
++        if (!part.HasInventory) { out = part; return true; }
++        if (part.InventoryTotal > MaxEntries || part.Contents.Entries.size() > ChunkEntries || !ValidInventory(part.Contents)) return false;
++        if (part.InventoryOffset == 0)
++        {
++            if (Pending.size() >= 16384) return false;
++            auto initial = part; initial.Contents.Entries.clear();
++            Pending.insert_or_assign(part.Reference, std::move(initial));
++        }
++        auto it = Pending.find(part.Reference);
++        if (it == Pending.end() || it->second.InventoryTotal != part.InventoryTotal || it->second.Contents.Entries.size() != part.InventoryOffset) return false;
++        auto& full = it->second;
++        if (full.Contents.Entries.size() + part.Contents.Entries.size() > part.InventoryTotal) { Pending.erase(it); return false; }
++        full.Contents.Entries.insert(full.Contents.Entries.end(), part.Contents.Entries.begin(), part.Contents.Entries.end());
++        if (full.Contents.Entries.size() != part.InventoryTotal) return false;
++        out = std::move(full); out.InventoryOffset = 0; Pending.erase(it); return true;
++    }
++};
++}
 diff --git a/Code/common/SurvivalTimePolicy.h b/Code/common/SurvivalTimePolicy.h
 new file mode 100644
 index 00000000..824b2508
@@ -2361,19 +2836,20 @@ index d6485177..5b9203cb 100644
      bool IsPlayer{};
      bool IsWeaponDrawn{};
 diff --git a/Code/encoding/Messages/ClientMessageFactory.h b/Code/encoding/Messages/ClientMessageFactory.h
-index 4f94d6d1..6d3e4e17 100644
+index 4f94d6d1..9bd57cb7 100644
 --- a/Code/encoding/Messages/ClientMessageFactory.h
 +++ b/Code/encoding/Messages/ClientMessageFactory.h
-@@ -45,6 +45,8 @@
+@@ -45,6 +45,9 @@
  #include <Messages/TeleportCommandRequest.h>
  #include <Messages/SetTimeCommandRequest.h>
  #include <Messages/RequestActionEvents.h>
 +#include <Messages/RequestTimeSkip.h>
 +#include <Messages/RequestWorldItem.h>
++#include <Messages/RequestHomestead.h>
  #include <Messages/PlayerRespawnRequest.h>
  #include <Messages/DialogueRequest.h>
  #include <Messages/SubtitleRequest.h>
-@@ -66,11 +68,14 @@ struct ClientMessageFactory
+@@ -66,11 +69,14 @@ struct ClientMessageFactory
      template <class T> static auto Visit(T&& func)
      {
          auto s_visitor = CreateMessageVisitor<
@@ -2389,10 +2865,27 @@ index 4f94d6d1..6d3e4e17 100644
 +            ProjectileLaunchRequest, InterruptCastRequest, AddTargetRequest, ScriptAnimationRequest, DrawWeaponRequest, MountRequest, NewPackageRequest, RequestRespawn,
 +            SyncExperienceRequest, RequestEquipmentChanges, SendChatMessageRequest, TeleportCommandRequest, PlayerRespawnRequest, DialogueRequest, SubtitleRequest,
 +            PlayerDialogueRequest, PlayerLevelRequest, TeleportRequest, RequestPlayerHealthUpdate, RequestWeatherChange, RequestCurrentWeather, RequestSetWaypoint,
-+            RequestRemoveWaypoint, RemoveSpellRequest, SetTimeCommandRequest, RequestActionEvents, RequestTimeSkip, RequestWorldItem>;
++            RequestRemoveWaypoint, RemoveSpellRequest, SetTimeCommandRequest, RequestActionEvents, RequestTimeSkip, RequestWorldItem, RequestHomestead>;
  
          return s_visitor(std::forward<T>(func));
      }
+diff --git a/Code/encoding/Messages/NotifyHomestead.h b/Code/encoding/Messages/NotifyHomestead.h
+new file mode 100644
+index 00000000..01acfd2a
+--- /dev/null
++++ b/Code/encoding/Messages/NotifyHomestead.h
+@@ -0,0 +1,11 @@
++#pragma once
++#include "Message.h"
++#include <Structs/HomesteadData.h>
++struct NotifyHomestead final : ServerMessage
++{
++    static constexpr ServerOpcode Opcode = kNotifyHomestead;
++    NotifyHomestead() : ServerMessage(Opcode) {}
++    HomesteadData Data;
++    void SerializeRaw(Buffer::Writer& w) const noexcept override { Data.Serialize(w); }
++    void DeserializeRaw(Buffer::Reader& r) noexcept override { ServerMessage::DeserializeRaw(r); Data.Deserialize(r); }
++};
 diff --git a/Code/encoding/Messages/NotifyWeatherChange.cpp b/Code/encoding/Messages/NotifyWeatherChange.cpp
 index 1fe2e245..92a13f6f 100644
 --- a/Code/encoding/Messages/NotifyWeatherChange.cpp
@@ -2465,6 +2958,23 @@ index 00000000..21bf1881
 +    WorldItemData Data;
 +    void SerializeRaw(Buffer::Writer&) const noexcept override;
 +    void DeserializeRaw(Buffer::Reader&) noexcept override;
++};
+diff --git a/Code/encoding/Messages/RequestHomestead.h b/Code/encoding/Messages/RequestHomestead.h
+new file mode 100644
+index 00000000..74f070f1
+--- /dev/null
++++ b/Code/encoding/Messages/RequestHomestead.h
+@@ -0,0 +1,11 @@
++#pragma once
++#include "Message.h"
++#include <Structs/HomesteadData.h>
++struct RequestHomestead final : ClientMessage
++{
++    static constexpr ClientOpcode Opcode = kRequestHomestead;
++    RequestHomestead() : ClientMessage(Opcode) {}
++    HomesteadData Data;
++    void SerializeRaw(Buffer::Writer& w) const noexcept override { Data.Serialize(w); }
++    void DeserializeRaw(Buffer::Reader& r) noexcept override { ClientMessage::DeserializeRaw(r); Data.Deserialize(r); }
 +};
 diff --git a/Code/encoding/Messages/RequestTimeSkip.cpp b/Code/encoding/Messages/RequestTimeSkip.cpp
 new file mode 100644
@@ -2546,18 +3056,19 @@ index 00000000..7455a51c
 +    void DeserializeRaw(Buffer::Reader&) noexcept override;
 +};
 diff --git a/Code/encoding/Messages/ServerMessageFactory.h b/Code/encoding/Messages/ServerMessageFactory.h
-index 516878b1..466a714e 100644
+index 516878b1..16e8f80d 100644
 --- a/Code/encoding/Messages/ServerMessageFactory.h
 +++ b/Code/encoding/Messages/ServerMessageFactory.h
-@@ -59,6 +59,7 @@
+@@ -59,6 +59,8 @@
  #include <Messages/NotifyRemoveWaypoint.h>
  #include <Messages/NotifySetTimeResult.h>
  #include <Messages/NotifyActionEvents.h>
 +#include <Messages/NotifyWorldItem.h>
++#include <Messages/NotifyHomestead.h>
  
  using TiltedPhoques::UniquePtr;
  
-@@ -69,11 +70,14 @@ struct ServerMessageFactory
+@@ -69,11 +71,14 @@ struct ServerMessageFactory
      template <class T> static auto Visit(T&& func)
      {
          auto s_visitor = CreateMessageVisitor<
@@ -2573,30 +3084,145 @@ index 516878b1..466a714e 100644
 +            NotifyDrawWeapon, NotifyMount, NotifyNewPackage, NotifyRespawn, NotifySyncExperience, NotifyEquipmentChanges, NotifyChatMessageBroadcast, TeleportCommandResponse,
 +            NotifyPlayerRespawn, NotifyDialogue, NotifySubtitle, NotifyPlayerDialogue, NotifyActorTeleport, NotifyPlayerLeft, NotifyPlayerJoined, NotifyDialogue, NotifySubtitle,
 +            NotifyPlayerDialogue, NotifyPlayerLevel, NotifyPlayerCellChanged, NotifyTeleport, NotifyPlayerHealthUpdate, NotifySettingsChange, NotifyWeatherChange,
-+            NotifySetWaypoint, NotifyRemoveWaypoint, NotifySetTimeResult, NotifyRemoveSpell, NotifyActionEvents, NotifyWorldItem>;
++            NotifySetWaypoint, NotifyRemoveWaypoint, NotifySetTimeResult, NotifyRemoveSpell, NotifyActionEvents, NotifyWorldItem, NotifyHomestead>;
  
          return s_visitor(std::forward<T>(func));
      }
 diff --git a/Code/encoding/Opcodes.h b/Code/encoding/Opcodes.h
-index baab493c..78c235c5 100644
+index baab493c..49d946af 100644
 --- a/Code/encoding/Opcodes.h
 +++ b/Code/encoding/Opcodes.h
-@@ -54,6 +54,8 @@ enum ClientOpcode : unsigned char
+@@ -54,6 +54,9 @@ enum ClientOpcode : unsigned char
      kRequestRemoveWaypoint,
      kSetTimeCommandRequest,
      kRequestActionEvents,
 +    kRequestTimeSkip,
 +    kRequestWorldItem,
++    kRequestHomestead,
      kClientOpcodeMax
  };
  
-@@ -114,5 +116,6 @@ enum ServerOpcode : unsigned char
+@@ -114,5 +117,7 @@ enum ServerOpcode : unsigned char
      kNotifyRemoveWaypoint,
      kNotifySetTimeResult,
      kNotifyActionEvents,
 +    kNotifyWorldItem,
++    kNotifyHomestead,
      kServerOpcodeMax
  };
+diff --git a/Code/encoding/Structs/HomesteadData.cpp b/Code/encoding/Structs/HomesteadData.cpp
+new file mode 100644
+index 00000000..e1b16966
+--- /dev/null
++++ b/Code/encoding/Structs/HomesteadData.cpp
+@@ -0,0 +1,47 @@
++#include <Structs/HomesteadData.h>
++#include <TiltedCore/Serialization.hpp>
++using TiltedPhoques::Serialization;
++void HomesteadRecord::Serialize(Buffer::Writer& w) const noexcept
++{
++    Reference.Serialize(w); Cell.Serialize(w); WorldSpace.Serialize(w); Coords.Serialize(w);
++    Serialization::WriteBool(w, Disabled);
++    Serialization::WriteBool(w, HasInventory);
++    if (HasInventory) { Serialization::WriteVarInt(w, InventoryOffset); Serialization::WriteVarInt(w, InventoryTotal); Contents.Serialize(w); }
++}
++void HomesteadRecord::Deserialize(Buffer::Reader& r) noexcept
++{
++    Reference.Deserialize(r); Cell.Deserialize(r); WorldSpace.Deserialize(r); Coords.Deserialize(r);
++    Disabled = Serialization::ReadBool(r);
++    HasInventory = Serialization::ReadBool(r);
++    if (HasInventory) { InventoryOffset = Serialization::ReadVarInt(r) & 0xFFFFFFFF; InventoryTotal = Serialization::ReadVarInt(r) & 0xFFFFFFFF; Contents.Deserialize(r); }
++}
++void HomesteadData::Serialize(Buffer::Writer& w) const noexcept
++{
++    w.WriteBits(static_cast<uint8_t>(Action), 8);
++    Serialization::WriteVarInt(w, Authority);
++    Serialization::WriteVarInt(w, Token);
++    Reference.Serialize(w);
++    Serialization::WriteBool(w, Deposit);
++    Serialization::WriteBool(w, Accepted);
++    Item.Serialize(w);
++    const auto count = std::min<size_t>(Records.size(), 64);
++    w.WriteBits(count, 8);
++    for (size_t i = 0; i < count; ++i) Records[i].Serialize(w);
++}
++void HomesteadData::Deserialize(Buffer::Reader& r) noexcept
++{
++    uint64_t action{}; r.ReadBits(action, 8); Action = static_cast<HomesteadAction>(action);
++    Authority = Serialization::ReadVarInt(r) & 0xFFFFFFFF;
++    Token = Serialization::ReadVarInt(r) & 0xFFFFFFFF;
++    Reference.Deserialize(r);
++    Deposit = Serialization::ReadBool(r);
++    Accepted = Serialization::ReadBool(r);
++    Item.Deserialize(r);
++    uint64_t count{}; r.ReadBits(count, 8);
++    Records.clear();
++    for (uint64_t i = 0; i < count; ++i)
++    {
++        HomesteadRecord record; record.Deserialize(r);
++        if (i < 64) Records.push_back(std::move(record));
++    }
++}
+diff --git a/Code/encoding/Structs/HomesteadData.h b/Code/encoding/Structs/HomesteadData.h
+new file mode 100644
+index 00000000..019fe25b
+--- /dev/null
++++ b/Code/encoding/Structs/HomesteadData.h
+@@ -0,0 +1,33 @@
++#pragma once
++#include <Structs/Inventory.h>
++#include <Structs/GameId.h>
++#include <Structs/GridCellCoords.h>
++// Both directions are bounded to 64 records per packet.
++enum class HomesteadAction : uint8_t { Poll, Publish, Open, Transfer, State, Opened, Rejected, Result };
++struct HomesteadRecord
++{
++    GameId Reference{};
++    GameId Cell{};
++    GameId WorldSpace{};
++    GridCellCoords Coords{};
++    bool Disabled{};
++    bool HasInventory{};
++    Inventory Contents{};
++    uint32_t InventoryOffset{};
++    uint32_t InventoryTotal{};
++    void Serialize(Buffer::Writer& w) const noexcept;
++    void Deserialize(Buffer::Reader& r) noexcept;
++};
++struct HomesteadData
++{
++    HomesteadAction Action{HomesteadAction::Poll};
++    uint32_t Authority{};
++    uint32_t Token{};
++    GameId Reference{};
++    bool Deposit{};
++    bool Accepted{};
++    Inventory::Entry Item{};
++    TiltedPhoques::Vector<HomesteadRecord> Records{};
++    void Serialize(Buffer::Writer& w) const noexcept;
++    void Deserialize(Buffer::Reader& r) noexcept;
++};
+diff --git a/Code/encoding/Structs/Inventory.h b/Code/encoding/Structs/Inventory.h
+index 72a4d0a6..4fe20cde 100644
+--- a/Code/encoding/Structs/Inventory.h
++++ b/Code/encoding/Structs/Inventory.h
+@@ -15,6 +15,7 @@ struct Inventory
+         int32_t Duration{};
+         float RawCost{};
+         GameId EffectId{};
++        bool operator==(const EffectItem&) const noexcept = default;
+ 
+         void Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept;
+         void Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept;
+@@ -64,7 +65,7 @@ struct Inventory
+             // TODO: the whole server side state thing is very flawed
+             // since many of these things can and will change, like poison id or charge
+             // or the fact that the enchant id can be temp
+-            return ExtraCharge == acRhs.ExtraCharge && ExtraEnchantId == acRhs.ExtraEnchantId && ExtraEnchantCharge == acRhs.ExtraEnchantCharge && ExtraEnchantRemoveUnequip == acRhs.ExtraEnchantRemoveUnequip && ExtraHealth == acRhs.ExtraHealth && ExtraPoisonId == acRhs.ExtraPoisonId &&
++            return EnchantData.IsWeapon == acRhs.EnchantData.IsWeapon && EnchantData.Effects == acRhs.EnchantData.Effects && ExtraCharge == acRhs.ExtraCharge && ExtraEnchantId == acRhs.ExtraEnchantId && ExtraEnchantCharge == acRhs.ExtraEnchantCharge && ExtraEnchantRemoveUnequip == acRhs.ExtraEnchantRemoveUnequip && ExtraHealth == acRhs.ExtraHealth && ExtraPoisonId == acRhs.ExtraPoisonId &&
+                    ExtraPoisonCount == acRhs.ExtraPoisonCount && ExtraSoulLevel == acRhs.ExtraSoulLevel && ExtraWorn == acRhs.ExtraWorn && ExtraWornLeft == acRhs.ExtraWornLeft && IsQuestItem == acRhs.IsQuestItem;
+         }
+ 
 diff --git a/Code/encoding/Structs/WorldItemData.cpp b/Code/encoding/Structs/WorldItemData.cpp
 new file mode 100644
 index 00000000..d2917587
@@ -2749,6 +3375,173 @@ index 43804904..41542476 100644
      entt::scoped_connection m_joinConnection;
 +    entt::scoped_connection m_timeSkipConnection;
  };
+diff --git a/Code/server/Services/HomesteadService.cpp b/Code/server/Services/HomesteadService.cpp
+new file mode 100644
+index 00000000..f96fd1d1
+--- /dev/null
++++ b/Code/server/Services/HomesteadService.cpp
+@@ -0,0 +1,115 @@
++#include <Services/HomesteadService.h>
++#include <World.h>
++#include <Components.h>
++#include <GameServer.h>
++#include <Messages/RequestHomestead.h>
++#include <Messages/NotifyHomestead.h>
++#include <Messages/NotifyInventoryChanges.h>
++#include <HomesteadPolicy.h>
++#include <cmath>
++namespace
++{
++int64_t Count(const Inventory& inv, const Inventory::Entry& item)
++{
++    int64_t n{};
++    for (const auto& e : inv.Entries) if (e.CanBeMerged(item)) n += e.Count;
++    return n;
++}
++}
++HomesteadService::HomesteadService(World& w, entt::dispatcher& d) : m_world(w)
++{
++    m_request = d.sink<PacketEvent<RequestHomestead>>().connect<&HomesteadService::OnRequest>(this);
++}
++bool HomesteadService::IsShared(const GameId& id) const noexcept
++{
++    const auto i = m_records.find(id);
++    return i != m_records.end() && i->second.HasInventory;
++}
++void HomesteadService::Send(Player* p, HomesteadData data)
++{
++    data.Authority = m_authority;
++    HomesteadWire::Split(data, [p](const HomesteadData& part) { NotifyHomestead n; n.Data = part; p->Send(n); });
++}
++void HomesteadService::OnRequest(const PacketEvent<RequestHomestead>& e)
++{
++    auto* p = e.pPlayer;
++    if (!p || !p->GetCharacter()) return;
++    // The earliest connected assigned player hosts this session. Never accept a guest seed.
++    uint32_t authority{};
++    for (auto* candidate : m_world.GetPlayerManager())
++        if (candidate->GetCharacter() && (!authority || candidate->GetId() < authority)) authority = candidate->GetId();
++    if (authority != m_authority)
++    {
++        m_records.clear(); m_tokens.clear(); m_assembler.Pending.clear(); m_authority = authority;
++    }
++    const auto& q = e.Packet.Data;
++    if (q.Action == HomesteadAction::Poll)
++    {
++        HomesteadData n; n.Action = HomesteadAction::State;
++        for (const auto& [id, record] : m_records)
++        {
++            n.Records.push_back(record);
++            if (n.Records.size() == 32) { Send(p, n); n.Records.clear(); }
++        }
++        Send(p, std::move(n));
++        return;
++    }
++    if (q.Action == HomesteadAction::Publish)
++    {
++        if (p->GetId() != m_authority || q.Records.size() > 64) return;
++        HomesteadData n; n.Action = HomesteadAction::State;
++        for (const auto& part : q.Records)
++        {
++            HomesteadRecord record; if (!m_assembler.Accept(part, record)) continue;
++            if (!record.Reference || (m_records.size() >= 16384 && !m_records.contains(record.Reference))) continue;
++            auto [i, fresh] = m_records.try_emplace(record.Reference, record);
++            if (!fresh)
++            {
++                i->second.Disabled = record.Disabled;
++                // Never reset a live shared chest from a subsequent host heartbeat.
++                if (!i->second.HasInventory && record.HasInventory) { i->second.HasInventory = true; i->second.Contents = record.Contents; }
++            }
++            n.Records.push_back(i->second);
++        }
++        if (!n.Records.empty()) for (auto* peer : m_world.GetPlayerManager()) Send(peer, n);
++        return;
++    }
++    auto i = m_records.find(q.Reference);
++    if (i == m_records.end() || !i->second.HasInventory || i->second.Disabled)
++    {
++        HomesteadData n; n.Action = HomesteadAction::Rejected; n.Token = q.Token; n.Reference = q.Reference; Send(p, std::move(n)); return;
++    }
++    auto& chest = i->second;
++    if (!p->GetCellComponent().IsInRange(CellIdComponent(chest.Cell, chest.WorldSpace, chest.Coords), false)) return;
++    if (q.Action == HomesteadAction::Open)
++    {
++        HomesteadData n; n.Action = HomesteadAction::Opened; n.Token = q.Token; n.Reference = q.Reference; n.Records.push_back(chest); Send(p, std::move(n)); return;
++    }
++    if (q.Action != HomesteadAction::Transfer || !HomesteadPolicy::FreshToken(q.Token, m_tokens[p->GetId()])) return;
++    m_tokens[p->GetId()] = q.Token;
++    auto actor = *p->GetCharacter();
++    auto* inv = m_world.try_get<InventoryComponent>(actor);
++    auto* owner = m_world.try_get<OwnerComponent>(actor);
++    if (!inv || !owner || owner->GetOwner() != p) return;
++    auto item = q.Item;
++    item.ExtraWorn = item.ExtraWornLeft = false;
++    const auto source = q.Deposit ? Count(inv->Content, item) : Count(chest.Contents, item);
++    const auto destination = q.Deposit ? Count(chest.Contents, item) : Count(inv->Content, item);
++    const bool accepted = item.EnchantData.Effects.size() <= 64 &&
++        (q.Deposit ? chest.Contents.Entries.size() : inv->Content.Entries.size()) < HomesteadWire::MaxEntries && !item.IsQuestItem && item.BaseId && std::isfinite(item.ExtraCharge) && std::isfinite(item.ExtraHealth) &&
++        HomesteadPolicy::CanTransfer(source, destination, item.Count);
++    if (accepted)
++    {
++        auto playerDelta = item; playerDelta.Count = q.Deposit ? -item.Count : item.Count;
++        auto chestDelta = playerDelta; chestDelta.Count = -playerDelta.Count;
++        inv->Content.AddOrRemoveEntry(playerDelta);
++        chest.Contents.AddOrRemoveEntry(chestDelta);
++        NotifyInventoryChanges delta;
++        delta.ServerId = World::ToInteger(actor); delta.OwnershipEpoch = owner->OwnershipEpoch; delta.Item = playerDelta;
++        // The initiating client has not mutated its inventory: include it in the commit.
++        for (auto* peer : m_world.GetPlayerManager()) peer->Send(delta);
++    }
++    HomesteadData n; n.Action = HomesteadAction::Result; n.Reference = q.Reference; n.Token = q.Token; n.Accepted = accepted; n.Records.push_back(chest);
++    if (accepted) { for (auto* peer : m_world.GetPlayerManager()) Send(peer, n); }
++    else Send(p, std::move(n));
++}
+diff --git a/Code/server/Services/HomesteadService.h b/Code/server/Services/HomesteadService.h
+new file mode 100644
+index 00000000..92107115
+--- /dev/null
++++ b/Code/server/Services/HomesteadService.h
+@@ -0,0 +1,21 @@
++#pragma once
++#include <Events/PacketEvent.h>
++#include <Structs/HomesteadData.h>
++#include <HomesteadWire.h>
++#include <unordered_map>
++struct World;
++struct RequestHomestead;
++struct HomesteadService
++{
++    HomesteadService(World&, entt::dispatcher&);
++    bool IsShared(const GameId&) const noexcept;
++private:
++    void OnRequest(const PacketEvent<RequestHomestead>&);
++    void Send(Player*, HomesteadData);
++    HomesteadWire::Assembler m_assembler;
++    World& m_world;
++    uint32_t m_authority{};
++    std::unordered_map<GameId, HomesteadRecord> m_records;
++    std::unordered_map<uint32_t, uint32_t> m_tokens;
++    entt::scoped_connection m_request;
++};
+diff --git a/Code/server/Services/InventoryService.cpp b/Code/server/Services/InventoryService.cpp
+index 2d7d0f07..d79b0008 100644
+--- a/Code/server/Services/InventoryService.cpp
++++ b/Code/server/Services/InventoryService.cpp
+@@ -1,4 +1,5 @@
+ #include "InventoryService.h"
++#include <Services/HomesteadService.h>
+ 
+ #include <Components.h>
+ #include <World.h>
+@@ -36,6 +37,8 @@ void InventoryService::OnInventoryChanges(const PacketEvent<RequestInventoryChan
+     if (it == view.end())
+         return;
+ 
++    if (const auto* form = m_world.try_get<FormIdComponent>(*it); form && m_world.ctx().at<HomesteadService>().IsShared(form->Id)) return;
++
+     bool isRemoteNpcInteraction = false;
+ 
+     const auto* pOwnerComponent = m_world.try_get<OwnerComponent>(*it);
 diff --git a/Code/server/Services/VolcanoService.cpp b/Code/server/Services/VolcanoService.cpp
 new file mode 100644
 index 00000000..bcaf0e48
@@ -3155,24 +3948,26 @@ index 00000000..ef938418
 +    void Broadcast(const Record&);
 +};
 diff --git a/Code/server/World.cpp b/Code/server/World.cpp
-index 8bfd5104..1a872ea0 100644
+index 8bfd5104..ce9ae007 100644
 --- a/Code/server/World.cpp
 +++ b/Code/server/World.cpp
-@@ -3,6 +3,8 @@
+@@ -3,6 +3,9 @@
  
  #include <Services/CharacterService.h>
  #include <Services/ObjectService.h>
 +#include <Services/WorldItemService.h>
 +#include <Services/VolcanoService.h>
++#include <Services/HomesteadService.h>
  #include <Services/QuestService.h>
  #include <Services/ServerListService.h>
  #include <Services/ActorValueService.h>
-@@ -24,6 +26,8 @@ World::World()
+@@ -24,6 +27,9 @@ World::World()
      ctx().emplace<PlayerService>(*this, m_dispatcher);
      ctx().emplace<CalendarService>(*this, m_dispatcher);
      ctx().emplace<ObjectService>(*this, m_dispatcher);
 +    ctx().emplace<WorldItemService>(*this, m_dispatcher);
 +    ctx().emplace<VolcanoService>(*this, m_dispatcher);
++    ctx().emplace<HomesteadService>(*this, m_dispatcher);
      ctx().emplace<ModsComponent>();
      ctx().emplace<ServerListService>(*this, m_dispatcher);
      ctx().emplace<QuestService>(*this, m_dispatcher);
@@ -3328,10 +4123,18 @@ index be777923..3cfe9faa 100644
    /**
     * Launch a party.
 diff --git a/Code/tests/encoding.cpp b/Code/tests/encoding.cpp
-index defb8084..e490515e 100644
+index defb8084..7ed6322a 100644
 --- a/Code/tests/encoding.cpp
 +++ b/Code/tests/encoding.cpp
-@@ -276,10 +276,11 @@ TEST_CASE("Differential structures", "[encoding.differential]")
+@@ -16,6 +16,7 @@
+ #include <Messages/ClientMessageFactory.h>
+ #include <Messages/ServerMessageFactory.h>
+ #include <Structs/Vector2_NetQuantize.h>
++#include <HomesteadWire.h>
+ 
+ #include <TiltedCore/Math.hpp>
+ #include <TiltedCore/Platform.hpp>
+@@ -276,10 +277,11 @@ TEST_CASE("Differential structures", "[encoding.differential]")
      GIVEN("AnimationVariables")
      {
          AnimationVariables vars, recvVars;
@@ -3346,7 +4149,7 @@ index defb8084..e490515e 100644
          vars.String_to_VectorBool(testString, vars.Booleans);
  
          vars.Floats.push_back(1.f);
-@@ -552,3 +553,185 @@ TEST_CASE("StringCache", "[encoding.string_cache]")
+@@ -552,3 +554,221 @@ TEST_CASE("StringCache", "[encoding.string_cache]")
          REQUIRE(update == recvUpdate);
      }
  }
@@ -3532,8 +4335,44 @@ index defb8084..e490515e 100644
 +        REQUIRE_FALSE(bool(state->Data.Item.BaseId));
 +    }
 +}
++
++TEST_CASE("Hearthfire chest snapshots assemble before applying and transfers roundtrip", "[encoding.homestead]")
++{
++    HomesteadData original; original.Action = HomesteadAction::State; original.Authority = 12;
++    HomesteadRecord chest; chest.Reference = GameId{3, 0x1234}; chest.Cell = GameId{3, 0x100}; chest.HasInventory = true;
++    for (int n = 0; n < 73; ++n) { Inventory::Entry item; item.BaseId = GameId{0, static_cast<uint32_t>(n + 1)}; item.Count = n + 1; chest.Contents.Entries.push_back(item); }
++    original.Records.push_back(chest);
++    HomesteadWire::Assembler assembler; unsigned parts{}, completed{};
++    HomesteadWire::Split(original, [&](const HomesteadData& part) {
++        NotifyHomestead packet; packet.Data = part;
++        Buffer buffer(65536); Buffer::Writer writer(&buffer); packet.Serialize(writer);
++        REQUIRE(writer.Size() < 65536);
++        Buffer::Reader reader(&buffer); ServerMessageFactory factory; auto decoded = factory.Extract(reader); REQUIRE(decoded);
++        auto reply = CastUnique<NotifyHomestead>(std::move(decoded)); REQUIRE(reply->Data.Authority == 12);
++        HomesteadRecord assembled;
++        if (assembler.Accept(reply->Data.Records.front(), assembled)) { ++completed; REQUIRE(assembled.Contents == chest.Contents); REQUIRE(assembled.Cell == chest.Cell); }
++        ++parts;
++    });
++    REQUIRE(parts == 10); REQUIRE(completed == 1);
++    auto bad = chest; bad.InventoryTotal = 10; bad.InventoryOffset = 2; bad.Contents.Entries.resize(1);
++    HomesteadRecord ignored; REQUIRE_FALSE(assembler.Accept(bad, ignored));
++    RequestHomestead transfer; transfer.Data.Action = HomesteadAction::Transfer; transfer.Data.Token = 22;
++    transfer.Data.Reference = chest.Reference; transfer.Data.Deposit = true; transfer.Data.Item = chest.Contents.Entries.front();
++    Buffer buffer(4096); Buffer::Writer writer(&buffer); transfer.Serialize(writer); Buffer::Reader reader(&buffer);
++    ClientMessageFactory factory; auto decoded = factory.Extract(reader); REQUIRE(decoded);
++    auto request = CastUnique<RequestHomestead>(std::move(decoded));
++    REQUIRE(request->Data.Action == HomesteadAction::Transfer); REQUIRE(request->Data.Token == 22);
++    REQUIRE(request->Data.Deposit); REQUIRE(request->Data.Item == transfer.Data.Item);
++}
++TEST_CASE("Different custom enchantment effects remain separate inventory variants", "[encoding.homestead]")
++{
++    Inventory::Entry a; a.BaseId = GameId{0, 1}; a.Count = 1;
++    Inventory::EffectItem effect; effect.EffectId = GameId{0, 2}; effect.Magnitude = 10; a.EnchantData.Effects.push_back(effect);
++    auto b = a; b.EnchantData.Effects.front().Magnitude = 20;
++    REQUIRE_FALSE(a.CanBeMerged(b)); Inventory inv; inv.AddOrRemoveEntry(a); inv.AddOrRemoveEntry(b); REQUIRE(inv.Entries.size() == 2);
++}
 diff --git a/Code/tests/xmake.lua b/Code/tests/xmake.lua
-index 19abce57..8188e595 100644
+index 19abce57..296c93fd 100644
 --- a/Code/tests/xmake.lua
 +++ b/Code/tests/xmake.lua
 @@ -1,3 +1,4 @@
@@ -3541,11 +4380,17 @@ index 19abce57..8188e595 100644
  
  target("TPTests")
      set_kind("binary")
-@@ -15,3 +16,10 @@ target("TPTests")
+@@ -15,3 +16,16 @@ target("TPTests")
          "catch2",
          "mimalloc",
          "glm")
 +
++
++target("HomesteadPolicyTests")
++    set_kind("binary")
++    set_group("Tests")
++    add_files("../../Tests/homestead.cpp")
++    add_undefines("NDEBUG")
 +
 +target("WorldItemPolicyTests")
 +    set_kind("binary")
@@ -3602,6 +4447,55 @@ index 00000000..01cbf8ae
 +    assert(std::abs(t.m_timeModel.Time - 20) < 0.001);
 +    assert(SurvivalTime::HoursToTarget(t.m_timeModel, target) == 0);
 +    std::cout << "PASS: actual DateTime.cpp advance, calendar rollover, scaled ticking, target replay\n";
++}
+diff --git a/Tests/homestead.cpp b/Tests/homestead.cpp
+new file mode 100644
+index 00000000..bc089218
+--- /dev/null
++++ b/Tests/homestead.cpp
+@@ -0,0 +1,43 @@
++#include "../Code/common/HomesteadPolicy.h"
++#include "../Code/common/HearthfireIndex.h"
++#include <cassert>
++#include <sstream>
++#include <iostream>
++#include <vector>
++#include <chrono>
++static void u32(std::string& s, uint32_t n) { s.append(reinterpret_cast<const char*>(&n), 4); }
++static void record(std::string& s, const char* type, uint32_t id, const std::string& body)
++{
++    s.append(type, 4); u32(s, static_cast<uint32_t>(body.size())); u32(s, 0); u32(s, id); u32(s, 0); u32(s, 0); s += body;
++}
++int main()
++{
++    using HomesteadPolicy::CanTransfer;
++    assert(CanTransfer(1,0,1));
++    assert(!CanTransfer(0,0,1)); // the second simultaneous take cannot spend the same item
++    int64_t chest=1, playerA=0, playerB=0;
++    if(CanTransfer(chest,playerA,1)){--chest;++playerA;}
++    if(CanTransfer(chest,playerB,1)){--chest;++playerB;}
++    assert(chest==0 && playerA+playerB==1);
++    assert(!CanTransfer(10,0,-1)); assert(!CanTransfer(10,0,0));
++    assert(!CanTransfer(32768,0,32768));
++    assert(!CanTransfer(10,INT32_MAX,1)); assert(!CanTransfer(10,-1,1));
++    assert(HomesteadPolicy::FreshToken(2,1));
++    assert(!HomesteadPolicy::FreshToken(1,1)); assert(!HomesteadPolicy::FreshToken(0,0));
++    assert(!HomesteadPolicy::FreshToken(1,2));
++    std::string masters;
++    masters += "MAST"; masters.append("\x02\0",2); masters.append("a\0",2);
++    masters += "MAST"; masters.append("\x02\0",2); masters.append("b\0",2);
++    std::string esm; record(esm,"TES4",0,masters);
++    std::string children; record(children,"REFR",0x02001234,""); record(children,"REFR",0x00001235,""); record(children,"ACHR",0x02001236,"");
++    esm += "GRUP"; u32(esm,static_cast<uint32_t>(24+children.size())); esm.append(16,'\0'); esm += children;
++    const auto path = std::filesystem::temp_directory_path() / ("hearthfire-index-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".esm");
++    auto put=[&](const std::string& data){std::ofstream f(path,std::ios::binary);f.write(data.data(),data.size());};
++    put(esm); std::unordered_set<uint32_t> ids;
++    assert(HearthfireIndex::ReadReferenceIndex(path,0x07000000,ids));
++    assert(ids.size()==1 && ids.contains(0x07001234)); // local load order differs from file's master index
++    esm.pop_back(); put(esm); ids.clear(); assert(!HearthfireIndex::ReadReferenceIndex(path,0x03000000,ids));
++    put("GRUP"); ids.clear(); assert(!HearthfireIndex::ReadReferenceIndex(path,0,ids));
++    std::filesystem::remove(path);
++    std::cout << "Hearthfire index, quantity conservation, overflow and replay policies passed\n";
 +}
 diff --git a/Tests/stubs/TiltedCore/Buffer.hpp b/Tests/stubs/TiltedCore/Buffer.hpp
 new file mode 100644
