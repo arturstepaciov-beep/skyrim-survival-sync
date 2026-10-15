@@ -1,7 +1,56 @@
-# Survival Sync alpha 0.4 — Apocalypse Volcano test build
+# Survival Sync alpha 0.5 — Hearthfire and shared storage test build
 
-This custom client/server build targets the Apocalypse 10.3.0 archive supplied for
-inspection. Keep the original Apocalypse installed on both PCs; no Apocalypse
+Unofficial matching Windows client/server build. Install the same timestamped ZIP
+on both PCs AND restart the server. Existing Survival, weather, item movement,
+TK Dodge and Apocalypse Volcano adapters are retained.
+
+## Hearthfire houses follow the host
+
+- Covers placed architecture, enable-parent markers, furniture, doors, lights and
+  storage references owned by HearthFires.esm (Lakeview, Windstad, Heljarchen).
+- The first connected player whose character is assigned is the session host.
+  Connect the house owner first. Party leadership does not choose the house host.
+- Guests receive enabled/disabled states from that host. Newly built or removed
+  furnishings are published on the next one-second scan; ten-second snapshots
+  recover state for late joiners.
+- The index is read locally from the installed HearthFires.esm; no game assets
+  or modified Bethesda plugins are bundled. This is not a universal mod-home adapter.
+- The host must load each house and its storage once per server session so the
+  native save inventory is available. A guest cannot seed an unseen chest from
+  their own save. Storage becomes available after the host's snapshot arrives.
+- This synchronizes placed structure visibility and storage. It does not copy
+  ownership quests, adoption, stewards, NPC schedules, navmesh or building menus.
+  Construction is performed by the host; guests see the resulting placed objects.
+
+## Shared cooperative home chests
+
+- Existing Hearthfire containers become shared cooperative storage; there is no
+  separate chest plugin to install or console-spawned replacement chest.
+- Open waits for the server's current contents. Deposits and withdrawals are
+  intercepted before local mutation; the server commits both inventory changes.
+- Exact item variants and source quantities are checked, transfers have monotonic
+  request tokens, and simultaneous withdrawals cannot spend the same last item.
+- Large snapshots are split into bounded chunks and applied only when complete.
+  Limits: 4096 distinct entries per inventory, 64 custom effects per entry and
+  32767 items per individual transfer. Quest items cannot be transferred here.
+  Withdraw to your inventory before dropping items into the world or forwarding
+  them to NPCs. Script-driven storage consumption is outside this adapter.
+  Unequip worn items before depositing them. Unmapped dynamic item forms remain
+  subject to Reborn's existing item-serialization limits.
+- The session state lives in server memory; the host receives committed contents
+  in the native save. Save on the host before stopping the server. On a clean
+  guest disconnect the guest's original house/storage are restored; items acquired
+  through completed transfers stay with the player. A crash cannot run that cleanup.
+
+## Validation
+
+This is an experimental in-game test build. Automated tests check indexing,
+quantity conservation, replay rejection, packet chunk assembly and inventory
+variant identity. They do not prove Skyrim engine behavior. Two-player validation
+is still required, including different house progress, late joins, simultaneous
+last-item withdrawal, enchanted items, reconnects and host save/reload.
+
+Keep the original Apocalypse 10.3.0 installed on both PCs for Volcano. No Apocalypse
 plugin, scripts, meshes or textures are included in this package.
 
 ## Volcano adapter
@@ -48,7 +97,7 @@ replicated by this adapter; the target is the persistent fountain/light and bomb
 Use this exact custom build on both PCs AND the server; restart all three.
 Preserve the existing STServer.ini and its enabled Survival/item-drop settings.
 Extract the outer Actions artifact ZIP to obtain the installable Windows ZIP.
-The build identifier is survival-sync-v04-volcano.
+Each build carries its Vilnius start timestamp in the package/artifact name and the client/server build identifier. BuildInfo.json inside the ZIP records local/UTC time and source commit.
 
 The workflow must compile the native client/server, run Survival/world-item/weather
 packet tests and ownership-policy tests, and build the UI before uploading a package.
