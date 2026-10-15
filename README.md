@@ -10,7 +10,7 @@
   locally are deducted from the server skip, including overlap during another sleep.
   Awake players still accrue elapsed Survival fatigue; they do not receive sleep benefits.
 - Experimental TK Dodge graph-input adapter forwards TKDodge-prefixed player events
-  and standard animation variables; old dodges are not replayed on resync.
+  and standard animation variables plus roll/step selection; old dodges are not replayed on resync.
   Identical TK Dodge SE assets/behavior generation required on both PCs.
   This is not general compatibility with all animation mods or custom graph variables.
 - Remote casts resolve the spell in the packet rather than stale equipped-hand state.
@@ -22,8 +22,11 @@ Volcano's scripted eruption/secondary-source replication is NOT resolved. Added 
 for spell routing and projectiles launched by non-actor sources to diagnose it.
 The matching Apocalypse 10.3 spell/plugin/script files are needed to finish its adapter.
 
-Inn rental/shared-bed ownership is NOT fixed. The winning rental script and exact inn
-must be inspected before changing per-player ownership or rental state.
+Inn rental flag isolation is implemented for JobInnkeeperFaction members: Variable09
+stays local, allowing each player to rent locally instead of inheriting another player's
+already-rented flag. Existing save flags may require the old rental to expire. This does
+not add extra rooms or permit simultaneous use of the same occupied bed; shared-bed
+ownership remains unimplemented. Modified rental scripts need separate validation.
 
 Sleep, weather and TK Dodge behavior require two-player in-game validation. Automated
 policy and packet tests do not establish game-engine behavior. Use the same custom

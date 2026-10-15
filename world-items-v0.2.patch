@@ -76,7 +76,7 @@ index 00000000..5afab124
 +    Inventory::Entry Item;
 +};
 diff --git a/Code/client/Games/Animation.cpp b/Code/client/Games/Animation.cpp
-index 0714b2b8..3680490d 100644
+index 0714b2b8..81b595ac 100644
 --- a/Code/client/Games/Animation.cpp
 +++ b/Code/client/Games/Animation.cpp
 @@ -13,6 +13,10 @@
@@ -117,7 +117,7 @@ index 0714b2b8..3680490d 100644
  
          // Save for later
          if (res)
-@@ -165,3 +173,57 @@ static TiltedPhoques::Initializer s_animationHook(
+@@ -165,3 +173,60 @@ static TiltedPhoques::Initializer s_animationHook(
  
          TP_HOOK(&RealPerformAction, HookPerformAction);
      });
@@ -146,7 +146,10 @@ index 0714b2b8..3680490d 100644
 +        event.Tick = World::Get().GetTick();
 +        event.ActorId = player->formID;
 +        event.EventName = name;
-+        event.State1 = player->actorState.flags1;
++        uint32_t step = 0;
++        BSFixedString stepName("iStep");
++        player->animationGraphHolder.GetVariableInt(&stepName, &step);
++        event.State1 = step <= 2 ? step : 0; // TK roll/step selection, not vanilla actor flags.
 +        event.State2 = player->actorState.flags2;
 +        player->SaveAnimationVariables(event.Variables);
 +        World::Get().GetRunner().Trigger(event);
@@ -176,7 +179,7 @@ index 0714b2b8..3680490d 100644
 +    hook.update = dispatcher.sink<UpdateEvent>().connect<&PlayerGraphHook::OnUpdate>(&hook);
 +}
 diff --git a/Code/client/Games/Skyrim/Actor.cpp b/Code/client/Games/Skyrim/Actor.cpp
-index c3f3d1ad..0f7887db 100644
+index c3f3d1ad..36e73c9a 100644
 --- a/Code/client/Games/Skyrim/Actor.cpp
 +++ b/Code/client/Games/Skyrim/Actor.cpp
 @@ -14,6 +14,8 @@
@@ -208,7 +211,28 @@ index c3f3d1ad..0f7887db 100644
  
          removalEvent.TargetId = apThis->formID;
          removalEvent.SpellId = apSpell->formID;
-@@ -625,9 +627,7 @@ void Actor::SetActorValue(uint32_t aId, float aValue) noexcept
+@@ -553,6 +555,20 @@ TESForm* Actor::GetCurrentLocation()
+     return FUNC_GetActorLocation(this);
+ }
+ 
++bool Actor::HasLocalRentalState() const noexcept
++{
++    const auto factions = GetFactions();
++    const auto& mods = World::Get().GetModSystem();
++    auto isInnkeeper = [&mods](const auto& entries)
++    {
++        return std::any_of(entries.begin(), entries.end(), [&mods](const auto& entry)
++        {
++            return entry.Rank >= 0 && mods.GetGameId(entry.Id) == 0x5091B; // Skyrim.esm JobInnkeeperFaction
++        });
++    };
++    return isInnkeeper(factions.NpcFactions) || isInnkeeper(factions.ExtraFactions);
++}
++
+ Factions Actor::GetFactions() const noexcept
+ {
+     Factions result;
+@@ -625,9 +641,7 @@ void Actor::SetActorValue(uint32_t aId, float aValue) noexcept
  
  void Actor::ForceActorValue(ActorValueOwner::ForceMode aMode, uint32_t aId, float aValue) noexcept
  {
@@ -219,7 +243,24 @@ index c3f3d1ad..0f7887db 100644
  
      if (aValue == initialValue)
          return;
-@@ -897,8 +897,8 @@ void Actor::FixVampireLordModel() noexcept
+@@ -724,11 +738,14 @@ void Actor::SetMagicEquipment(const MagicEquipment& acEquipment) noexcept
+ 
+ void Actor::SetActorValues(const ActorValues& acActorValues) noexcept
+ {
++    const bool localRental = HasLocalRentalState();
+     for (auto& value : acActorValues.ActorMaxValuesList)
+-        ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, value.first, value.second);
++        if (!(localRental && value.first == ActorValueInfo::kVariable09))
++            ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, value.first, value.second);
+ 
+     for (auto& value : acActorValues.ActorValuesList)
+-        ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, value.first, value.second);
++        if (!(localRental && value.first == ActorValueInfo::kVariable09))
++            ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, value.first, value.second);
+ }
+ 
+ void Actor::SetFactions(const Factions& acFactions) noexcept
+@@ -897,8 +914,8 @@ void Actor::FixVampireLordModel() noexcept
      }
  
      // TODO: weapon draw code does not seem to take care of this
@@ -230,7 +271,7 @@ index c3f3d1ad..0f7887db 100644
  
      g_forceAnimation = false;
  }
-@@ -1080,6 +1080,11 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, Actor, TESBoundObject* apItem, Extra
+@@ -1080,6 +1097,11 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, Actor, TESBoundObject* apItem, Extra
  
  void* TP_MAKE_THISCALL(HookPickUpObject, Actor, TESObjectREFR* apObject, int32_t aCount, bool aUnk1, float aUnk2)
  {
@@ -242,7 +283,7 @@ index c3f3d1ad..0f7887db 100644
      if (!ScopedInventoryOverride::IsOverriden())
      {
          auto& modSystem = World::Get().GetModSystem();
-@@ -1117,11 +1122,27 @@ void* TP_MAKE_THISCALL(HookDropObject, Actor, void* apResult, TESBoundObject* ap
+@@ -1117,11 +1139,27 @@ void* TP_MAKE_THISCALL(HookDropObject, Actor, void* apResult, TESBoundObject* ap
      if (apExtraData)
          apThis->GetItemFromExtraData(item, apExtraData);
  
@@ -274,7 +315,7 @@ index c3f3d1ad..0f7887db 100644
  }
  
  void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLocation, NiPoint3* apRotation) noexcept
-@@ -1207,12 +1228,18 @@ void TP_MAKE_THISCALL(HookUnequipObject, Actor, void* apUnk1, TESBoundObject* ap
+@@ -1207,12 +1245,18 @@ void TP_MAKE_THISCALL(HookUnequipObject, Actor, void* apUnk1, TESBoundObject* ap
      TiltedPhoques::ThisCall(RealUnequipObject, apThis, apUnk1, apObject, aUnk2, apUnk3);
  }
  
@@ -296,7 +337,7 @@ index c3f3d1ad..0f7887db 100644
  
      // The player having the conversation may not own this NPC. Ambient
      // speech still comes only from the actor's simulation owner.
-@@ -1265,7 +1292,7 @@ bool TP_MAKE_THISCALL(HookIsFleeing, Actor)
+@@ -1265,7 +1309,7 @@ bool TP_MAKE_THISCALL(HookIsFleeing, Actor)
      // TODO: investigate why the flee flag is set at all on remote players sometimes.
      if (apThis->GetExtension()->IsPlayer())
          return false;
@@ -305,6 +346,18 @@ index c3f3d1ad..0f7887db 100644
      return TiltedPhoques::ThisCall(RealIsFleeing, apThis);
  }
  
+diff --git a/Code/client/Games/Skyrim/Actor.h b/Code/client/Games/Skyrim/Actor.h
+index 3c4590c4..fa5467d9 100644
+--- a/Code/client/Games/Skyrim/Actor.h
++++ b/Code/client/Games/Skyrim/Actor.h
+@@ -202,6 +202,7 @@ struct Actor : TESObjectREFR
+     TESNPC* GetLeveledPick() const noexcept;
+     uint16_t GetLevel() const noexcept;
+     Factions GetFactions() const noexcept;
++    bool HasLocalRentalState() const noexcept;
+     ActorValues GetEssentialActorValues() const noexcept;
+     [[nodiscard]] bool IsDead() const noexcept;
+     [[nodiscard]] bool IsDragon() const noexcept;
 diff --git a/Code/client/Games/Skyrim/Events/EventDispatcher.h b/Code/client/Games/Skyrim/Events/EventDispatcher.h
 index 448a179f..3b91ae42 100644
 --- a/Code/client/Games/Skyrim/Events/EventDispatcher.h
@@ -625,6 +678,45 @@ index dd442b60..7e86c133 100644
      World& m_world;
      TransportService& m_transport;
  };
+diff --git a/Code/client/Services/Generic/ActorValueService.cpp b/Code/client/Services/Generic/ActorValueService.cpp
+index b3f309a7..6df327cd 100644
+--- a/Code/client/Services/Generic/ActorValueService.cpp
++++ b/Code/client/Services/Generic/ActorValueService.cpp
+@@ -127,10 +127,11 @@ void ActorValueService::BroadcastActorValues() noexcept
+         requestMaxValueChanges.OwnershipEpoch = localComponent.OwnershipEpoch;
+ 
+         bool isPlayer = pActor->GetExtension() && pActor->GetExtension()->IsPlayer();
++        const bool localRental = pActor->HasLocalRentalState();
+ 
+         for (int i = 0; i < ActorValueInfo::kActorValueCount; i++)
+         {
+-            if (isPlayer && i == ActorValueInfo::kDragonSouls)
++            if ((isPlayer && i == ActorValueInfo::kDragonSouls) || (localRental && i == ActorValueInfo::kVariable09))
+                 continue;
+             
+             float newValue = pActor->GetActorValue(i);
+@@ -332,8 +333,10 @@ void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMes
+     if (!pActor)
+         return;
+ 
++    const bool localRental = pActor->HasLocalRentalState();
+     for (const auto& [key, value] : acMessage.Values)
+     {
++        if (localRental && key == ActorValueInfo::kVariable09) continue;
+         // Syncing dragon souls triggers "Dragon soul collected" event
+         if (key == ActorValueInfo::kDragonSouls || key == ActorValueInfo::kHealth)
+             continue;
+@@ -368,8 +371,10 @@ void ActorValueService::OnActorMaxValueChanges(const NotifyActorMaxValueChanges&
+     if (!pActor)
+         return;
+ 
++    const bool localRental = pActor->HasLocalRentalState();
+     for (const auto& [key, value] : acMessage.Values)
+     {
++        if (localRental && key == ActorValueInfo::kVariable09) continue;
+         if (key == ActorValueInfo::kDragonSouls)
+             continue;
+ 
 diff --git a/Code/client/Services/Generic/CalendarService.cpp b/Code/client/Services/Generic/CalendarService.cpp
 index 585d034d..ac24ad06 100644
 --- a/Code/client/Services/Generic/CalendarService.cpp
@@ -1755,10 +1847,10 @@ index 00000000..478a19ee
 +    void Materialize(Local&);
 +};
 diff --git a/Code/client/Systems/AnimationSystem.cpp b/Code/client/Systems/AnimationSystem.cpp
-index 5d2a12b1..011782b8 100644
+index 5d2a12b1..8ba754c3 100644
 --- a/Code/client/Systems/AnimationSystem.cpp
 +++ b/Code/client/Systems/AnimationSystem.cpp
-@@ -41,6 +41,17 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
+@@ -41,6 +41,19 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
  
          const auto& first = *it;
  
@@ -1766,6 +1858,8 @@ index 5d2a12b1..011782b8 100644
 +        {
 +            // Only the matching mod graph on the remote actor executes this input.
 +            apActor->LoadAnimationVariables(first.Variables);
++            BSFixedString stepName("iStep");
++            apActor->animationGraphHolder.SetVariableInt(&stepName, first.State1 <= 2 ? first.State1 : 0);
 +            BSFixedString eventName(first.EventName.c_str());
 +            const bool accepted = apActor->SendAnimationEvent(&eventName);
 +            if (!accepted) spdlog::warn("Remote graph rejected custom animation {}", first.EventName.c_str());
@@ -1776,7 +1870,7 @@ index 5d2a12b1..011782b8 100644
          const auto actionId = first.ActionId;
          const auto targetId = first.TargetId;
  
-@@ -57,6 +68,7 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
+@@ -57,6 +70,7 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
          // Play the animation
          TESActionData actionData(first.Type & 0x3, apActor, pAction, pTarget);
          actionData.eventName = BSFixedString(first.EventName.c_str());
@@ -1784,7 +1878,7 @@ index 5d2a12b1..011782b8 100644
          actionData.idleForm = Cast<TESIdleForm>(TESForm::GetById(first.IdleId));
          actionData.someFlag = ((first.Type & 0x4) != 0) ? 1 : 0;
  
-@@ -86,11 +98,12 @@ void AnimationSystem::AddActionsForReplay(RemoteAnimationComponent& aAnimationCo
+@@ -86,11 +100,12 @@ void AnimationSystem::AddActionsForReplay(RemoteAnimationComponent& aAnimationCo
      // A replay rebuilds past state, so it is due right away rather than when playback reaches the original ticks
      for (auto action : acReplay.Actions)
      {
@@ -1828,7 +1922,7 @@ index b0596604..05a06350 100644
      ctx().emplace<QuestService>(*this, m_dispatcher);
      ctx().emplace<PartyService>(*this, m_dispatcher, m_transport);
 diff --git a/Code/common/BuildInfo.h.in b/Code/common/BuildInfo.h.in
-index 5db8d876..8f4aac98 100644
+index 5db8d876..63e9d67c 100644
 --- a/Code/common/BuildInfo.h.in
 +++ b/Code/common/BuildInfo.h.in
 @@ -1,4 +1,4 @@
@@ -1837,7 +1931,7 @@ index 5db8d876..8f4aac98 100644
 -#define BUILD_BRANCH "${GIT_BRANCH}"
 -#define BUILD_COMMIT "${GIT_TAG}"
 +#define BUILD_BRANCH "survival-worlditems"
-+#define BUILD_COMMIT "survival-worlditems-v04-physics"
++#define BUILD_COMMIT "survival-sync-v03-weather-sleep-dodge"
 diff --git a/Code/common/DateTime.cpp b/Code/common/DateTime.cpp
 index b091ef61..bfb1eeb4 100644
 --- a/Code/common/DateTime.cpp
@@ -2911,7 +3005,7 @@ index be777923..3cfe9faa 100644
    /**
     * Launch a party.
 diff --git a/Code/tests/encoding.cpp b/Code/tests/encoding.cpp
-index defb8084..37fbdb78 100644
+index defb8084..88a20bc5 100644
 --- a/Code/tests/encoding.cpp
 +++ b/Code/tests/encoding.cpp
 @@ -276,10 +276,11 @@ TEST_CASE("Differential structures", "[encoding.differential]")
@@ -2929,7 +3023,7 @@ index defb8084..37fbdb78 100644
          vars.String_to_VectorBool(testString, vars.Booleans);
  
          vars.Floats.push_back(1.f);
-@@ -552,3 +553,152 @@ TEST_CASE("StringCache", "[encoding.string_cache]")
+@@ -552,3 +553,153 @@ TEST_CASE("StringCache", "[encoding.string_cache]")
          REQUIRE(update == recvUpdate);
      }
  }
@@ -3075,6 +3169,7 @@ index defb8084..37fbdb78 100644
 +    original.ActorId = 0x14;
 +    original.Tick = 1500;
 +    original.EventName = "TKDodgeLeft";
++    original.State1 = 2; // Step dodge mode accompanies the graph event.
 +    Buffer buffer(16384);
 +    Buffer::Writer writer(&buffer);
 +    original.GenerateDifferential(previous, writer);
