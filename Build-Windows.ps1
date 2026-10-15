@@ -1,6 +1,18 @@
-# Rebuild corrected Volcano alpha sources; house/chest features are not implemented.
-param([string]$WorkDirectory = (Join-Path $PSScriptRoot 'build-work'))
+# Build host-authoritative Hearthfire structures and transactional shared home storage.
+param(
+    [string]$WorkDirectory = (Join-Path $PSScriptRoot 'build-work'),
+    [string]$BuildStamp = ''
+)
 $ErrorActionPreference = 'Stop'
+$startedUtc = [DateTime]::UtcNow
+$vilniusZone = [TimeZoneInfo]::FindSystemTimeZoneById('FLE Standard Time')
+$startedLocal = [TimeZoneInfo]::ConvertTimeFromUtc($startedUtc, $vilniusZone)
+if (-not $BuildStamp) { $BuildStamp = $startedLocal.ToString('yyyy-MM-dd_HH-mm-ss') + '-LT' }
+if ($BuildStamp -notmatch '^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-LT$') { throw 'Invalid build timestamp' }
+$packageName = "SurvivalSync-v0.5-$BuildStamp-Windows"
+$buildVersion = "survival-sync-v05-hearthfire-$BuildStamp"
+$sourceCommit = (& git -C $PSScriptRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Cannot determine package source commit' }
 function Run([string]$Program, [string[]]$Arguments) {
     & $Program @Arguments
     if ($LASTEXITCODE -ne 0) { throw "$Program failed with exit code $LASTEXITCODE" }
@@ -20,12 +32,17 @@ try {
     Run -Program 'git' -Arguments @('checkout','-b','survival-sync-v01','9ce0338522277e0ff0a12e8d2aa09ce67ad41a59')
     Run -Program 'git' -Arguments @('apply','--check',$patch)
     Run -Program 'git' -Arguments @('apply',$patch)
+    $buildInfoPath = Join-Path $source 'Code/common/BuildInfo.h.in'
+    $buildInfo = Get-Content $buildInfoPath -Raw
+    $buildInfo = $buildInfo.Replace('survival-sync-v05-hearthfire', $buildVersion)
+    [IO.File]::WriteAllText($buildInfoPath, $buildInfo, [Text.UTF8Encoding]::new($false))
     Run -Program 'git' -Arguments @('submodule','update','--init','--recursive','--depth=1')
     Run -Program 'xmake' -Arguments @('config','--plat=windows','--arch=x64','--mode=releasedbg','--yes')
     Run -Program 'xmake' -Arguments @('-y')
     # Native encoding tests include the new request packet round trip.
-    Run -Program 'xmake' -Arguments @('run','TPTests','[encoding.survival],[encoding.worlditems],[encoding.weather]')
+    Run -Program 'xmake' -Arguments @('run','TPTests','[encoding.survival],[encoding.worlditems],[encoding.weather],[encoding.homestead]')
     Run -Program 'xmake' -Arguments @('run','WorldItemPolicyTests')
+    Run -Program 'xmake' -Arguments @('run','HomesteadPolicyTests')
     Run -Program 'pnpm' -Arguments @('--prefix','Code/skyrim_ui','install')
     Run -Program 'pnpm' -Arguments @('--prefix','Code/skyrim_ui','deploy:production')
     Run -Program 'xmake' -Arguments @('install','-o','distrib')
@@ -53,7 +70,16 @@ try {
     Set-Content -Path $configPath -Value $ini -Encoding utf8
     Copy-Item -Path (Join-Path $PSScriptRoot 'README.md') -Destination (Join-Path $package 'SurvivalSync-README.md')
     Copy-Item -Path (Join-Path $PSScriptRoot 'LICENSE') -Destination (Join-Path $package 'LICENSE')
-    $zip = Join-Path $WorkDirectory 'SurvivalSync-v0.4-Windows.zip'
+    @{
+        package = $packageName
+        buildVersion = $buildVersion
+        sourceCommit = $sourceCommit
+        upstreamCommit = '9ce0338522277e0ff0a12e8d2aa09ce67ad41a59'
+        startedUtc = $startedUtc.ToString('o')
+        startedVilnius = $startedLocal.ToString('yyyy-MM-dd HH:mm:ss')
+        timeZone = 'Europe/Vilnius'
+    } | ConvertTo-Json | Set-Content -Path (Join-Path $package 'BuildInfo.json') -Encoding utf8
+    $zip = Join-Path $WorkDirectory "$packageName.zip"
     Compress-Archive -Path (Join-Path $package '*') -DestinationPath $zip -Force
     Write-Host "Windows package created: $zip"
     Write-Host 'This script never changes your installed Skyrim files.'
