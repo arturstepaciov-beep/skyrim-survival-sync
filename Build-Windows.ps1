@@ -1,3 +1,4 @@
+# Rebuild corrected Volcano alpha sources; house/chest features are not implemented.
 param([string]$WorkDirectory = (Join-Path $PSScriptRoot 'build-work'))
 $ErrorActionPreference = 'Stop'
 function Run([string]$Program, [string[]]$Arguments) {
