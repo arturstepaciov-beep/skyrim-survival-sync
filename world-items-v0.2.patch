@@ -738,10 +738,14 @@ index a0378612faa3c2f7140620d10a5a9206c351a31d..6612b0b6a403631de84c97d383eb3af0
  
  #include <Messages/SendChatMessageRequest.h>
  #include <Messages/TeleportRequest.h>
-@@ -45,6 +46,8 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
+@@ -45,6 +46,12 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
              ProcessConnectMessage(eventArgs);
          else if (eventName == "disconnect")
              ProcessDisconnectMessage();
++        else if (eventName == "autoResyncOn")
++            World::Get().GetRunner().Queue([] { World::Get().ctx().at<WorldItemService>().SetAutoResync(true); });
++        else if (eventName == "autoResyncOff")
++            World::Get().GetRunner().Queue([] { World::Get().ctx().at<WorldItemService>().SetAutoResync(false); });
 +        else if (eventName == "resync")
 +            World::Get().GetRunner().Queue([] { World::Get().ctx().at<WorldItemService>().Resync(); });
          else if (eventName == "revealPlayers")
@@ -752,7 +756,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..fcdefb1ca498bc4e408bd87e9d884dab0459d0ce
 --- /dev/null
 +++ b/Code/client/Services/Generic/WorldItemService.cpp
-@@ -0,0 +1,411 @@
+@@ -0,0 +1,421 @@
 +#include <Services/WorldItemService.h>
 +#include <World.h>
 +#include <Services/TransportService.h>
@@ -1038,6 +1042,7 @@ index 0000000000000000000000000000000000000000..fcdefb1ca498bc4e408bd87e9d884dab
 +    }
 +    m_grabbedFormId = 0;
 +    m_nextResyncTick = 0;
++    m_autoResyncTimer = 0;
 +    m_items.clear();
 +    m_pendingDrops.clear();
 +    m_observedProps.clear();
@@ -1086,6 +1091,15 @@ index 0000000000000000000000000000000000000000..fcdefb1ca498bc4e408bd87e9d884dab
 +        m_observedProps.clear();
 +        return;
 +    }
++    if (m_autoResync)
++    {
++        m_autoResyncTimer += e.Delta;
++        if (m_autoResyncTimer >= 10.0)
++        {
++            m_autoResyncTimer = 0;
++            Resync();
++        }
++    }
 +    m_timer += e.Delta;
 +    m_physicsScanTimer += e.Delta;
 +    m_snapshotTimer += e.Delta;
@@ -1094,7 +1108,7 @@ index 0000000000000000000000000000000000000000..fcdefb1ca498bc4e408bd87e9d884dab
 +        m_snapshotTimer = 0;
 +        Send(WorldItemAction::Snapshot, {});
 +    }
-+    if (m_timer < 1.0 / 30.0)
++    if (m_timer < 1.0 / 15.0)
 +        return;
 +    const float dt = static_cast<float>(m_timer);
 +    m_timer = 0;
@@ -1157,7 +1171,7 @@ index 0000000000000000000000000000000000000000..fcdefb1ca498bc4e408bd87e9d884dab
 +            l.Data.RY = pose.RY;
 +            l.Data.RZ = pose.RZ;
 +        }
-+        if (!held && l.StillTime >= 30.f)
++        if (!held && l.StillTime >= 3.f)
 +            Send(WorldItemAction::Release, l.Data);
 +        l.WasGrabbed = held;
 +    }
@@ -1169,7 +1183,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..b0a517ddf4034bd4e5d1460b4d640284fa2d7969
 --- /dev/null
 +++ b/Code/client/Services/WorldItemService.h
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,57 @@
 +#pragma once
 +#include <Structs/WorldItemData.h>
 +#include <Games/Events.h>
@@ -1186,6 +1200,7 @@ index 0000000000000000000000000000000000000000..b0a517ddf4034bd4e5d1460b4d640284
 +public:
 +    WorldItemService(World&, entt::dispatcher&, TransportService&);
 +    void Resync();
++    void SetAutoResync(bool enabled) { m_autoResync = enabled; m_autoResyncTimer = 0; }
 +    bool TryPickup(TESObjectREFR*);
 +    bool IsTracked(TESObjectREFR*) const;
 +
@@ -1208,6 +1223,8 @@ index 0000000000000000000000000000000000000000..b0a517ddf4034bd4e5d1460b4d640284
 +    Map<uint32_t, WorldItemData> m_pendingDrops;
 +    Map<uint32_t, WorldItemData> m_observedProps;
 +    void ObservePhysics();
++    bool m_autoResync{};
++    double m_autoResyncTimer{};
 +    uint64_t m_nextResyncTick{};
 +    uint32_t m_dropCounter{};
 +    uint32_t m_grabbedFormId{};
@@ -2065,7 +2082,7 @@ diff --git a/Code/skyrim_ui/src/app/components/root/root.component.html b/Code/s
 index e660fa4c601907ccc138b84df00cc34b9295928c..47982a3b93898824498b4170455a735de96c7dcb 100644
 --- a/Code/skyrim_ui/src/app/components/root/root.component.html
 +++ b/Code/skyrim_ui/src/app/components/root/root.component.html
-@@ -25,6 +25,10 @@
+@@ -25,6 +25,14 @@
          {{ 'COMPONENT.ROOT.CONNECT' | transloco }}
        </button>
        <ng-container *ngIf="connected$ | async">
@@ -2073,6 +2090,10 @@ index e660fa4c601907ccc138b84df00cc34b9295928c..47982a3b93898824498b4170455a735d
 +          title="Refresh nearby remote NPC positions, animations and world items from the server">
 +          {{ resyncPending ? 'Resync requested' : 'Resync with host' }}
 +        </button>
++        <label>
++          <input type="checkbox" [checked]="autoResync" (change)="setAutoResync(!autoResync)">
++          Auto resync every 10 seconds
++        </label>
          <button
            data-style-ornament="inverted"
            [attr.data-style-active]="(view$ | async) === RootView.DISCONNECT"
@@ -2080,10 +2101,17 @@ diff --git a/Code/skyrim_ui/src/app/components/root/root.component.ts b/Code/sky
 index 79393f7978afa751ce206f54377db54345d5b5a9..657d861b2a2d2ea3a2467bddaf86d1936fdbba24 100644
 --- a/Code/skyrim_ui/src/app/components/root/root.component.ts
 +++ b/Code/skyrim_ui/src/app/components/root/root.component.ts
-@@ -121,6 +121,15 @@ export class RootComponent implements OnInit {
+@@ -121,6 +121,22 @@ export class RootComponent implements OnInit {
      this.uiRepository.openView(null);
    }
  
++  public autoResync = false;
++
++  public setAutoResync(enabled: boolean): void {
++    this.autoResync = enabled;
++    this.client.setAutoResync(enabled);
++  }
++
 +  public resyncPending = false;
 +
 +  public resync(): void {
@@ -2100,10 +2128,13 @@ diff --git a/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts b/Code/skyrim_ui
 index 9a2ec37900b82920e3017036645ac29684bc335f..edcded00e8bceb5651b1ea33003e5a09ab4f93db 100644
 --- a/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts
 +++ b/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts
-@@ -101,6 +101,10 @@ export class SkyrimtogetherMock extends EventEmitter implements SkyrimTogether {
+@@ -101,6 +101,13 @@ export class SkyrimtogetherMock extends EventEmitter implements SkyrimTogether {
      }
    }
  
++  autoResyncOn(): void { console.info("Auto resync enabled"); }
++  autoResyncOff(): void { console.info("Auto resync disabled"); }
++
 +  resync(): void {
 +    console.info("Client resync requested");
 +  }
@@ -2115,10 +2146,15 @@ diff --git a/Code/skyrim_ui/src/app/services/client.service.ts b/Code/skyrim_ui/
 index cb696249226f447910066af430198b620a6cf458..77dfbf4d7f1729d2964d8dd4a583674e608dbbae 100644
 --- a/Code/skyrim_ui/src/app/services/client.service.ts
 +++ b/Code/skyrim_ui/src/app/services/client.service.ts
-@@ -280,6 +280,10 @@ export class ClientService implements OnDestroy {
+@@ -280,6 +280,15 @@ export class ClientService implements OnDestroy {
    /**
     * Reconnect
     */
++  public setAutoResync(enabled: boolean): void {
++    if (enabled) skyrimtogether.autoResyncOn();
++    else skyrimtogether.autoResyncOff();
++  }
++
 +  public resync(): void {
 +    skyrimtogether.resync();
 +  }
@@ -2130,11 +2166,13 @@ diff --git a/Code/skyrim_ui/src/typings.d.ts b/Code/skyrim_ui/src/typings.d.ts
 index be7779236405bf7cb0b24df4c945b146fc494a4c..bf1af4cd94b55aac1cf999b2f161ea6a6cdd0e63 100644
 --- a/Code/skyrim_ui/src/typings.d.ts
 +++ b/Code/skyrim_ui/src/typings.d.ts
-@@ -406,6 +406,7 @@ interface SkyrimTogether {
+@@ -406,6 +406,9 @@ interface SkyrimTogether {
     * Reconnect the client.
     */
    reconnect(): void;
 +  resync(): void;
++  autoResyncOn(): void;
++  autoResyncOff(): void;
  
    /**
     * Launch a party.
@@ -2302,11 +2340,13 @@ diff --git a/Code/tp_process/ProcessHandler.cpp b/Code/tp_process/ProcessHandler
 index 9c67fd1ec440dd7b3fe676c945f35246c8a919e5..d440761b8591a0c76cfef07a25289801f8d655f0 100644
 --- a/Code/tp_process/ProcessHandler.cpp
 +++ b/Code/tp_process/ProcessHandler.cpp
-@@ -15,6 +15,7 @@ void ProcessHandler::OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<C
+@@ -15,6 +15,9 @@ void ProcessHandler::OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<C
  
      m_pCoreObject->SetValue("connect", CefV8Value::CreateFunction("connect", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
      m_pCoreObject->SetValue("disconnect", CefV8Value::CreateFunction("disconnect", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
 +    m_pCoreObject->SetValue("resync", CefV8Value::CreateFunction("resync", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
++    m_pCoreObject->SetValue("autoResyncOn", CefV8Value::CreateFunction("autoResyncOn", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
++    m_pCoreObject->SetValue("autoResyncOff", CefV8Value::CreateFunction("autoResyncOff", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
      m_pCoreObject->SetValue("revealPlayers", CefV8Value::CreateFunction("revealPlayers", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
      m_pCoreObject->SetValue("sendMessage", CefV8Value::CreateFunction("sendMessage", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
      m_pCoreObject->SetValue("setTime", CefV8Value::CreateFunction("setTime", m_pOverlayHandler),V8_PROPERTY_ATTRIBUTE_NONE);
@@ -2450,11 +2490,11 @@ index 0000000000000000000000000000000000000000..954c8a11a5e832d8f70efd214ee950bf
 +        }
 +        assert(granted == 1);
 +    }
-+    // A resting dropped object keeps one controller for the full 30-second
++    // A resting dropped object keeps one controller for the full 3-second
 +    // settling window, while pickup remains available to the other player.
 +    Claim resting;
 +    assert(resting.Grab(1, 100));
-+    for (uint64_t now = 600; now <= 30100; now += 500)
++    for (uint64_t now = 600; now <= 3100; now += 500)
 +    {
 +        assert(resting.Move(1, now));
 +        assert(!resting.Grab(2, now + 1));
