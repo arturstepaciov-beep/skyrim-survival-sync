@@ -24,7 +24,7 @@ TK Dodge and Apocalypse Volcano adapters are retained.
 
 ## Shared cooperative home chests
 
-- Existing Hearthfire containers become shared cooperative storage; there is no
+- Ordinary Hearthfire containers without quest aliases become shared cooperative storage; there is no
   separate chest plugin to install or console-spawned replacement chest.
 - Open waits for the server's current contents. Deposits and withdrawals are
   intercepted before local mutation; the server commits both inventory changes.
@@ -34,7 +34,8 @@ TK Dodge and Apocalypse Volcano adapters are retained.
   Limits: 4096 distinct entries per inventory, 64 custom effects per entry and
   32767 items per individual transfer. Quest items cannot be transferred here.
   Withdraw to your inventory before dropping items into the world or forwarding
-  them to NPCs. Script-driven storage consumption is outside this adapter.
+  them to NPCs. Quest-bound construction/resource containers retain their native
+  scripts and are excluded from this adapter.
   Unequip worn items before depositing them. Unmapped dynamic item forms remain
   subject to Reborn's existing item-serialization limits.
 - The session state lives in server memory; the host receives committed contents
