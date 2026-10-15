@@ -420,20 +420,24 @@ index 448a179f..3b91ae42 100644
      EventDispatcher<TESFastTravelEndEvent> fastTravelEndEvent;
  };
 diff --git a/Code/client/Games/Skyrim/Projectiles/Projectile.cpp b/Code/client/Games/Skyrim/Projectiles/Projectile.cpp
-index 201b640f..0eda27cf 100644
+index 201b640f..35abd4d9 100644
 --- a/Code/client/Games/Skyrim/Projectiles/Projectile.cpp
 +++ b/Code/client/Games/Skyrim/Projectiles/Projectile.cpp
-@@ -52,6 +52,10 @@ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projec
-         }
-     }
- 
-+    if (arData.pShooter && !Cast<Actor>(arData.pShooter) && arData.pSpell)
-+        spdlog::info("Mod projectile from non-actor source: shooter {:X}, spell {:X}, projectile {:X}",
-+                     arData.pShooter->formID, arData.pSpell->formID,
-+                     arData.pProjectileBase ? arData.pProjectileBase->formID : 0);
-     if (arData.pShooter)
-     {
-         Actor* pActor = Cast<Actor>(arData.pShooter);
+@@ -1,4 +1,5 @@
+ #include "Projectile.h"
++#include <Services/VolcanoService.h>
+ #include <Games/Skyrim/Forms/TESObjectWEAP.h>
+ #include <Games/Skyrim/Forms/MagicItem.h>
+ #include <Games/Skyrim/Forms/TESAmmo.h>
+@@ -83,6 +84,8 @@ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projec
+         Event.ParentCellID = arData.pParentCell->formID;
+     if (arData.pSpell)
+         Event.SpellID = arData.pSpell->formID;
++    if (const auto blame = ResolveVolcanoProjectileOwner(Event.ShooterID, Event.SpellID))
++        Event.ShooterID = blame; // Keep native source untouched; transmit the actual local blame actor.
+     Event.CastingSource = arData.eCastingSource;
+     Event.UnkBool1 = arData.bUnkBool1;
+     Event.Area = arData.iArea;
 diff --git a/Code/client/Games/Skyrim/TESObjectREFR.cpp b/Code/client/Games/Skyrim/TESObjectREFR.cpp
 index 9032a69a..1f07926b 100644
 --- a/Code/client/Games/Skyrim/TESObjectREFR.cpp
@@ -1039,6 +1043,205 @@ index a0378612..de5e52be 100644
          else if (eventName == "revealPlayers")
              ProcessRevealPlayersMessage();
          else if (eventName == "sendMessage")
+diff --git a/Code/client/Services/Generic/VolcanoService.cpp b/Code/client/Services/Generic/VolcanoService.cpp
+new file mode 100644
+index 00000000..9dde80b2
+--- /dev/null
++++ b/Code/client/Services/Generic/VolcanoService.cpp
+@@ -0,0 +1,193 @@
++#include <Services/VolcanoService.h>
++#include <Services/PapyrusService.h>
++#include <Services/TransportService.h>
++#include <World.h>
++#include <Games/TES.h>
++#include <PlayerCharacter.h>
++#include <Forms/SpellItem.h>
++#include <Forms/TESObjectCELL.h>
++#include <Forms/TESWorldSpace.h>
++#include <Events/UpdateEvent.h>
++#include <Events/DisconnectedEvent.h>
++#include <Events/PapyrusFunctionRegisterEvent.h>
++#include <Messages/RequestWorldItem.h>
++#include <Messages/NotifyWorldItem.h>
++#include <VolcanoSyncPolicy.h>
++#include <WorldItemPolicy.h>
++#include <mutex>
++#include <chrono>
++#include <unordered_map>
++namespace
++{
++uint32_t LocalApocalypseForm(uint32_t base)
++{
++    auto* mods = ModManager::Get();
++    auto* mod = mods ? mods->GetByName("Apocalypse - Magic of Skyrim.esp") : nullptr;
++    return mod && mod->IsLoaded() && !mod->IsLite() ? (uint32_t(mod->standardId) << 24) | base : 0;
++}
++bool IsVisual(uint32_t id)
++{
++    return id && (id == LocalApocalypseForm(ApocalypseVolcano::Fountain) || id == LocalApocalypseForm(ApocalypseVolcano::Light));
++}
++using RemoteCast = void(BSScript::IVirtualMachine*, uint32_t, const SpellItem*, TESObjectREFR*, Actor*, TESObjectREFR*);
++RemoteCast* s_remoteCast = nullptr;
++thread_local uint32_t s_immediateBlame{};
++struct Source { uint32_t Blame; std::chrono::steady_clock::time_point Expires; };
++std::mutex s_sourcesLock;
++std::unordered_map<uint32_t, Source> s_sources;
++void HookVolcanoRemoteCast(BSScript::IVirtualMachine* vm, uint32_t stack, const SpellItem* spell,
++                          TESObjectREFR* source, Actor* blame, TESObjectREFR* target)
++{
++    const auto previous = s_immediateBlame;
++    if (spell && spell->formID == LocalApocalypseForm(ApocalypseVolcano::LavaSpell) &&
++        source && blame && blame == PlayerCharacter::Get())
++    {
++        s_immediateBlame = blame->formID;
++        std::lock_guard<std::mutex> lock(s_sourcesLock);
++        const auto now = std::chrono::steady_clock::now();
++        for (auto i = s_sources.begin(); i != s_sources.end();)
++            if (i->second.Expires < now) i = s_sources.erase(i); else ++i;
++        if (s_sources.size() < 128 || s_sources.contains(source->formID))
++            s_sources.insert_or_assign(source->formID, Source{blame->formID, now + std::chrono::seconds(12)});
++    }
++    s_remoteCast(vm, stack, spell, source, blame, target);
++    s_immediateBlame = previous;
++}
++}
++uint32_t ResolveVolcanoProjectileOwner(uint32_t shooter, uint32_t spell) noexcept
++{
++    if (!spell || spell != LocalApocalypseForm(ApocalypseVolcano::LavaSpell)) return 0;
++    if (s_immediateBlame) return s_immediateBlame;
++    std::lock_guard<std::mutex> lock(s_sourcesLock);
++    auto i = s_sources.find(shooter);
++    if (i == s_sources.end() || i->second.Expires < std::chrono::steady_clock::now()) return 0;
++    return i->second.Blame;
++}
++VolcanoService::VolcanoService(World& w, entt::dispatcher& d, TransportService& t) : m_world(w), m_transport(t)
++{
++    m_update = d.sink<UpdateEvent>().connect<&VolcanoService::OnUpdate>(this);
++    m_notify = d.sink<NotifyWorldItem>().connect<&VolcanoService::OnNotify>(this);
++    m_disconnect = d.sink<DisconnectedEvent>().connect<&VolcanoService::OnDisconnect>(this);
++    m_papyrus = d.sink<PapyrusFunctionRegisterEvent>().connect<&VolcanoService::OnPapyrus>(this);
++}
++void VolcanoService::OnPapyrus(const PapyrusFunctionRegisterEvent& e)
++{
++    if (!s_remoteCast && e.Namespace == "Spell" && e.Name == "RemoteCast")
++    {
++        s_remoteCast = reinterpret_cast<RemoteCast*>(e.Function);
++        TP_HOOK(&s_remoteCast, HookVolcanoRemoteCast);
++        spdlog::info("Installed Apocalypse Volcano RemoteCast attribution adapter");
++    }
++}
++void VolcanoService::Send(const WorldItemData& data)
++{
++    RequestWorldItem q;
++    q.Action = WorldItemAction::VolcanoVisual;
++    q.Data = data;
++    m_transport.Send(q);
++}
++void VolcanoService::RemoveReplica(uint64_t key)
++{
++    auto i = m_replicas.find(key);
++    if (i == m_replicas.end()) return;
++    if (auto* ref = Cast<TESObjectREFR>(TESForm::GetById(i.value().FormId)))
++    {
++        ref->Disable();
++        ref->Delete();
++    }
++    m_replicaForms.erase(i.value().FormId);
++    m_replicas.erase(key);
++}
++void VolcanoService::OnDisconnect(const DisconnectedEvent&)
++{
++    Vector<uint64_t> keys;
++    for (const auto& [key, r] : m_replicas) keys.push_back(key);
++    for (auto key : keys) RemoveReplica(key);
++    m_localVisuals.clear();
++    m_timer = 0;
++    std::lock_guard<std::mutex> lock(s_sourcesLock);
++    s_sources.clear();
++}
++void VolcanoService::OnUpdate(const UpdateEvent& e)
++{
++    if (!m_transport.IsOnline()) return;
++    if (!s_remoteCast)
++        if (const void* fn = m_world.ctx().at<PapyrusService>().Get("Spell", "RemoteCast"))
++            OnPapyrus(PapyrusFunctionRegisterEvent("RemoteCast", "Spell", const_cast<void*>(fn)));
++    m_timer += e.Delta;
++    if (m_timer < 0.25) return;
++    m_timer = 0;
++    const auto now = m_world.GetTick();
++    Vector<uint64_t> expired;
++    for (const auto& [key, r] : m_replicas) if (now >= r.Expires) expired.push_back(key);
++    for (auto key : expired) RemoveReplica(key);
++    if (!LocalApocalypseForm(ApocalypseVolcano::Fountain)) return;
++    auto* tes = TES::Get();
++    if (!tes) return;
++    Vector<TESObjectCELL*> cells;
++    if (tes->interiorCell) cells.push_back(tes->interiorCell);
++    else if (tes->cells && tes->cells->arr && tes->cells->dimension <= 15)
++        for (uint32_t i = 0; i < tes->cells->dimension * tes->cells->dimension; ++i)
++            if (tes->cells->arr[i]) cells.push_back(tes->cells->arr[i]);
++    Map<uint32_t, WorldItemData> found;
++    const Vector<FormType> types{static_cast<FormType>(24), static_cast<FormType>(31)};
++    for (auto* cell : cells)
++    {
++        if (!cell->IsAttached()) continue;
++        for (auto* ref : cell->GetRefsByFormTypes(types))
++        {
++            if (!ref || !ref->baseForm || !ref->IsTemporary() || ref->IsDisabled() || ref->IsDeleted() ||
++                !IsVisual(ref->baseForm->formID) || m_replicaForms.contains(ref->formID) || found.size() >= ApocalypseVolcano::MaxVisuals) continue;
++            WorldItemData pose;
++            pose.Token = ref->formID;
++            auto& mods = m_world.GetModSystem();
++            mods.GetServerModId(ref->baseForm->formID, pose.Reference);
++            mods.GetServerModId(cell->formID, pose.Cell);
++            if (auto* ws = ref->GetWorldSpace()) mods.GetServerModId(ws->formID, pose.WorldSpace);
++            pose.X = ref->position.x; pose.Y = ref->position.y; pose.Z = ref->position.z;
++            pose.RX = ref->rotation.x; pose.RY = ref->rotation.y; pose.RZ = ref->rotation.z;
++            found.emplace(ref->formID, pose);
++            Send(pose); // Heartbeat restores late join and removes dropped-packet dependence.
++        }
++    }
++    for (auto& [id, old] : m_localVisuals)
++        if (!found.contains(id)) { old.Consumed = true; Send(old); }
++    m_localVisuals = std::move(found);
++}
++void VolcanoService::OnNotify(const NotifyWorldItem& n)
++{
++    if (n.Action != WorldItemAction::VolcanoVisual || !m_transport.IsOnline() ||
++        n.Data.Creator == m_transport.GetLocalPlayerId()) return;
++    const auto& data = n.Data;
++    const uint64_t key = (uint64_t(data.Creator) << 32) | data.Token;
++    if (data.Consumed) { RemoveReplica(key); return; }
++    auto& mods = m_world.GetModSystem();
++    const auto baseId = mods.GetGameId(data.Reference);
++    if (!IsVisual(baseId) || !SharedItems::ValidPose(data)) return;
++    auto* player = PlayerCharacter::Get();
++    auto* cell = Cast<TESObjectCELL>(TESForm::GetById(mods.GetGameId(data.Cell)));
++    if (!player || !cell || !cell->IsAttached()) return;
++    auto i = m_replicas.find(key);
++    TESObjectREFR* ref = i == m_replicas.end() ? nullptr : Cast<TESObjectREFR>(TESForm::GetById(i.value().FormId));
++    if (!ref)
++    {
++        if (m_replicas.size() >= ApocalypseVolcano::MaxVisuals) return;
++        const void* fn = m_world.ctx().at<PapyrusService>().Get("ObjectReference", "PlaceAtMe");
++        if (!fn) return;
++        PapyrusFunction<TESObjectREFR*, TESObjectREFR, TESForm*, int32_t, bool, bool> place(fn);
++        ref = place(player, TESForm::GetById(baseId), 1, false, true);
++        if (!ref) return;
++        NiPoint3 pos{glm::vec3(data.X, data.Y, data.Z)};
++        ref->MoveTo(cell, pos);
++        ref->SetRotation(data.RX, data.RY, data.RZ);
++        m_replicaForms.insert(ref->formID);
++        ref->Enable();
++        spdlog::info("Replicated Volcano visual {:X}, source {}:{}", baseId, data.Creator, data.Token);
++    }
++    else if (i.value().Pose.X != data.X || i.value().Pose.Y != data.Y || i.value().Pose.Z != data.Z)
++    {
++        ref->SetWorldPosition(NiPoint3{glm::vec3(data.X, data.Y, data.Z)});
++        ref->SetRotation(data.RX, data.RY, data.RZ);
++    }
++    m_replicas.insert_or_assign(key, Replica{ref->formID, m_world.GetTick() + ApocalypseVolcano::ReplicaLeaseMs, data});
++}
 diff --git a/Code/client/Services/Generic/WeatherService.cpp b/Code/client/Services/Generic/WeatherService.cpp
 index 7704ee2d..39d2be3e 100644
 --- a/Code/client/Services/Generic/WeatherService.cpp
@@ -1301,10 +1504,10 @@ index 7704ee2d..39d2be3e 100644
  }
 diff --git a/Code/client/Services/Generic/WorldItemService.cpp b/Code/client/Services/Generic/WorldItemService.cpp
 new file mode 100644
-index 00000000..61e24689
+index 00000000..5fe1f05f
 --- /dev/null
 +++ b/Code/client/Services/Generic/WorldItemService.cpp
-@@ -0,0 +1,443 @@
+@@ -0,0 +1,444 @@
 +#include <Services/WorldItemService.h>
 +#include <Services/OverlayService.h>
 +#include <Messages/RequestCurrentWeather.h>
@@ -1540,6 +1743,7 @@ index 00000000..61e24689
 +}
 +void WorldItemService::OnNotify(const NotifyWorldItem& n)
 +{
++    if (n.Action == WorldItemAction::VolcanoVisual) return;
 +    if (!SharedItems::ValidPose(n.Data))
 +        return;
 +    if (n.Action == WorldItemAction::Reject)
@@ -1748,6 +1952,42 @@ index 00000000..61e24689
 +    if (grabbed && !foundGrab && Eligible(grabbed) && !grabbed->IsTemporary())
 +        Send(WorldItemAction::Register, Describe(grabbed));
 +}
+diff --git a/Code/client/Services/VolcanoService.h b/Code/client/Services/VolcanoService.h
+new file mode 100644
+index 00000000..5824454b
+--- /dev/null
++++ b/Code/client/Services/VolcanoService.h
+@@ -0,0 +1,30 @@
++#pragma once
++#include <Structs/WorldItemData.h>
++struct World;
++struct TransportService;
++struct UpdateEvent;
++struct DisconnectedEvent;
++struct NotifyWorldItem;
++struct PapyrusFunctionRegisterEvent;
++// Narrow adapter for Apocalypse 10.3. No mod scripts/assets are distributed.
++uint32_t ResolveVolcanoProjectileOwner(uint32_t shooter, uint32_t spell) noexcept;
++class VolcanoService
++{
++public:
++    VolcanoService(World&, entt::dispatcher&, TransportService&);
++private:
++    struct Replica { uint32_t FormId{}; uint64_t Expires{}; WorldItemData Pose; };
++    World& m_world;
++    TransportService& m_transport;
++    double m_timer{};
++    Map<uint32_t, WorldItemData> m_localVisuals;
++    Map<uint64_t, Replica> m_replicas;
++    Set<uint32_t> m_replicaForms;
++    entt::scoped_connection m_update, m_notify, m_disconnect, m_papyrus;
++    void OnUpdate(const UpdateEvent&);
++    void OnNotify(const NotifyWorldItem&);
++    void OnDisconnect(const DisconnectedEvent&);
++    void OnPapyrus(const PapyrusFunctionRegisterEvent&);
++    void RemoveReplica(uint64_t);
++    void Send(const WorldItemData&);
++};
 diff --git a/Code/client/Services/WeatherService.h b/Code/client/Services/WeatherService.h
 index 1fcc9945..0a607801 100644
 --- a/Code/client/Services/WeatherService.h
@@ -1893,18 +2133,19 @@ index 5d2a12b1..8ba754c3 100644
  }
  
 diff --git a/Code/client/World.cpp b/Code/client/World.cpp
-index b0596604..05a06350 100644
+index b0596604..3bfc6a9a 100644
 --- a/Code/client/World.cpp
 +++ b/Code/client/World.cpp
-@@ -10,6 +10,7 @@
+@@ -10,6 +10,8 @@
  #include <Services/PapyrusService.h>
  #include <Services/DiscordService.h>
  #include <Services/ObjectService.h>
 +#include <Services/WorldItemService.h>
++#include <Services/VolcanoService.h>
  #include <Services/QuestService.h>
  #include <Services/ActorValueService.h>
  #include <Services/InventoryService.h>
-@@ -25,7 +26,7 @@
+@@ -25,7 +27,7 @@
  #include <Events/PreUpdateEvent.h>
  #include <Events/UpdateEvent.h>
  
@@ -1913,16 +2154,17 @@ index b0596604..05a06350 100644
  
  World::World()
      : m_runner(m_dispatcher)
-@@ -42,6 +43,7 @@ World::World()
+@@ -42,6 +44,8 @@ World::World()
      ctx().emplace<PapyrusService>(m_dispatcher);
      ctx().emplace<DiscordService>(m_dispatcher);
      ctx().emplace<ObjectService>(*this, m_dispatcher, m_transport);
 +    ctx().emplace<WorldItemService>(*this, m_dispatcher, m_transport);
++    ctx().emplace<VolcanoService>(*this, m_dispatcher, m_transport);
      ctx().emplace<CalendarService>(*this, m_dispatcher, m_transport);
      ctx().emplace<QuestService>(*this, m_dispatcher);
      ctx().emplace<PartyService>(*this, m_dispatcher, m_transport);
 diff --git a/Code/common/BuildInfo.h.in b/Code/common/BuildInfo.h.in
-index 5db8d876..63e9d67c 100644
+index 5db8d876..4d78a49e 100644
 --- a/Code/common/BuildInfo.h.in
 +++ b/Code/common/BuildInfo.h.in
 @@ -1,4 +1,4 @@
@@ -1931,7 +2173,7 @@ index 5db8d876..63e9d67c 100644
 -#define BUILD_BRANCH "${GIT_BRANCH}"
 -#define BUILD_COMMIT "${GIT_TAG}"
 +#define BUILD_BRANCH "survival-worlditems"
-+#define BUILD_COMMIT "survival-sync-v03-weather-sleep-dodge"
++#define BUILD_COMMIT "survival-sync-v04-volcano"
 diff --git a/Code/common/DateTime.cpp b/Code/common/DateTime.cpp
 index b091ef61..bfb1eeb4 100644
 --- a/Code/common/DateTime.cpp
@@ -2004,6 +2246,23 @@ index 00000000..824b2508
 +    return static_cast<float>(hours);
 +}
 +} // namespace SurvivalTime
+diff --git a/Code/common/VolcanoSyncPolicy.h b/Code/common/VolcanoSyncPolicy.h
+new file mode 100644
+index 00000000..7ca38b94
+--- /dev/null
++++ b/Code/common/VolcanoSyncPolicy.h
+@@ -0,0 +1,11 @@
++#pragma once
++#include <cstdint>
++namespace ApocalypseVolcano
++{
++constexpr uint32_t Fountain = 0x0834B2;
++constexpr uint32_t Light = 0x0834B8;
++constexpr uint32_t LavaSpell = 0x0834B3;
++constexpr bool IsVisual(uint32_t base) { return base == Fountain || base == Light; }
++constexpr uint64_t ReplicaLeaseMs = 2000;
++constexpr uint32_t MaxVisuals = 64;
++}
 diff --git a/Code/common/WorldItemPolicy.h b/Code/common/WorldItemPolicy.h
 new file mode 100644
 index 00000000..cc774ebe
@@ -2381,10 +2640,10 @@ index 00000000..d2917587
 +}
 diff --git a/Code/encoding/Structs/WorldItemData.h b/Code/encoding/Structs/WorldItemData.h
 new file mode 100644
-index 00000000..d1dc7d98
+index 00000000..351c9e02
 --- /dev/null
 +++ b/Code/encoding/Structs/WorldItemData.h
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,28 @@
 +#pragma once
 +#include <Structs/GameId.h>
 +#include <Structs/Inventory.h>
@@ -2400,7 +2659,8 @@ index 00000000..d1dc7d98
 +    State,
 +    Reject,
 +    Resync,
-+    Physics
++    Physics,
++    VolcanoVisual
 +};
 +struct WorldItemData
 +{
@@ -2489,6 +2749,66 @@ index 43804904..41542476 100644
      entt::scoped_connection m_joinConnection;
 +    entt::scoped_connection m_timeSkipConnection;
  };
+diff --git a/Code/server/Services/VolcanoService.cpp b/Code/server/Services/VolcanoService.cpp
+new file mode 100644
+index 00000000..bcaf0e48
+--- /dev/null
++++ b/Code/server/Services/VolcanoService.cpp
+@@ -0,0 +1,35 @@
++#include <Services/VolcanoService.h>
++#include <World.h>
++#include <Components.h>
++#include <GameServer.h>
++#include <Messages/RequestWorldItem.h>
++#include <Messages/NotifyWorldItem.h>
++#include <VolcanoSyncPolicy.h>
++#include <WorldItemPolicy.h>
++VolcanoService::VolcanoService(World& w, entt::dispatcher& d) : m_world(w)
++{
++    m_request = d.sink<PacketEvent<RequestWorldItem>>().connect<&VolcanoService::OnRequest>(this);
++}
++void VolcanoService::OnRequest(const PacketEvent<RequestWorldItem>& e)
++{
++    const auto& q = e.Packet;
++    auto* player = e.pPlayer;
++    if (q.Action != WorldItemAction::VolcanoVisual || !player || !player->GetCharacter() ||
++        !q.Data.Token || !q.Data.Cell || !ApocalypseVolcano::IsVisual(q.Data.Reference.BaseId) || !SharedItems::ValidPose(q.Data)) return;
++    const auto& source = player->GetCellComponent();
++    // Ephemeral, cosmetic-only: never enters world item/inventory records or executes a controller.
++    if (source.IsInInteriorCell() ? (q.Data.WorldSpace || source.Cell != q.Data.Cell) : source.WorldSpaceId != q.Data.WorldSpace) return;
++    NotifyWorldItem n;
++    n.Action = WorldItemAction::VolcanoVisual;
++    n.Data = q.Data;
++    n.Data.Creator = player->GetId();
++    n.Data.Item = {}; // No inventory payload may cross into the cosmetic path.
++    for (auto* recipient : m_world.GetPlayerManager())
++    {
++        if (recipient == player) continue;
++        const auto& dest = recipient->GetCellComponent();
++        if (dest.IsInInteriorCell() ? (!n.Data.WorldSpace && dest.Cell == n.Data.Cell) :
++            (dest.WorldSpaceId == n.Data.WorldSpace && std::abs(double(n.Data.X) - double(dest.CenterCoords.X) * 4096) < 20000 &&
++             std::abs(double(n.Data.Y) - double(dest.CenterCoords.Y) * 4096) < 20000)) recipient->Send(n);
++    }
++}
+diff --git a/Code/server/Services/VolcanoService.h b/Code/server/Services/VolcanoService.h
+new file mode 100644
+index 00000000..2a706a62
+--- /dev/null
++++ b/Code/server/Services/VolcanoService.h
+@@ -0,0 +1,13 @@
++#pragma once
++#include <Events/PacketEvent.h>
++struct World;
++struct RequestWorldItem;
++class VolcanoService
++{
++public:
++    VolcanoService(World&, entt::dispatcher&);
++private:
++    World& m_world;
++    entt::scoped_connection m_request;
++    void OnRequest(const PacketEvent<RequestWorldItem>&);
++};
 diff --git a/Code/server/Services/WeatherService.cpp b/Code/server/Services/WeatherService.cpp
 index 1f0351fd..67262f09 100644
 --- a/Code/server/Services/WeatherService.cpp
@@ -2595,10 +2915,10 @@ index 901679a9..d9196f8b 100644
      entt::scoped_connection m_currentWeatherConnection;
 diff --git a/Code/server/Services/WorldItemService.cpp b/Code/server/Services/WorldItemService.cpp
 new file mode 100644
-index 00000000..0e3c40a1
+index 00000000..73689274
 --- /dev/null
 +++ b/Code/server/Services/WorldItemService.cpp
-@@ -0,0 +1,201 @@
+@@ -0,0 +1,202 @@
 +#include <Services/WorldItemService.h>
 +#include <World.h>
 +#include <Components.h>
@@ -2635,6 +2955,7 @@ index 00000000..0e3c40a1
 +}
 +void WorldItemService::OnRequest(const PacketEvent<RequestWorldItem>& e)
 +{
++    if (e.Packet.Action == WorldItemAction::VolcanoVisual) return;
 +    Player* p = e.pPlayer;
 +    if (!p || !p->GetCharacter())
 +        return;
@@ -2834,22 +3155,24 @@ index 00000000..ef938418
 +    void Broadcast(const Record&);
 +};
 diff --git a/Code/server/World.cpp b/Code/server/World.cpp
-index 8bfd5104..996a5fc9 100644
+index 8bfd5104..1a872ea0 100644
 --- a/Code/server/World.cpp
 +++ b/Code/server/World.cpp
-@@ -3,6 +3,7 @@
+@@ -3,6 +3,8 @@
  
  #include <Services/CharacterService.h>
  #include <Services/ObjectService.h>
 +#include <Services/WorldItemService.h>
++#include <Services/VolcanoService.h>
  #include <Services/QuestService.h>
  #include <Services/ServerListService.h>
  #include <Services/ActorValueService.h>
-@@ -24,6 +25,7 @@ World::World()
+@@ -24,6 +26,8 @@ World::World()
      ctx().emplace<PlayerService>(*this, m_dispatcher);
      ctx().emplace<CalendarService>(*this, m_dispatcher);
      ctx().emplace<ObjectService>(*this, m_dispatcher);
 +    ctx().emplace<WorldItemService>(*this, m_dispatcher);
++    ctx().emplace<VolcanoService>(*this, m_dispatcher);
      ctx().emplace<ModsComponent>();
      ctx().emplace<ServerListService>(*this, m_dispatcher);
      ctx().emplace<QuestService>(*this, m_dispatcher);
@@ -3005,7 +3328,7 @@ index be777923..3cfe9faa 100644
    /**
     * Launch a party.
 diff --git a/Code/tests/encoding.cpp b/Code/tests/encoding.cpp
-index defb8084..88a20bc5 100644
+index defb8084..e490515e 100644
 --- a/Code/tests/encoding.cpp
 +++ b/Code/tests/encoding.cpp
 @@ -276,10 +276,11 @@ TEST_CASE("Differential structures", "[encoding.differential]")
@@ -3023,7 +3346,7 @@ index defb8084..88a20bc5 100644
          vars.String_to_VectorBool(testString, vars.Booleans);
  
          vars.Floats.push_back(1.f);
-@@ -552,3 +553,153 @@ TEST_CASE("StringCache", "[encoding.string_cache]")
+@@ -552,3 +553,185 @@ TEST_CASE("StringCache", "[encoding.string_cache]")
          REQUIRE(update == recvUpdate);
      }
  }
@@ -3176,6 +3499,38 @@ index defb8084..88a20bc5 100644
 +    Buffer::Reader reader(&buffer);
 +    decoded.ApplyDifferential(reader);
 +    REQUIRE(decoded == original);
++}
++
++
++TEST_CASE("Volcano cosmetic states preserve identity without inventory", "[encoding.worlditems]")
++{
++    for (bool ended : {false, true})
++    {
++        NotifyWorldItem original;
++        original.Action = WorldItemAction::VolcanoVisual;
++        original.Data.Creator = 2;
++        original.Data.Token = 0xFF000123;
++        original.Data.Reference = GameId{3, 0x0834B2};
++        original.Data.Cell = GameId{0, 0x12345};
++        original.Data.X = 120.5f;
++        original.Data.Consumed = ended;
++        Buffer buffer(16384);
++        Buffer::Writer writer(&buffer);
++        original.Serialize(writer);
++        Buffer::Reader reader(&buffer);
++        ServerMessageFactory factory;
++        auto decoded = factory.Extract(reader);
++        REQUIRE(decoded);
++        auto state = CastUnique<NotifyWorldItem>(std::move(decoded));
++        REQUIRE(state->Action == WorldItemAction::VolcanoVisual);
++        REQUIRE(state->Data.Creator == 2);
++        REQUIRE(state->Data.Token == 0xFF000123);
++        REQUIRE(state->Data.Reference == original.Data.Reference);
++        REQUIRE(state->Data.X == 120.5f);
++        REQUIRE(state->Data.Consumed == ended);
++        REQUIRE(state->Data.Item.Count == 0);
++        REQUIRE_FALSE(bool(state->Data.Item.BaseId));
++    }
 +}
 diff --git a/Code/tests/xmake.lua b/Code/tests/xmake.lua
 index 19abce57..8188e595 100644

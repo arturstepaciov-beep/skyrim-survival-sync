@@ -1,85 +1,64 @@
-# Survival Sync alpha 0.3 — test build
+# Survival Sync alpha 0.4 — Apocalypse Volcano test build
 
-- F2: optional auto resync interval (1–300 seconds, default 10).
-- F2: bind or clear a single resync hotkey. F2 and modifier-only bindings are reserved.
-- Manual and automatic refresh cooldown reduced to one second on client and server.
-- Weather uses the earliest connected loaded player as a single server-wide source,
-  independent of party membership/range; refresh/recovery every five seconds.
-  It synchronizes the selected weather, not the exact visual blend progress.
-- Native local sleep/wait time simulation is allowed; elapsed days already processed
-  locally are deducted from the server skip, including overlap during another sleep.
-  Awake players still accrue elapsed Survival fatigue; they do not receive sleep benefits.
-- Experimental TK Dodge graph-input adapter forwards TKDodge-prefixed player events
-  and standard animation variables plus roll/step selection; old dodges are not replayed on resync.
-  Identical TK Dodge SE assets/behavior generation required on both PCs.
-  This is not general compatibility with all animation mods or custom graph variables.
-- Remote casts resolve the spell in the packet rather than stale equipped-hand state.
-- Item movement remains 15 Hz with a three-second settling ownership delay.
+This custom client/server build targets the Apocalypse 10.3.0 archive supplied for
+inspection. Keep the original Apocalypse installed on both PCs; no Apocalypse
+plugin, scripts, meshes or textures are included in this package.
 
-## Open issues
+## Volcano adapter
 
-Volcano's scripted eruption/secondary-source replication is NOT resolved. Added logging
-for spell routing and projectiles launched by non-actor sources to diagnose it.
-The matching Apocalypse 10.3 spell/plugin/script files are needed to finish its adapter.
+- The native Spell.RemoteCast path records the actual local blame actor for
+  Volcano's lava-bomb spell. Projectiles emitted from temporary references can
+  then use the existing actor-based projectile synchronization.
+- The original caster alone runs the eruption controller. Nearby peers receive
+  replicas of the script-free fountain and light forms, not a second controller.
+- Visual replicas have independent creator/reference identities and never enter
+  inventory or world-item pickup processing.
+- A 250 ms source heartbeat restores active visuals for nearby late joiners.
+  Removal is propagated when a source disappears; replicas also expire after
+  two seconds without a heartbeat and are removed on disconnect.
+- Form IDs are resolved through the installed Apocalypse plugin and the normal
+  per-client mod mapping. The adapter is specific to the inspected 10.3.0 records.
+- Damage remains on the existing projectile/magic synchronization path, including
+  the server's PvP setting. The adapter does not inject a second damage routine.
 
-Inn rental flag isolation is implemented for JobInnkeeperFaction members: Variable09
-stays local, allowing each player to rent locally instead of inheriting another player's
-already-rented flag. Existing save flags may require the old rental to expire. This does
-not add extra rooms or permit simultaneous use of the same occupied bed; shared-bed
-ownership remains unimplemented. Modified rental scripts need separate validation.
+This is an in-game test build, not a confirmed Volcano fix. Native RemoteCast
+attribution, visual spawning, damage and cleanup still need a two-player check.
+Test in both casting directions, indoors/outdoors, two simultaneous casts and
+moving away/reconnecting. The initial one-shot eruption explosion is not separately
+replicated by this adapter; the target is the persistent fountain/light and bombs.
 
-Sleep, weather and TK Dodge behavior require two-player in-game validation. Automated
-policy and packet tests do not establish game-engine behavior. Use the same custom
-build on both PCs and server; weather packet format changed.
+## Retained features
 
----
+- Shared Survival time, local native sleep/wait and elapsed-day deduplication.
+  Awake players do not receive another player's sleep benefits.
+- Dropped-item and loose-object movement sync at 15 Hz, with a three-second
+  stillness window before movement ownership is released.
+- F2 manual resync, optional automatic interval of 1–300 seconds, and a bindable
+  single-key resync shortcut. F2 and modifier-only binds are reserved.
+- A server-wide weather source selected from the earliest connected loaded player,
+  with a five-second recovery refresh. Exact weather blending is not replicated.
+- Experimental TK Dodge-prefixed graph inputs and roll/step selection. Matching
+  TK Dodge SE assets and generated behaviors are required on both PCs.
+- Innkeeper Variable09 rental flags remain local. Existing stale save flags are
+  not automatically repaired. This does not add extra rooms or allow simultaneous
+  occupancy of one bed, and shared-bed ownership remains unimplemented.
 
-# Skyrim Together: Survival + World Items alpha 0.2
+## Installation and validation
 
-Unofficial Windows build with the previous Survival time changes plus server-tracked
-player drops and movable loose world items. Download the successful Actions artifact,
-extract the outer artifact ZIP, and install the inner Windows ZIP using Vortex.
-Disable the old build, deploy, and use the same custom client AND server on both PCs.
+Use this exact custom build on both PCs AND the server; restart all three.
+Preserve the existing STServer.ini and its enabled Survival/item-drop settings.
+Extract the outer Actions artifact ZIP to obtain the installable Windows ZIP.
+The build identifier is survival-sync-v04-volcano.
 
-## World items
+The workflow must compile the native client/server, run Survival/world-item/weather
+packet tests and ownership-policy tests, and build the UI before uploading a package.
+Automated tests do not prove Skyrim engine behavior.
 
-- Drops get one server identity, with inventory deduction checked before publication.
-- Pickup is approved by the server; simultaneous or repeated pickups award the stack once.
-- Grabbing transfers exclusive movement control. Position/rotation updates are sent at 10 Hz.
-- Copies retain dynamic, activatable physics so either player can grab them.
-  Non-owners correct toward the shared pose; the server only accepts the owner's movement.
-  After release, the owner continues updates until the item settles.
-- Snapshots restore the current state for nearby players and hide already-consumed items.
-- Creation acknowledgement prevents picking up an unpublished local drop.
+## Source and license
 
-Target types: weapons, armor, ammo, ingredients, potions, miscellaneous items, scrolls,
-and soul gems. Quest-aliased items and books retain their existing handling. This is
-not a general synchronization system for furniture, doors, actors, or scripted objects.
-NPCs are blocked from picking up tracked items in this alpha to avoid bypassing claims.
-Custom names/ownership metadata are limited by Reborn's existing inventory format.
-
-Server records are memory-only and have a 4096-record limit, including consumed
-records. This is intended for an active test session, not persistent world hosting.
-There is no durable save/restart ledger. Disconnect cleanup removes temporary replicas;
-network failure during an unacknowledged drop can still need recovery. Full cheat-proof
-inventory validation is not provided by Reborn's client-driven world architecture.
-
-Movement between exterior cells in the same world is supported; interior/world
-teleports are not a physics transfer path. Grab detection uses the AE PlayerCharacter
-layout of the pinned Reborn base (0x8D0, documented by CommonLibSSE-NG).
-
-## Validation
-
-Native Windows build, request packet serialization, and assertion-enabled ownership /
-race / replay policy tests must pass before the workflow uploads a package. Those tests
-do not establish in-game physics behavior. Test new separate saves with ordinary iron
-weapons or potions before valuable, enchanted, or modded gear. Test a 12-item stack,
-simultaneous pickup, alternating grabs, moving in a dungeon and outdoors, and late join.
-
-Survival hunger/fatigue/time behavior was reported working by the user in alpha 0.1;
-the Survival time implementation is retained. Cold and other gameplay remain subject
-to in-game validation. See SOURCE-NOTES.md for the previous patch's provenance.
-
-Source base: tiltedphoques/TiltedEvolution commit
-9ce0338522277e0ff0a12e8d2aa09ce67ad41a59. The complete modification is world-items-v0.2.patch.
-GPL-3.0-or-later under the included upstream license.
+Pinned upstream: tiltedphoques/TiltedEvolution
+9ce0338522277e0ff0a12e8d2aa09ce67ad41a59.
+The complete source modification remains world-items-v0.2.patch (the historical
+filename is retained for the build script). GPL-3.0-or-later under the upstream
+license. This build is unofficial and not endorsed by Skyrim Together's maintainers.
+The inspected third-party Apocalypse archive is not redistributed.

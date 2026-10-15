@@ -52,7 +52,7 @@ try {
     Set-Content -Path $configPath -Value $ini -Encoding utf8
     Copy-Item -Path (Join-Path $PSScriptRoot 'README.md') -Destination (Join-Path $package 'SurvivalSync-README.md')
     Copy-Item -Path (Join-Path $PSScriptRoot 'LICENSE') -Destination (Join-Path $package 'LICENSE')
-    $zip = Join-Path $WorkDirectory 'SurvivalSync-v0.3-Windows.zip'
+    $zip = Join-Path $WorkDirectory 'SurvivalSync-v0.4-Windows.zip'
     Compress-Archive -Path (Join-Path $package '*') -DestinationPath $zip -Force
     Write-Host "Windows package created: $zip"
     Write-Host 'This script never changes your installed Skyrim files.'
