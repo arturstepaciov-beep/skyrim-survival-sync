@@ -1,7 +1,8 @@
 name: Build Survival Sync Windows
+run-name: Survival Sync v0.5 · ${{ github.run_number }} · ${{ github.event.head_commit.message || 'manual' }}
 on:
   push:
-    branches: [main]
+    branches: [main, 'build/**']
     paths:
       - 'world-items-v0.2.patch'
       - 'Build-Windows.ps1'
@@ -29,13 +30,21 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Set Vilnius build timestamp
+        id: metadata
+        shell: pwsh
+        run: |
+          $zone = [TimeZoneInfo]::FindSystemTimeZoneById('FLE Standard Time')
+          $stamp = [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, $zone).ToString('yyyy-MM-dd_HH-mm-ss') + '-LT'
+          "stamp=$stamp" >> $env:GITHUB_OUTPUT
+          "name=SurvivalSync-v0.5-$stamp-Windows" >> $env:GITHUB_OUTPUT
       - name: Build and package custom client and server
         shell: pwsh
-        run: ./Build-Windows.ps1 -WorkDirectory "${{ runner.temp }}/survival-build"
+        run: ./Build-Windows.ps1 -WorkDirectory "${{ runner.temp }}/survival-build" -BuildStamp "${{ steps.metadata.outputs.stamp }}"
       - name: Upload Windows install package
         uses: actions/upload-artifact@v4
         with:
-          name: SurvivalSync-v0.4-Windows
-          path: ${{ runner.temp }}/survival-build/SurvivalSync-v0.4-Windows.zip
+          name: ${{ steps.metadata.outputs.name }}
+          path: ${{ runner.temp }}/survival-build/${{ steps.metadata.outputs.name }}.zip
           if-no-files-found: error
           retention-days: 14
