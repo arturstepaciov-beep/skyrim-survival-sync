@@ -1,3 +1,4 @@
+# Shared chest v0.6 build requested 2026-10-16 (Vilnius).
 name: Build Survival Sync Windows
 run-name: Survival Sync v0.6 · ${{ github.run_number }} · ${{ github.event.head_commit.message || 'manual' }}
 on:
