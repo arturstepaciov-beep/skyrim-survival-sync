@@ -1,4 +1,32 @@
-# Survival Sync alpha 0.5 — Hearthfire and shared storage test build
+# Survival Sync v0.6 draft — separate shared-chest network
+
+**Source preparation only: no v0.6 Windows package has been built or tested in Skyrim.**
+
+Adds a dedicated empty chest base and native access points at Goldenhills plus the
+nine hold capitals. All access points share server-owned storage in
+`config/CoopChest.dat`. Keep this file across server upgrades/restarts.
+The server validates exact-variant transfers and persists storage before sending
+the commit. Clients retain the last synchronized contents for a read-only offline
+viewer; offline inventories never seed or merge into the server.
+
+Goldenhills is outside the farmhouse's lower approach. Whiterun, Solitude,
+Windhelm, Riften and Markarth are near their stables. Dawnstar, Falkreath, Morthal
+and Winterhold are beside their inns. Final ground/path clearance is unverified.
+
+The future native package must include and enable `SurvivalSyncCoop.esp` on both
+PCs, with the same client/server version. It contains one new script-free empty
+container and overrides no existing game records. Bethesda/CC masters and assets
+are not bundled. Construction quests and ordinary home storage remain separate.
+
+Implemented draft code and tests are in the source patch under
+`Tools/CoopChests/README.md`. Local storage/ownership policy tests pass. New
+packet tests, full Windows compilation, UI build and two-player validation are
+pending the next explicit build request. Server storage, player saves and network
+acknowledgements are not one crash-safe transaction; do not claim full crash or
+save-rollback duplication protection.
+
+## Retained v0.5 work
+
 
 Unofficial matching Windows client/server build. Install the same timestamped ZIP
 on both PCs AND restart the server. Existing Survival, weather, item movement,
