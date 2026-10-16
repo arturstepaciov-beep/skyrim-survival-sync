@@ -4,6 +4,23 @@ Unofficial matching Windows client/server build. Install the same timestamped ZI
 on both PCs AND restart the server. Existing Survival, weather, item movement,
 TK Dodge and Apocalypse Volcano adapters are retained.
 
+## Autosync HUD and running/jumping adjustments
+
+- A small top-left countdown shows seconds until the next automatic sync request.
+  It uses the native scheduler, follows manual resets and interval edits, and
+  hides when disconnected, autosync is off or game menus are open.
+- Remote animation graph switches follow the displayed snapshot time instead
+  of anticipating the next position. Due action batches are played in the same
+  frame (bounded to 32), reducing extra takeoff/landing/start/stop delays.
+- Humanoid graphs additionally synchronize sprint/moving flags, sprint state
+  and jump blend. Native jump/fall/land and movement start/stop actions survive
+  the noisy-notification filter.
+- These are targeted playback changes, not universal animation-mod support.
+  Both players need matching behavior/animation assets. Test walk/run/sprint,
+  repeated jumps, landing while moving and TK Dodge with two players.
+- Native countdown/timeline regression tests run before packaging. They cannot
+  confirm Skyrim graph behavior; in-game testing remains required.
+
 ## Hearthfire houses follow the host
 
 - Covers placed architecture, enable-parent markers, furniture, doors, lights and

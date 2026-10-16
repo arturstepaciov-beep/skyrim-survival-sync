@@ -40,7 +40,7 @@ try {
     Run -Program 'xmake' -Arguments @('config','--plat=windows','--arch=x64','--mode=releasedbg','--yes')
     Run -Program 'xmake' -Arguments @('-y')
     # Native encoding tests include the new request packet round trip.
-    Run -Program 'xmake' -Arguments @('run','TPTests','[encoding.survival],[encoding.worlditems],[encoding.weather],[encoding.homestead]')
+    Run -Program 'xmake' -Arguments @('run','TPTests','[encoding.survival],[encoding.worlditems],[encoding.weather],[encoding.homestead],[encoding.presentation]')
     Run -Program 'xmake' -Arguments @('run','WorldItemPolicyTests')
     Run -Program 'xmake' -Arguments @('run','HomesteadPolicyTests')
     Run -Program 'pnpm' -Arguments @('--prefix','Code/skyrim_ui','install')
