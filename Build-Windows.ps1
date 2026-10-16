@@ -41,6 +41,9 @@ try {
     [IO.File]::WriteAllText($buildInfoPath, $buildInfo, [Text.UTF8Encoding]::new($false))
     Run -Program 'git' -Arguments @('submodule','update','--init','--recursive','--depth=1')
     Run -Program 'xmake' -Arguments @('config','--plat=windows','--arch=x64','--mode=releasedbg','--yes')
+    # Run persistence checks first so Windows storage failures fail before the full compile.
+    Run -Program 'xmake' -Arguments @('-y','CoopChestStoreTests')
+    Run -Program 'xmake' -Arguments @('run','CoopChestStoreTests')
     Run -Program 'xmake' -Arguments @('-y')
     # Native encoding tests include the new request packet round trip.
     Run -Program 'xmake' -Arguments @('run','TPTests','[encoding.survival],[encoding.worlditems],[encoding.weather],[encoding.homestead],[encoding.presentation],[encoding.coopchest]')
