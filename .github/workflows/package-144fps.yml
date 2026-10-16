@@ -1,0 +1,87 @@
+name: Package v0.5 144 FPS physics test
+run-name: v0.5 144 FPS profile - ${{ github.run_number }}
+on:
+  push:
+    branches: ['build/**']
+    paths:
+      - 'Profiles/144FPS/**'
+      - '.github/workflows/package-144fps.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate profile installer and preservation
+        shell: pwsh
+        run: ./Profiles/144FPS/Test-Profile.ps1
+      - name: Verify retained native build identity
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+          $run = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/${{ github.repository }}/actions/runs/38902846919"
+          if ($run.conclusion -ne 'success' -or $run.head_sha -ne 'ef31fad8b97e154b0cb8cf8a205145e7ab8ee4f6') { throw 'Unexpected source native build' }
+      - uses: actions/download-artifact@v4
+        with:
+          name: SurvivalSync-v0.5-2026-10-16_15-46-49-LT-Windows
+          run-id: 38902846919
+          github-token: ${{ github.token }}
+          path: native-artifact
+      - name: Package retained binaries and 144 FPS setup
+        id: package
+        shell: pwsh
+        run: |
+          $nativeZips = @(Get-ChildItem native-artifact -Filter '*.zip')
+          if ($nativeZips.Count -ne 1) { throw 'Expected exactly one install ZIP' }
+          $package = Join-Path $env:RUNNER_TEMP 'sync144-package'
+          Expand-Archive -LiteralPath $nativeZips[0].FullName -DestinationPath $package
+          $info = Get-Content (Join-Path $package 'BuildInfo.json') -Raw | ConvertFrom-Json
+          if ($info.sourceCommit -ne 'ef31fad8b97e154b0cb8cf8a205145e7ab8ee4f6') { throw 'Native ZIP source mismatch' }
+          $nativeFiles = @('SkyrimTogetherReborn/SkyrimTogether.exe', 'SkyrimTogetherReborn/SkyrimTogetherServer.exe')
+          $hashes = @{}
+          foreach ($file in $nativeFiles) {
+              $path = Join-Path $package $file
+              if (-not (Test-Path -LiteralPath $path)) { throw "Missing native binary $file" }
+              $hashes[$file] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+          }
+          $profileDirectory = Join-Path $package 'Profiles/144FPS'
+          New-Item -ItemType Directory -Path $profileDirectory -Force | Out-Null
+          Copy-Item -Path 'Profiles/144FPS/*' -Destination $profileDirectory
+          Copy-Item -LiteralPath 'Profiles/144FPS/README.txt' -Destination (Join-Path $package 'START-HERE-144FPS.txt')
+          $zone = [TimeZoneInfo]::FindSystemTimeZoneById('FLE Standard Time')
+          $stamp = [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, $zone).ToString('yyyy-MM-dd_HH-mm-ss') + '-LT'
+          $name = "SurvivalSync-v0.5-144FPS-Test-$stamp-Windows"
+          @{
+              package = $name
+              packageSourceCommit = '${{ github.sha }}'
+              nativeSourceCommit = $info.sourceCommit
+              nativeBuildVersion = $info.buildVersion
+              nativeArtifactId = 12046954130
+              nativeArtifactRun = 38902846919
+              nativeSHA256 = $hashes
+              nativeRecompiled = $false
+              physicsPluginBundled = $false
+              inGame144FpsVerified = $false
+              packagedUtc = [DateTime]::UtcNow.ToString('o')
+              timeZone = 'Europe/Vilnius'
+          } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $package 'ProfileBuildInfo.json') -Encoding utf8
+          foreach ($file in $nativeFiles) {
+              if ((Get-FileHash (Join-Path $package $file) -Algorithm SHA256).Hash -ne $hashes[$file]) { throw 'Native binary changed during packaging' }
+          }
+          $zip = Join-Path $env:RUNNER_TEMP ($name + '.zip')
+          Compress-Archive -Path (Join-Path $package '*') -DestinationPath $zip
+          "name=$name" >> $env:GITHUB_OUTPUT
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+          Write-Host "Created $name; native binaries retained unchanged."
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: ${{ steps.package.outputs.zip }}
+          if-no-files-found: error
+          retention-days: 14

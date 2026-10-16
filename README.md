@@ -4,6 +4,20 @@ Unofficial matching Windows client/server build. Install the same timestamped ZI
 on both PCs AND restart the server. Existing Survival, weather, item movement,
 TK Dodge and Apocalypse Volcano adapters are retained.
 
+## Optional 144 FPS physics test package
+
+The dedicated package-144fps workflow repackages the verified v0.5 binaries from
+run 38902846919 with Profiles/144FPS. Native binaries are not recompiled or
+modified. ProfileBuildInfo.json records both the native build and profile package
+identity and binary checksums; the in-game native version remains unchanged.
+
+Install SSE Display Tweaks and matching requirements separately on both PCs.
+The included setup merges a 144 FPS gameplay / dynamic Havok profile into its
+custom INI with a backup, preserving other settings. Loading and menus stay capped
+at 60 FPS. No third-party physics DLL is bundled and no in-game compatibility or
+144 FPS physics guarantee is implied. See Profiles/144FPS/README.txt for setup,
+rollback and mixed 60/144 FPS tests.
+
 ## Autosync HUD and running/jumping adjustments
 
 - A small top-left countdown shows seconds until the next automatic sync request.
