@@ -22,10 +22,13 @@ foreach ($tool in @('git','xmake','node','pnpm')) {
         throw "Missing $tool. Read README.md prerequisites first."
     }
 }
-$patch = Join-Path $PSScriptRoot 'world-items-v0.2.patch'
+$patchSource = Join-Path $PSScriptRoot 'world-items-v0.2.patch'
 $source = Join-Path $WorkDirectory 'TiltedEvolution'
 if (Test-Path $source) { throw "Choose a fresh WorkDirectory; existing checkout will not be overwritten." }
 New-Item -ItemType Directory -Force $WorkDirectory | Out-Null
+# Git for Windows may check out the patch with CRLF; binary patch headers require LF.
+$patch = Join-Path $WorkDirectory 'source.patch'
+[IO.File]::WriteAllText($patch, [IO.File]::ReadAllText($patchSource).Replace("`r`n", "`n"), [Text.UTF8Encoding]::new($false))
 Run -Program 'git' -Arguments @('clone','https://github.com/tiltedphoques/TiltedEvolution.git',$source)
 Push-Location $source
 try {
