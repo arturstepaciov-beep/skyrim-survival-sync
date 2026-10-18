@@ -48,9 +48,10 @@ try {
     # Run persistence checks first so Windows storage failures fail before the full compile.
     Run -Program 'xmake' -Arguments @('-y','CoopChestStoreTests')
     Run -Program 'xmake' -Arguments @('run','CoopChestStoreTests')
-    Run -Program 'xmake' -Arguments @('-y')
+    Run -Program 'xmake' -Arguments @('-y','TPTests')
     # Native encoding tests include the new request packet round trip.
     Run -Program 'xmake' -Arguments @('run','TPTests','[encoding.survival],[encoding.worlditems],[encoding.weather],[encoding.homestead],[encoding.presentation],[encoding.coopchest],[encoding.questsync]')
+    Run -Program 'xmake' -Arguments @('-y')
     Run -Program 'xmake' -Arguments @('run','WorldItemPolicyTests')
     Run -Program 'xmake' -Arguments @('run','HomesteadPolicyTests')
     Run -Program 'xmake' -Arguments @('run','CoopChestStoreTests')
@@ -99,3 +100,4 @@ try {
     Write-Host "Windows package created: $zip"
     Write-Host 'This script never changes your installed Skyrim files.'
 } finally { Pop-Location }
+
