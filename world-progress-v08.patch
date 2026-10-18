@@ -207,7 +207,7 @@ index 1c1cc217..6a8d71e6 100644
      uint32_t m_token{}, m_openToken{}, m_openRef{}, m_nativeOpenRef{};
      uint64_t m_openDeadline{}, m_nextScan{}, m_nextPoll{}, m_nextNotice{};
 diff --git a/Code/client/Services/Generic/ActorValueService.cpp b/Code/client/Services/Generic/ActorValueService.cpp
-index 6df327cd..18074f98 100644
+index 6df327cd..f3e5f6a7 100644
 --- a/Code/client/Services/Generic/ActorValueService.cpp
 +++ b/Code/client/Services/Generic/ActorValueService.cpp
 @@ -22,6 +22,7 @@
@@ -297,7 +297,7 @@ index 6df327cd..18074f98 100644
              continue;
  
          spdlog::debug("Actor max value update, server ID: {:X}, key: {}, value: {}", acMessage.Id, key, value);
-@@ -414,9 +437,58 @@ void ActorValueService::OnDeathStateChange(const NotifyDeathStateChange& acMessa
+@@ -414,9 +437,64 @@ void ActorValueService::OnDeathStateChange(const NotifyDeathStateChange& acMessa
      if (pExtension->IsPlayer())
          return;
  
@@ -331,7 +331,13 @@ index 6df327cd..18074f98 100644
 +    const auto maximum = actor->GetActorPermanentValue(ActorValueInfo::kHealth);
 +    if (!PercentageHealth::ValidMaximum(maximum)) return;
 +    const auto fraction = found->second.Fraction;
-+    if (fraction > 0.f && actor->IsDead()) { actor->Respawn(); return; }
++    if (fraction > 0.f && actor->IsDead())
++    {
++        // Let the simulation owner report native/scripted deaths before an old
++        // alive snapshot can revive the actor and hide the death transition.
++        if (!Utils::GetLocalOwnershipToken(actor->formID)) actor->Respawn();
++        return;
++    }
 +    actor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, fraction * maximum);
 +    if (fraction == 0.f && !actor->IsDead()) actor->Kill();
 +}
