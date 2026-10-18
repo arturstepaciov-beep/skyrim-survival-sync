@@ -581,10 +581,10 @@ index 00000000..12b37886
 +});
 diff --git a/Code/client/Services/Generic/WorldProgressService.cpp b/Code/client/Services/Generic/WorldProgressService.cpp
 new file mode 100644
-index 00000000..e9335b1f
+index 00000000..121892b5
 --- /dev/null
 +++ b/Code/client/Services/Generic/WorldProgressService.cpp
-@@ -0,0 +1,323 @@
+@@ -0,0 +1,342 @@
 +#include <Services/WorldProgressService.h>
 +#include <Services/ScriptStateAccess.h>
 +#include <Services/TransportService.h>
@@ -793,8 +793,24 @@ index 00000000..e9335b1f
 +        std::vector<float> current; if (!Capture(key, current)) continue;
 +        auto remote = m_state.find(key); auto seen = m_seen.find(key);
 +        const bool plot = key >= WorldProgress::PlotKeyBase;
-+        const bool changed = seen != m_seen.end() && (plot ? seen->second[0] != current[0] : seen->second != current);
++        bool changed = seen != m_seen.end() && (plot ? seen->second[0] != current[0] : seen->second != current);
 +        const bool seed = remote == m_state.end() && m_authority == m_transport.GetLocalPlayerId();
++        if (plot)
++        {
++            if (m_pendingCrops.contains(key)) continue;
++            const auto& p = WorldProgress::Plots[key - WorldProgress::PlotKeyBase];
++            // A fresh native seed also detects clearing and replanting the SAME crop.
++            if (remote != m_state.end() && ScriptStateAccess::Form(Resolve(p.Container), p.Script, Seed(p))) changed = true;
++            if (changed)
++            {
++                HomesteadData edit; edit.Action = HomesteadAction::WorldPublish;
++                edit.Deposit = remote == m_state.end(); edit.Token = ++m_token;
++                const auto revision = remote == m_state.end() ? 0 : remote->second.Revision;
++                edit.Progress.push_back({key, revision, current});
++                m_pendingCrops[key] = {revision, uint32_t(current[0]), edit.Token};
++                m_seen[key] = current; Send(std::move(edit)); continue;
++            }
++        }
 +        if (changed && remote == m_state.end() && !seed)
 +        {
 +            // A house/plot first loaded only by a guest can still publish a real
@@ -804,7 +820,6 @@ index 00000000..e9335b1f
 +        }
 +        if (seed || (changed && remote != m_state.end()))
 +        {
-+            if (plot && changed && remote != m_state.end()) m_pendingCrops[key] = {remote->second.Revision, uint32_t(current[0])};
 +            q.Progress.push_back({key, remote == m_state.end() ? 0 : remote->second.Revision, current,
 +                !plot && seen != m_seen.end() ? seen->second : std::vector<float>{}});
 +            if (q.Progress.size() == 32) { Send(q); q.Progress.clear(); }
@@ -854,6 +869,22 @@ index 00000000..e9335b1f
 +    m_serverDay = data.Day; m_localDay = Day();
 +    if (data.Action == HomesteadAction::WorldHarvestResult && data.Reference.BaseId == m_transport.GetLocalPlayerId())
 +    {
++        if (data.Deposit)
++        {
++            for (auto it = m_pendingCrops.begin(); it != m_pendingCrops.end();)
++            {
++                if (it->second.Token != data.Token) { ++it; continue; }
++                const auto crop = it->second.Crop;
++                if (!data.Accepted && crop && crop <= WorldProgress::Crops.size())
++                {
++                    auto* seed = Resolve(WorldProgress::Crops[crop - 1].Seed);
++                    SetCount(PlayerCharacter::Get(), seed, Count(PlayerCharacter::Get(), seed) + 1);
++                }
++                it = m_pendingCrops.erase(it);
++            }
++        }
++        else
++        {
 +        for (auto it = m_pendingHarvests.begin(); it != m_pendingHarvests.end();)
 +        {
 +            if (it->second != data.Token) { ++it; continue; }
@@ -864,6 +895,7 @@ index 00000000..e9335b1f
 +            }
 +            it = m_pendingHarvests.erase(it);
 +        }
++        }
 +    }
 +    for (const auto& value : data.Progress)
 +    {
@@ -871,19 +903,6 @@ index 00000000..e9335b1f
 +            (value.Key < WorldProgress::PlotKeyBase || value.Key - WorldProgress::PlotKeyBase >= WorldProgress::Plots.size()))) continue;
 +        const auto existing = m_state.find(value.Key);
 +        if (existing != m_state.end() && value.Revision < existing->second.Revision) continue;
-+        const auto pending = m_pendingCrops.find(value.Key);
-+        if (pending != m_pendingCrops.end() && value.Revision > pending->second.first)
-+        {
-+            const auto crop = pending->second.second;
-+            if (crop && crop <= WorldProgress::Crops.size() && value.Numbers[0] != float(crop))
-+            {
-+                // The other player won a simultaneous planting edit. Refund only
-+                // this rejected seed; applying a replica never charges another seed.
-+                auto* seed = Resolve(WorldProgress::Crops[crop - 1].Seed);
-+                SetCount(PlayerCharacter::Get(), seed, Count(PlayerCharacter::Get(), seed) + 1);
-+            }
-+            m_pendingCrops.erase(pending);
-+        }
 +        m_state[value.Key] = value; Apply(value.Key);
 +    }
 +}
@@ -1050,10 +1069,10 @@ index 00000000..94d8dde2
 +}
 diff --git a/Code/client/Services/WorldProgressService.h b/Code/client/Services/WorldProgressService.h
 new file mode 100644
-index 00000000..db4db13a
+index 00000000..f9d2c939
 --- /dev/null
 +++ b/Code/client/Services/WorldProgressService.h
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,30 @@
 +#pragma once
 +#include <Structs/HomesteadData.h>
 +#include <unordered_map>
@@ -1077,7 +1096,8 @@ index 00000000..db4db13a
 +    std::unordered_map<uint32_t, std::vector<float>> m_seen;
 +    std::unordered_map<uint32_t, uint32_t> m_grownPlots;
 +    std::unordered_map<uint32_t, uint32_t> m_pendingHarvests;
-+    std::unordered_map<uint32_t, std::pair<uint64_t, uint32_t>> m_pendingCrops;
++    struct PendingCrop { uint64_t Revision; uint32_t Crop, Token; };
++    std::unordered_map<uint32_t, PendingCrop> m_pendingCrops;
 +    uint32_t m_authority{}, m_cursor{}, m_token{};
 +    uint64_t m_scan{}, m_poll{};
 +    float m_serverDay{}, m_localDay{};
@@ -1599,10 +1619,10 @@ index 8c82e184..e7003158 100644
      auto* movement = m_world.try_get<MovementComponent>(actor);
 diff --git a/Code/server/Services/WorldProgressService.cpp b/Code/server/Services/WorldProgressService.cpp
 new file mode 100644
-index 00000000..9b46420b
+index 00000000..f7f881e1
 --- /dev/null
 +++ b/Code/server/Services/WorldProgressService.cpp
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,118 @@
 +#include <Services/WorldProgressService.h>
 +#include <Services/CalendarService.h>
 +#include <World.h>
@@ -1653,6 +1673,12 @@ index 00000000..9b46420b
 +    if (q.Action != HomesteadAction::WorldPublish && q.Action != HomesteadAction::WorldHarvest) return;
 +    const float day = m_world.ctx().at<CalendarService>().GetDayCount();
 +    HomesteadData reply; reply.Action = HomesteadAction::WorldState;
++    const bool planting = q.Action == HomesteadAction::WorldPublish && q.Token && q.Progress.size() == 1 && IsPlot(q.Progress[0].Key);
++    if (planting)
++    {
++        reply.Action = HomesteadAction::WorldHarvestResult; reply.Deposit = true;
++        reply.Token = q.Token; reply.Reference.BaseId = player->GetId();
++    }
 +    if (q.Action == HomesteadAction::WorldHarvest)
 +    {
 +        if (q.Progress.size() != 1) return;
@@ -1690,7 +1716,7 @@ index 00000000..9b46420b
 +            }
 +            else
 +            {
-+                if (proposed.Numbers[0] == found->second.Numbers[0]) continue;
++                if (!planting && proposed.Numbers[0] == found->second.Numbers[0]) continue;
 +                const auto& p = WorldProgress::Plots[proposed.Key - WorldProgress::PlotKeyBase];
 +                if (proposed.Numbers[0] > 0 && WorldProgress::Crops[size_t(proposed.Numbers[0]) - 1].Family != p.Family) continue;
 +                proposed.Numbers = {proposed.Numbers[0], day, 0.f, day};
@@ -1704,11 +1730,16 @@ index 00000000..9b46420b
 +        }
 +        else accepted = WorldProgress::Commit(found->second, proposed);
 +        const auto& current = m_state.at(proposed.Key);
-+        if (!accepted) { HomesteadData correction; correction.Action = HomesteadAction::WorldState; correction.Progress.push_back(current); Send(player, std::move(correction)); }
-+        else reply.Progress.push_back(current);
++        if (!accepted)
++        {
++            HomesteadData correction = reply; correction.Progress.clear(); correction.Progress.push_back(current);
++            Send(player, std::move(correction));
++            if (planting) return;
++        }
++        else { reply.Accepted = true; reply.Progress.push_back(current); }
 +    }
 +    if (!reply.Progress.empty()) for (auto* peer : m_world.GetPlayerManager()) Send(peer, reply);
-+    else if (q.Action == HomesteadAction::WorldHarvest) Send(player, reply);
++    else if (q.Action == HomesteadAction::WorldHarvest || planting) Send(player, reply);
 +}
 diff --git a/Code/server/Services/WorldProgressService.h b/Code/server/Services/WorldProgressService.h
 new file mode 100644
