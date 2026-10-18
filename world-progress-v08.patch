@@ -126,7 +126,7 @@ index 36e73c9a..d4734831 100644
  }
  
 diff --git a/Code/client/Games/Skyrim/TESObjectREFR.cpp b/Code/client/Games/Skyrim/TESObjectREFR.cpp
-index 2cf6e6b0..dca99025 100644
+index 2cf6e6b0..3d4710c7 100644
 --- a/Code/client/Games/Skyrim/TESObjectREFR.cpp
 +++ b/Code/client/Games/Skyrim/TESObjectREFR.cpp
 @@ -8,6 +8,7 @@
@@ -137,11 +137,15 @@ index 2cf6e6b0..dca99025 100644
  #include <Services/CoopChestService.h>
  #include <Events/InventoryChangeEvent.h>
  #include <Events/ScriptAnimationEvent.h>
-@@ -1100,6 +1101,9 @@ bool TP_MAKE_THISCALL(HookPlayAnimation, void, uint32_t auiStackID, TESObjectREF
+@@ -1100,6 +1101,13 @@ bool TP_MAKE_THISCALL(HookPlayAnimation, void, uint32_t auiStackID, TESObjectREF
  
  bool TP_MAKE_THISCALL(HookActivate, TESObjectREFR, TESObjectREFR* apActivator, uint8_t aUnk1, TESBoundObject* apObjectToGet, int32_t aCount, char aDefaultProcessing)
  {
 +    if (WorldProgressService::HarvestCommit)
++        return TiltedPhoques::ThisCall(RealActivate, apThis, apActivator, aUnk1, apObjectToGet, aCount, aDefaultProcessing);
++    // Plant selection stays local. Replaying soil/hidden-container activation
++    // would open the other player's gift menu and re-run seed callbacks.
++    if (World::Get().ctx().at<WorldProgressService>().IsPlanterReference(apThis))
 +        return TiltedPhoques::ThisCall(RealActivate, apThis, apActivator, aUnk1, apObjectToGet, aCount, aDefaultProcessing);
 +    if (apActivator == PlayerCharacter::Get() && World::Get().ctx().at<WorldProgressService>().TryHarvest(apThis)) return true;
      auto& coop = World::Get().ctx().at<CoopChestService>();
@@ -393,7 +397,7 @@ index ac24ad06..196783f0 100644
      {
          const auto updateDelta = static_cast<float>(aEvent.Delta);
 diff --git a/Code/client/Services/Generic/CharacterService.cpp b/Code/client/Services/Generic/CharacterService.cpp
-index 57a9247a..7f390ead 100644
+index 57a9247a..a2bc5957 100644
 --- a/Code/client/Services/Generic/CharacterService.cpp
 +++ b/Code/client/Services/Generic/CharacterService.cpp
 @@ -4,6 +4,7 @@
@@ -404,7 +408,29 @@ index 57a9247a..7f390ead 100644
  #include <Services/QuestService.h>
  #include <Services/TransportService.h>
  
-@@ -1725,6 +1726,7 @@ void CharacterService::ProcessLeveledConforms() noexcept
+@@ -631,9 +632,8 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage)
+     pActor->rotation.x = acMessage.Rotation.x;
+     pActor->rotation.z = acMessage.Rotation.y;
+     pActor->MoveTo(PlayerCharacter::Get()->parentCell, acMessage.Position);
+-    pActor->SetActorValues(acMessage.InitialActorValues);
+-
+     pActor->GetExtension()->SetPlayer(acMessage.IsPlayer);
++    pActor->SetActorValues(acMessage.InitialActorValues);
+     if (acMessage.IsPlayer)
+     {
+         pActor->SetIgnoreFriendlyHit(true);
+@@ -1597,9 +1597,8 @@ Actor* CharacterService::CreateCharacterForEntity(entt::entity aEntity) const no
+     pActor->rotation.x = acMessage.Rotation.x;
+     pActor->rotation.z = acMessage.Rotation.y;
+     pActor->MoveTo(PlayerCharacter::Get()->parentCell, pInterpolationComponent->Position);
+-    pActor->SetActorValues(acMessage.InitialActorValues);
+-
+     pActor->GetExtension()->SetPlayer(acMessage.IsPlayer);
++    pActor->SetActorValues(acMessage.InitialActorValues);
+     if (acMessage.IsPlayer)
+     {
+         pActor->SetIgnoreFriendlyHit(true);
+@@ -1725,6 +1724,7 @@ void CharacterService::ProcessLeveledConforms() noexcept
              {
                  spdlog::info("Completed leveled NPC reconciliation for actor {:X}, base: {:X}, pick: {:X}", it->first, pActor->baseForm->formID, cPickFormId);
                  stage = ReconciliationStage::None;
@@ -412,7 +438,7 @@ index 57a9247a..7f390ead 100644
                  it = m_pendingLeveledConforms.erase(it);
                  continue;
              }
-@@ -1911,6 +1913,9 @@ void CharacterService::RunRemoteUpdates() noexcept
+@@ -1911,6 +1911,9 @@ void CharacterService::RunRemoteUpdates() noexcept
          if (!pActor || !pActor->GetNiNode())
              continue;
  
@@ -422,7 +448,7 @@ index 57a9247a..7f390ead 100644
          // By now, the actor has materialized in the world and is ready for further setup
  
          pActor->SetActorInventory(waitingFor3D.SpawnRequest.InventoryContent);
-@@ -1925,6 +1930,7 @@ void CharacterService::RunRemoteUpdates() noexcept
+@@ -1925,6 +1928,7 @@ void CharacterService::RunRemoteUpdates() noexcept
  
          if (pActor->IsDead() != waitingFor3D.SpawnRequest.IsDead)
              waitingFor3D.SpawnRequest.IsDead ? pActor->Kill() : pActor->Respawn();
@@ -484,6 +510,27 @@ index 1edb4dba..3cada7b5 100644
          if (original.HasInventory)
          {
              ScopedInventoryOverride guard;
+diff --git a/Code/client/Services/Generic/InventoryService.cpp b/Code/client/Services/Generic/InventoryService.cpp
+index 5b2f79e2..ed67ab95 100644
+--- a/Code/client/Services/Generic/InventoryService.cpp
++++ b/Code/client/Services/Generic/InventoryService.cpp
+@@ -1,5 +1,6 @@
+ #include <Services/InventoryService.h>
+ #include <Services/HomesteadService.h>
++#include <Services/WorldProgressService.h>
+ 
+ #include <Messages/RequestObjectInventoryChanges.h>
+ #include <Messages/NotifyObjectInventoryChanges.h>
+@@ -50,7 +51,8 @@ void InventoryService::OnInventoryChangeEvent(const InventoryChangeEvent& acEven
+     if (!m_transport.IsConnected())
+         return;
+ 
+-    if (m_world.ctx().at<HomesteadService>().IsManaged(Cast<TESObjectREFR>(TESForm::GetById(acEvent.FormId)))) return;
++    auto* reference = Cast<TESObjectREFR>(TESForm::GetById(acEvent.FormId));
++    if (m_world.ctx().at<HomesteadService>().IsManaged(reference) || m_world.ctx().at<WorldProgressService>().IsPlanterReference(reference)) return;
+ 
+     auto view = m_world.view<FormIdComponent>();
+ 
 diff --git a/Code/client/Services/Generic/SurvivalWaitMenu.cpp b/Code/client/Services/Generic/SurvivalWaitMenu.cpp
 new file mode 100644
 index 00000000..12b37886
@@ -534,10 +581,10 @@ index 00000000..12b37886
 +});
 diff --git a/Code/client/Services/Generic/WorldProgressService.cpp b/Code/client/Services/Generic/WorldProgressService.cpp
 new file mode 100644
-index 00000000..359b389e
+index 00000000..e9335b1f
 --- /dev/null
 +++ b/Code/client/Services/Generic/WorldProgressService.cpp
-@@ -0,0 +1,310 @@
+@@ -0,0 +1,323 @@
 +#include <Services/WorldProgressService.h>
 +#include <Services/ScriptStateAccess.h>
 +#include <Services/TransportService.h>
@@ -599,7 +646,7 @@ index 00000000..359b389e
 +    std::vector<float> v{value}; ScriptStateAccess::Numbers(form, script, field, 0, v, true);
 +}
 +}
-+bool WorldProgressService::HarvestCommit = false;
++thread_local bool WorldProgressService::HarvestCommit = false;
 +WorldProgressService::WorldProgressService(World& w, entt::dispatcher& d, TransportService& t) : m_world(w), m_transport(t)
 +{
 +    m_update = d.sink<UpdateEvent>().connect<&WorldProgressService::OnUpdate>(this);
@@ -631,7 +678,7 @@ index 00000000..359b389e
 +    const auto& b = WorldProgress::Bindings[key]; auto* form = Resolve(b.Target); if (!form) return false;
 +    if (b.Kind == 0) { auto* ref = Cast<TESObjectREFR>(form); if (!ref || ref->IsDeleted()) return false; out = {ref->IsDisabled() ? 1.f : 0.f}; return true; }
 +    if (b.Kind == 1) { out = {static_cast<TESGlobal*>(form)->f}; return std::isfinite(out[0]); }
-+    if (b.Kind == 2) return ScriptStateAccess::Numbers(form, b.Script, b.Variable, b.Type, out);
++    if (b.Kind == 2 || b.Kind == 6) return ScriptStateAccess::Numbers(form, b.Script, b.Variable, b.Type, out);
 +    if (b.Kind == 3 || b.Kind == 5)
 +    {
 +        const auto* fn = m_world.ctx().at<PapyrusService>().Get("Cell", "GetFactionOwner"); if (!fn) return false;
@@ -689,7 +736,7 @@ index 00000000..359b389e
 +            if (harvested && !grown->IsDisabled()) grown->Disable();
 +            if (!harvested && grown->IsDisabled()) grown->Enable();
 +        }
-+        ScriptStateAccess::State(soil, p.SoilScript, mature ? "Planted" : "Empty");
++        ScriptStateAccess::State(soil, p.SoilScript, p.Family ? (mature ? "Planted" : "Empty") : (mature ? "planted" : "empty"));
 +        if (p.Family) SetNumber(soil, p.SoilScript, "IsPlanted", mature ? 1.f : 0.f);
 +    }
 +    else
@@ -718,7 +765,7 @@ index 00000000..359b389e
 +            SetCount(chest, token, active ? 0 : std::clamp(int(v[0]), 0, 99));
 +            if (active) SetCount(PlayerCharacter::Get(), token, std::clamp(int(v[0]), 0, 99));
 +        }
-+        else if (b.Kind == 5 && v[0])
++        else if ((b.Kind == 5 || b.Kind == 6) && v[0])
 +        {
 +            auto* keyForm = Resolve(b.Aux);
 +            if (keyForm && !Count(PlayerCharacter::Get(), keyForm)) SetCount(PlayerCharacter::Get(), keyForm, 1);
@@ -767,10 +814,23 @@ index 00000000..359b389e
 +    }
 +    if (!q.Progress.empty()) Send(std::move(q));
 +}
++bool WorldProgressService::IsPlanterReference(const TESObjectREFR* ref) const
++{
++    if (!m_transport.IsOnline() || !ref) return false;
++    for (const auto& plot : WorldProgress::Plots)
++        if (ref == Resolve(plot.Soil) || ref == Resolve(plot.Container)) return true;
++    return false;
++}
 +bool WorldProgressService::TryHarvest(TESObjectREFR* ref)
 +{
 +    if (!m_transport.IsOnline() || !ref || HarvestCommit) return false;
 +    auto found = m_grownPlots.find(ref->formID);
++    if (found != m_grownPlots.end())
++    {
++        const auto& plot = WorldProgress::Plots[found->second - WorldProgress::PlotKeyBase];
++        if (ScriptStateAccess::Form(Resolve(plot.Container), plot.Script, Grown(plot)) != ref)
++        { m_grownPlots.erase(found); return false; }
++    }
 +    if (found == m_grownPlots.end())
 +    {
 +        for (uint32_t i = 0; i < WorldProgress::Plots.size(); ++i)
@@ -790,7 +850,7 @@ index 00000000..359b389e
 +{
 +    const auto& data = notify.Data;
 +    if (!m_transport.IsOnline() || (data.Action != HomesteadAction::WorldState && data.Action != HomesteadAction::WorldHarvestResult)) return;
-+    if (m_authority != data.Authority) { m_state.clear(); m_seen.clear(); m_pendingHarvests.clear(); m_authority = data.Authority; }
++    if (m_authority != data.Authority) { m_state.clear(); m_seen.clear(); m_pendingHarvests.clear(); m_pendingCrops.clear(); m_authority = data.Authority; }
 +    m_serverDay = data.Day; m_localDay = Day();
 +    if (data.Action == HomesteadAction::WorldHarvestResult && data.Reference.BaseId == m_transport.GetLocalPlayerId())
 +    {
@@ -990,10 +1050,10 @@ index 00000000..94d8dde2
 +}
 diff --git a/Code/client/Services/WorldProgressService.h b/Code/client/Services/WorldProgressService.h
 new file mode 100644
-index 00000000..57184860
+index 00000000..db4db13a
 --- /dev/null
 +++ b/Code/client/Services/WorldProgressService.h
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,29 @@
 +#pragma once
 +#include <Structs/HomesteadData.h>
 +#include <unordered_map>
@@ -1002,7 +1062,8 @@ index 00000000..57184860
 +{
 +    WorldProgressService(World&, entt::dispatcher&, TransportService&);
 +    bool TryHarvest(TESObjectREFR*);
-+    static bool HarvestCommit;
++    bool IsPlanterReference(const TESObjectREFR*) const;
++    static thread_local bool HarvestCommit;
 +private:
 +    void OnUpdate(const UpdateEvent&);
 +    void OnNotify(const NotifyHomestead&);
@@ -1150,10 +1211,10 @@ index 824b2508..427d63c3 100644
  }
 diff --git a/Code/common/WorldProgressPolicy.h b/Code/common/WorldProgressPolicy.h
 new file mode 100644
-index 00000000..2ffa8163
+index 00000000..78f399b3
 --- /dev/null
 +++ b/Code/common/WorldProgressPolicy.h
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,46 @@
 +#pragma once
 +#include <vector>
 +#include <cmath>
@@ -1191,6 +1252,13 @@ index 00000000..2ffa8163
 +        state.Numbers = std::move(merged); ++state.Revision; return true;
 +    }
 +    state.Numbers = request.Numbers; ++state.Revision; return true;
++}
++inline bool Harvest(Value& plot, uint64_t expectedRevision, float day)
++{
++    if (!Valid(plot) || plot.Numbers.size() != 4 || plot.Revision != expectedRevision || !std::isfinite(day)) return false;
++    auto& v = plot.Numbers;
++    if (v[0] <= 0 || day - v[1] < 1.f || (v[2] != 0.f && day - v[3] < 3.f)) return false;
++    v[2] = 1.f; v[3] = day; ++plot.Revision; return true;
 +}
 +}
 diff --git a/Code/encoding/Messages/NotifyHealthChangeBroadcast.cpp b/Code/encoding/Messages/NotifyHealthChangeBroadcast.cpp
@@ -1531,10 +1599,10 @@ index 8c82e184..e7003158 100644
      auto* movement = m_world.try_get<MovementComponent>(actor);
 diff --git a/Code/server/Services/WorldProgressService.cpp b/Code/server/Services/WorldProgressService.cpp
 new file mode 100644
-index 00000000..70b823be
+index 00000000..9b46420b
 --- /dev/null
 +++ b/Code/server/Services/WorldProgressService.cpp
-@@ -0,0 +1,109 @@
+@@ -0,0 +1,107 @@
 +#include <Services/WorldProgressService.h>
 +#include <Services/CalendarService.h>
 +#include <World.h>
@@ -1607,9 +1675,7 @@ index 00000000..70b823be
 +            m_tokens[player->GetId()] = q.Token;
 +            reply.Action = HomesteadAction::WorldHarvestResult; reply.Token = q.Token;
 +            reply.Reference.BaseId = player->GetId();
-+            const bool mature = value.Numbers[0] > 0 && day - value.Numbers[1] >= 1.f;
-+            reply.Accepted = mature && (value.Numbers[2] == 0.f || day - value.Numbers[3] >= 3.f);
-+            if (reply.Accepted) { value.Numbers[2] = 1.f; value.Numbers[3] = day; ++value.Revision; }
++            reply.Accepted = WorldProgress::Harvest(value, proposed.Revision, day);
 +            reply.Progress.push_back(value); continue;
 +        }
 +        if (plot)
@@ -1750,10 +1816,10 @@ index 00000000..ca9b6f6b
 +}
 diff --git a/Code/tests/world_progress.cpp b/Code/tests/world_progress.cpp
 new file mode 100644
-index 00000000..0c007083
+index 00000000..84426ce7
 --- /dev/null
 +++ b/Code/tests/world_progress.cpp
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,51 @@
 +#include <catch2/catch.hpp>
 +#include <WorldProgressPolicy.h>
 +#include <SurvivalTimePolicy.h>
@@ -1792,6 +1858,18 @@ index 00000000..0c007083
 +    REQUIRE(WorldProgress::Commit(state, guest));
 +    REQUIRE((state.Numbers == std::vector<float>{0, 1, 1}));
 +    REQUIRE_FALSE(WorldProgress::Commit(state, guest));
++}
++TEST_CASE("Shared plots award one harvest and enforce growth and regrowth timers", "[world-progress]")
++{
++    WorldProgress::Value plot{0x100001, 1, {1, 100, 0, 100}};
++    REQUIRE_FALSE(WorldProgress::Harvest(plot, 1, 100.99f));
++    REQUIRE(WorldProgress::Harvest(plot, 1, 101));
++    REQUIRE_FALSE(WorldProgress::Harvest(plot, 1, 101)); // simultaneous peer / replay
++    REQUIRE_FALSE(WorldProgress::Harvest(plot, 2, 103.99f));
++    REQUIRE(WorldProgress::Harvest(plot, 2, 104));
++    REQUIRE_FALSE(WorldProgress::Harvest(plot, 3, std::numeric_limits<float>::quiet_NaN()));
++    plot.Numbers[0] = 0;
++    REQUIRE_FALSE(WorldProgress::Harvest(plot, 3, 108));
 +}
 diff --git a/Code/tests/world_progress_encoding.cpp b/Code/tests/world_progress_encoding.cpp
 new file mode 100644
