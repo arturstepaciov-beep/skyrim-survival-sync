@@ -534,10 +534,10 @@ index 00000000..12b37886
 +});
 diff --git a/Code/client/Services/Generic/WorldProgressService.cpp b/Code/client/Services/Generic/WorldProgressService.cpp
 new file mode 100644
-index 00000000..be02819a
+index 00000000..359b389e
 --- /dev/null
 +++ b/Code/client/Services/Generic/WorldProgressService.cpp
-@@ -0,0 +1,284 @@
+@@ -0,0 +1,310 @@
 +#include <Services/WorldProgressService.h>
 +#include <Services/ScriptStateAccess.h>
 +#include <Services/TransportService.h>
@@ -575,7 +575,11 @@ index 00000000..be02819a
 +    if (!ref || !base) return;
 +    Inventory::Entry entry; if (!World::Get().GetModSystem().GetServerModId(base->formID, entry.BaseId)) return;
 +    entry.Count = count - Count(ref, base);
-+    if (entry.Count) { ScopedInventoryOverride guard; ref->AddOrRemoveItem(entry, true); }
++    if (entry.Count)
++    {
++        if (ref == PlayerCharacter::Get()) ref->AddOrRemoveItem(entry, true);
++        else { ScopedInventoryOverride guard; ref->AddOrRemoveItem(entry, true); }
++    }
 +}
 +bool InCraftingTrigger(const WorldProgress::Binding& binding)
 +{
@@ -744,9 +748,18 @@ index 00000000..be02819a
 +        const bool plot = key >= WorldProgress::PlotKeyBase;
 +        const bool changed = seen != m_seen.end() && (plot ? seen->second[0] != current[0] : seen->second != current);
 +        const bool seed = remote == m_state.end() && m_authority == m_transport.GetLocalPlayerId();
++        if (changed && remote == m_state.end() && !seed)
++        {
++            // A house/plot first loaded only by a guest can still publish a real
++            // local edit, without uploading that guest's untouched save as a seed.
++            HomesteadData edit; edit.Action = HomesteadAction::WorldPublish; edit.Deposit = true;
++            edit.Progress.push_back({key, 0, current}); Send(std::move(edit));
++        }
 +        if (seed || (changed && remote != m_state.end()))
 +        {
-+            q.Progress.push_back({key, remote == m_state.end() ? 0 : remote->second.Revision, current});
++            if (plot && changed && remote != m_state.end()) m_pendingCrops[key] = {remote->second.Revision, uint32_t(current[0])};
++            q.Progress.push_back({key, remote == m_state.end() ? 0 : remote->second.Revision, current,
++                !plot && seen != m_seen.end() ? seen->second : std::vector<float>{}});
 +            if (q.Progress.size() == 32) { Send(q); q.Progress.clear(); }
 +        }
 +        m_seen[key] = std::move(current);
@@ -798,6 +811,19 @@ index 00000000..be02819a
 +            (value.Key < WorldProgress::PlotKeyBase || value.Key - WorldProgress::PlotKeyBase >= WorldProgress::Plots.size()))) continue;
 +        const auto existing = m_state.find(value.Key);
 +        if (existing != m_state.end() && value.Revision < existing->second.Revision) continue;
++        const auto pending = m_pendingCrops.find(value.Key);
++        if (pending != m_pendingCrops.end() && value.Revision > pending->second.first)
++        {
++            const auto crop = pending->second.second;
++            if (crop && crop <= WorldProgress::Crops.size() && value.Numbers[0] != float(crop))
++            {
++                // The other player won a simultaneous planting edit. Refund only
++                // this rejected seed; applying a replica never charges another seed.
++                auto* seed = Resolve(WorldProgress::Crops[crop - 1].Seed);
++                SetCount(PlayerCharacter::Get(), seed, Count(PlayerCharacter::Get(), seed) + 1);
++            }
++            m_pendingCrops.erase(pending);
++        }
 +        m_state[value.Key] = value; Apply(value.Key);
 +    }
 +}
@@ -819,7 +845,7 @@ index 00000000..be02819a
 +            SetCount(Cast<TESObjectREFR>(container), seed, 1);
 +        }
 +    }
-+    m_state.clear(); m_seen.clear(); m_grownPlots.clear(); m_pendingHarvests.clear();
++    m_state.clear(); m_seen.clear(); m_grownPlots.clear(); m_pendingHarvests.clear(); m_pendingCrops.clear();
 +    m_authority = m_cursor = 0; m_scan = m_poll = 0; HarvestCommit = false;
 +}
 diff --git a/Code/client/Services/ScriptStateAccess.h b/Code/client/Services/ScriptStateAccess.h
@@ -964,10 +990,10 @@ index 00000000..94d8dde2
 +}
 diff --git a/Code/client/Services/WorldProgressService.h b/Code/client/Services/WorldProgressService.h
 new file mode 100644
-index 00000000..e92da70c
+index 00000000..57184860
 --- /dev/null
 +++ b/Code/client/Services/WorldProgressService.h
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,28 @@
 +#pragma once
 +#include <Structs/HomesteadData.h>
 +#include <unordered_map>
@@ -990,6 +1016,7 @@ index 00000000..e92da70c
 +    std::unordered_map<uint32_t, std::vector<float>> m_seen;
 +    std::unordered_map<uint32_t, uint32_t> m_grownPlots;
 +    std::unordered_map<uint32_t, uint32_t> m_pendingHarvests;
++    std::unordered_map<uint32_t, std::pair<uint64_t, uint32_t>> m_pendingCrops;
 +    uint32_t m_authority{}, m_cursor{}, m_token{};
 +    uint64_t m_scan{}, m_poll{};
 +    float m_serverDay{}, m_localDay{};
@@ -1123,10 +1150,10 @@ index 824b2508..427d63c3 100644
  }
 diff --git a/Code/common/WorldProgressPolicy.h b/Code/common/WorldProgressPolicy.h
 new file mode 100644
-index 00000000..a99c96ea
+index 00000000..2ffa8163
 --- /dev/null
 +++ b/Code/common/WorldProgressPolicy.h
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,39 @@
 +#pragma once
 +#include <vector>
 +#include <cmath>
@@ -1139,6 +1166,7 @@ index 00000000..a99c96ea
 +    uint32_t Key{};
 +    uint64_t Revision{};
 +    std::vector<float> Numbers;
++    std::vector<float> Previous;
 +};
 +inline bool Valid(const Value& value)
 +{
@@ -1147,7 +1175,21 @@ index 00000000..a99c96ea
 +}
 +inline bool Commit(Value& state, const Value& request)
 +{
-+    if (!Valid(request) || state.Key != request.Key || state.Revision != request.Revision || state.Numbers.size() != request.Numbers.size()) return false;
++    if (!Valid(request) || state.Key != request.Key || state.Numbers.size() != request.Numbers.size()) return false;
++    if (state.Revision != request.Revision)
++    {
++        if (request.Previous.size() != state.Numbers.size()) return false;
++        auto merged = state.Numbers; bool changed{};
++        for (size_t i = 0; i < merged.size(); ++i)
++        {
++            if (!std::isfinite(request.Previous[i])) return false;
++            if (request.Numbers[i] == request.Previous[i]) continue;
++            if (merged[i] != request.Previous[i] && merged[i] != request.Numbers[i]) return false;
++            changed |= merged[i] != request.Numbers[i]; merged[i] = request.Numbers[i];
++        }
++        if (!changed) return false;
++        state.Numbers = std::move(merged); ++state.Revision; return true;
++    }
 +    state.Numbers = request.Numbers; ++state.Revision; return true;
 +}
 +}
@@ -1246,10 +1288,10 @@ index 057595a6..f1da38e0 100644
 +    float MaximumHealth{};
  };
 diff --git a/Code/encoding/Structs/HomesteadData.cpp b/Code/encoding/Structs/HomesteadData.cpp
-index e1b16966..475374d2 100644
+index e1b16966..becead61 100644
 --- a/Code/encoding/Structs/HomesteadData.cpp
 +++ b/Code/encoding/Structs/HomesteadData.cpp
-@@ -27,6 +27,16 @@ void HomesteadData::Serialize(Buffer::Writer& w) const noexcept
+@@ -27,6 +27,18 @@ void HomesteadData::Serialize(Buffer::Writer& w) const noexcept
      const auto count = std::min<size_t>(Records.size(), 64);
      w.WriteBits(count, 8);
      for (size_t i = 0; i < count; ++i) Records[i].Serialize(w);
@@ -1262,11 +1304,13 @@ index e1b16966..475374d2 100644
 +        Serialization::WriteVarInt(w, value.Key); Serialization::WriteVarInt(w, value.Revision);
 +        const auto size = std::min<size_t>(value.Numbers.size(), 128); w.WriteBits(size, 8);
 +        for (size_t j = 0; j < size; ++j) Serialization::WriteFloat(w, value.Numbers[j]);
++        const auto previous = std::min<size_t>(value.Previous.size(), 128); w.WriteBits(previous, 8);
++        for (size_t j = 0; j < previous; ++j) Serialization::WriteFloat(w, value.Previous[j]);
 +    }
  }
  void HomesteadData::Deserialize(Buffer::Reader& r) noexcept
  {
-@@ -44,4 +54,14 @@ void HomesteadData::Deserialize(Buffer::Reader& r) noexcept
+@@ -44,4 +56,16 @@ void HomesteadData::Deserialize(Buffer::Reader& r) noexcept
          HomesteadRecord record; record.Deserialize(r);
          if (i < 64) Records.push_back(std::move(record));
      }
@@ -1278,18 +1322,20 @@ index e1b16966..475374d2 100644
 +        value.Key = Serialization::ReadVarInt(r) & 0xFFFFFFFF; value.Revision = Serialization::ReadVarInt(r);
 +        uint64_t size{}; r.ReadBits(size, 8);
 +        for (uint64_t j = 0; j < size; ++j) { const auto number = Serialization::ReadFloat(r); if (j < 128) value.Numbers.push_back(number); }
-+        if (i < 32 && size <= 128) Progress.push_back(std::move(value));
++        uint64_t previous{}; r.ReadBits(previous, 8);
++        for (uint64_t j = 0; j < previous; ++j) { const auto number = Serialization::ReadFloat(r); if (j < 128) value.Previous.push_back(number); }
++        if (i < 32 && size <= 128 && previous <= 128) Progress.push_back(std::move(value));
 +    }
  }
 diff --git a/Code/encoding/Structs/HomesteadData.h b/Code/encoding/Structs/HomesteadData.h
-index abd6d0e8..63deee17 100644
+index abd6d0e8..61a25490 100644
 --- a/Code/encoding/Structs/HomesteadData.h
 +++ b/Code/encoding/Structs/HomesteadData.h
 @@ -2,8 +2,9 @@
  #include <Structs/Inventory.h>
  #include <Structs/GameId.h>
  #include <Structs/GridCellCoords.h>
-+#include <WorldProgressPolicy.h>
++#include <common/WorldProgressPolicy.h>
  // Both directions are bounded to 64 records per packet.
 -enum class HomesteadAction : uint8_t { Poll, Publish, Open, Transfer, State, Opened, Rejected, Result, CoopPoll, CoopOpen, CoopTransfer, CoopState, CoopOpened, CoopRejected, CoopResult };
 +enum class HomesteadAction : uint8_t { Poll, Publish, Open, Transfer, State, Opened, Rejected, Result, CoopPoll, CoopOpen, CoopTransfer, CoopState, CoopOpened, CoopRejected, CoopResult, WorldPoll, WorldPublish, WorldState, WorldHarvest, WorldHarvestResult };
@@ -1485,7 +1531,7 @@ index 8c82e184..e7003158 100644
      auto* movement = m_world.try_get<MovementComponent>(actor);
 diff --git a/Code/server/Services/WorldProgressService.cpp b/Code/server/Services/WorldProgressService.cpp
 new file mode 100644
-index 00000000..d9b884a4
+index 00000000..70b823be
 --- /dev/null
 +++ b/Code/server/Services/WorldProgressService.cpp
 @@ -0,0 +1,109 @@
@@ -1587,8 +1633,8 @@ index 00000000..d9b884a4
 +        bool accepted{};
 +        if (found == m_state.end())
 +        {
-+            if (player->GetId() != authority || proposed.Revision) continue;
-+            proposed.Revision = 1; m_state.emplace(proposed.Key, proposed); accepted = true;
++            if ((player->GetId() != authority && !q.Deposit) || proposed.Revision) continue;
++            proposed.Revision = 1; proposed.Previous.clear(); m_state.emplace(proposed.Key, proposed); accepted = true;
 +        }
 +        else accepted = WorldProgress::Commit(found->second, proposed);
 +        const auto& current = m_state.at(proposed.Key);
@@ -1704,10 +1750,10 @@ index 00000000..ca9b6f6b
 +}
 diff --git a/Code/tests/world_progress.cpp b/Code/tests/world_progress.cpp
 new file mode 100644
-index 00000000..2f608171
+index 00000000..0c007083
 --- /dev/null
 +++ b/Code/tests/world_progress.cpp
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,39 @@
 +#include <catch2/catch.hpp>
 +#include <WorldProgressPolicy.h>
 +#include <SurvivalTimePolicy.h>
@@ -1736,6 +1782,16 @@ index 00000000..2f608171
 +    REQUIRE(SurvivalTime::HoursToTarget(Clock{201, 11, 28, 10}, Clock{202, 0, 4, 11}) == 0);
 +    REQUIRE(SurvivalTime::HoursToTarget(Clock{202, 0, 4, 10}, Clock{202, 0, 4, 10}) == 0);
 +    REQUIRE(SurvivalTime::SkipSpeed == 3);
++}
++TEST_CASE("Concurrent edits to different house array entries merge without undoing builds", "[world-progress]")
++{
++    WorldProgress::Value state{1, 1, {0, 0, 0}};
++    WorldProgress::Value host{1, 1, {0, 1, 0}, {0, 0, 0}};
++    WorldProgress::Value guest{1, 1, {0, 0, 1}, {0, 0, 0}};
++    REQUIRE(WorldProgress::Commit(state, host));
++    REQUIRE(WorldProgress::Commit(state, guest));
++    REQUIRE((state.Numbers == std::vector<float>{0, 1, 1}));
++    REQUIRE_FALSE(WorldProgress::Commit(state, guest));
 +}
 diff --git a/Code/tests/world_progress_encoding.cpp b/Code/tests/world_progress_encoding.cpp
 new file mode 100644
