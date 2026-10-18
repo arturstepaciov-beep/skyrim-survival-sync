@@ -618,21 +618,48 @@ index 1e6a9053..dda487df 100644
  
      entt::scoped_connection m_questUpdateConnection;
 diff --git a/Code/skyrim_ui/src/app/components/root/root.component.html b/Code/skyrim_ui/src/app/components/root/root.component.html
-index 3e3f1207..1e9efe77 100644
+index 3e3f1207..84b59f7e 100644
 --- a/Code/skyrim_ui/src/app/components/root/root.component.html
 +++ b/Code/skyrim_ui/src/app/components/root/root.component.html
-@@ -47,6 +47,11 @@
-           title="Refresh nearby remote NPC positions, animations and world items from the server">
-           {{ resyncPending ? 'Resync requested' : 'Resync with host' }}
-         </button>
-+        <button data-style-ornament="inverted" (click)="syncQuests()"
-+          title="Catch up to the party leader's quest journal. Quests ahead of the host are skipped.">
-+          Sync quests with host
-+        </button>
-+        <span role="status" aria-live="polite">{{ questSyncStatus$ | async }}</span>
-         <label>
-           <input type="checkbox" [checked]="autoResync" (change)="setAutoResync(!autoResync)">
-           Auto resync
+@@ -33,6 +33,13 @@
+     class="app-root-controls"
+     [class.background-element]="view$ | async"
+   >
++    <app-window *ngIf="connected$ | async" class="quest-sync-controls">
++      <button data-style-ornament="inverted" (click)="syncQuests()"
++        title="Catch up to the party leader's quest journal. Quests ahead of the host are skipped.">
++        Sync quests with host
++      </button>
++      <span *ngIf="questSyncStatus$ | async as status" role="status" aria-live="polite">{{ status }}</span>
++    </app-window>
+     <app-window border="strip" class="app-root-menu">
+       <button
+         *ngIf="!(connected$ | async) && !(connectionInProgress$ | async)"
+diff --git a/Code/skyrim_ui/src/app/components/root/root.component.scss b/Code/skyrim_ui/src/app/components/root/root.component.scss
+index 698735f2..4b1902d8 100644
+--- a/Code/skyrim_ui/src/app/components/root/root.component.scss
++++ b/Code/skyrim_ui/src/app/components/root/root.component.scss
+@@ -108,6 +108,20 @@
+   flex: 0 0 auto;
+ }
+ 
++.quest-sync-controls {
++  display: flex;
++  flex-direction: column;
++  gap: 0.35rem;
++  width: 100%;
++  padding: 0.4rem;
++  box-sizing: border-box;
++
++  > span {
++    font-size: 0.85rem;
++    overflow-wrap: anywhere;
++  }
++}
++
+ .app-root-menu {
+   display: flex;
+   height: 4rem;
 diff --git a/Code/skyrim_ui/src/app/components/root/root.component.ts b/Code/skyrim_ui/src/app/components/root/root.component.ts
 index 86459f2f..2821dbc3 100644
 --- a/Code/skyrim_ui/src/app/components/root/root.component.ts

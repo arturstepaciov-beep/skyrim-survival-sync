@@ -10,6 +10,9 @@ on:
       - 'Build-Windows.ps1'
       - '.github/workflows/build-windows.yml'
   workflow_dispatch:
+concurrency:
+  group: survival-windows-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
