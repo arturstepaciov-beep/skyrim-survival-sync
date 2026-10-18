@@ -1,4 +1,4 @@
-# Build host-authoritative Hearthfire structures and transactional shared home storage.
+# Build party-leader quest snapshots alongside the retained v0.6 features.
 param(
     [string]$WorkDirectory = (Join-Path $PSScriptRoot 'build-work'),
     [string]$BuildStamp = ''
@@ -9,8 +9,8 @@ $vilniusZone = [TimeZoneInfo]::FindSystemTimeZoneById('FLE Standard Time')
 $startedLocal = [TimeZoneInfo]::ConvertTimeFromUtc($startedUtc, $vilniusZone)
 if (-not $BuildStamp) { $BuildStamp = $startedLocal.ToString('yyyy-MM-dd_HH-mm-ss') + '-LT' }
 if ($BuildStamp -notmatch '^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-LT$') { throw 'Invalid build timestamp' }
-$packageName = "SurvivalSync-v0.6-$BuildStamp-Windows"
-$buildVersion = "survival-sync-v06-coop-chests-$BuildStamp"
+$packageName = "SurvivalSync-v0.7-$BuildStamp-Windows"
+$buildVersion = "survival-sync-v07-quest-sync-$BuildStamp"
 $sourceCommit = (& git -C $PSScriptRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot determine package source commit' }
 function Run([string]$Program, [string[]]$Arguments) {
@@ -35,9 +35,13 @@ try {
     Run -Program 'git' -Arguments @('checkout','-b','survival-sync-v01','9ce0338522277e0ff0a12e8d2aa09ce67ad41a59')
     Run -Program 'git' -Arguments @('apply','--check',$patch)
     Run -Program 'git' -Arguments @('apply',$patch)
+    $questPatch = Join-Path $WorkDirectory 'quest-sync.patch'
+    [IO.File]::WriteAllText($questPatch, [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'quest-sync-v07.patch')).Replace("`r`n", "`n"), [Text.UTF8Encoding]::new($false))
+    Run -Program 'git' -Arguments @('apply','--check',$questPatch)
+    Run -Program 'git' -Arguments @('apply',$questPatch)
     $buildInfoPath = Join-Path $source 'Code/common/BuildInfo.h.in'
     $buildInfo = Get-Content $buildInfoPath -Raw
-    $buildInfo = $buildInfo.Replace('survival-sync-v06-coop-chests-draft', $buildVersion)
+    $buildInfo = $buildInfo.Replace('survival-sync-v07-quest-sync-draft', $buildVersion)
     [IO.File]::WriteAllText($buildInfoPath, $buildInfo, [Text.UTF8Encoding]::new($false))
     Run -Program 'git' -Arguments @('submodule','update','--init','--recursive','--depth=1')
     Run -Program 'xmake' -Arguments @('config','--plat=windows','--arch=x64','--mode=releasedbg','--yes')
@@ -46,7 +50,7 @@ try {
     Run -Program 'xmake' -Arguments @('run','CoopChestStoreTests')
     Run -Program 'xmake' -Arguments @('-y')
     # Native encoding tests include the new request packet round trip.
-    Run -Program 'xmake' -Arguments @('run','TPTests','[encoding.survival],[encoding.worlditems],[encoding.weather],[encoding.homestead],[encoding.presentation],[encoding.coopchest]')
+    Run -Program 'xmake' -Arguments @('run','TPTests','[encoding.survival],[encoding.worlditems],[encoding.weather],[encoding.homestead],[encoding.presentation],[encoding.coopchest],[encoding.questsync]')
     Run -Program 'xmake' -Arguments @('run','WorldItemPolicyTests')
     Run -Program 'xmake' -Arguments @('run','HomesteadPolicyTests')
     Run -Program 'xmake' -Arguments @('run','CoopChestStoreTests')

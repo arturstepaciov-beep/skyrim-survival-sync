@@ -1,11 +1,12 @@
-# Shared chest v0.6 build requested 2026-10-16 (Vilnius).
+# Quest sync v0.7 build requested 2026-10-18 (Vilnius).
 name: Build Survival Sync Windows
-run-name: Survival Sync v0.6 · ${{ github.run_number }} · ${{ github.event.head_commit.message || 'manual' }}
+run-name: Survival Sync v0.7 · ${{ github.run_number }} · ${{ github.event.head_commit.message || 'manual' }}
 on:
   push:
     branches: [main, 'build/**']
     paths:
       - 'world-items-v0.2.patch'
+      - 'quest-sync-v07.patch'
       - 'Build-Windows.ps1'
       - '.github/workflows/build-windows.yml'
   workflow_dispatch:
@@ -38,7 +39,7 @@ jobs:
           $zone = [TimeZoneInfo]::FindSystemTimeZoneById('FLE Standard Time')
           $stamp = [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, $zone).ToString('yyyy-MM-dd_HH-mm-ss') + '-LT'
           "stamp=$stamp" >> $env:GITHUB_OUTPUT
-          "name=SurvivalSync-v0.6-$stamp-Windows" >> $env:GITHUB_OUTPUT
+          "name=SurvivalSync-v0.7-$stamp-Windows" >> $env:GITHUB_OUTPUT
       - name: Build and package custom client and server
         shell: pwsh
         run: ./Build-Windows.ps1 -WorkDirectory "${{ runner.temp }}/survival-build" -BuildStamp "${{ steps.metadata.outputs.stamp }}"

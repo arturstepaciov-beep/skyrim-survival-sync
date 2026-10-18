@@ -1,0 +1,810 @@
+diff --git a/Code/client/Services/Generic/OverlayClient.cpp b/Code/client/Services/Generic/OverlayClient.cpp
+index de5e52be..cfc9d925 100644
+--- a/Code/client/Services/Generic/OverlayClient.cpp
++++ b/Code/client/Services/Generic/OverlayClient.cpp
+@@ -6,6 +6,7 @@
+ #include <Services/OverlayClient.h>
+ #include <Services/TransportService.h>
+ #include <Services/WorldItemService.h>
++#include <Services/QuestService.h>
+ 
+ #include <Messages/SendChatMessageRequest.h>
+ #include <Messages/TeleportRequest.h>
+@@ -60,6 +61,8 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
+             const int key = eventArgs->GetInt(0);
+             World::Get().GetRunner().Queue([key] { World::Get().ctx().at<WorldItemService>().SetResyncHotkey(key); });
+         }
++        else if (eventName == "syncQuests")
++            World::Get().GetRunner().Queue([] { World::Get().ctx().at<QuestService>().SyncWithHost(); });
+         else if (eventName == "resync")
+             World::Get().GetRunner().Queue([] { World::Get().ctx().at<WorldItemService>().Resync(); });
+         else if (eventName == "revealPlayers")
+diff --git a/Code/client/Services/Generic/QuestService.cpp b/Code/client/Services/Generic/QuestService.cpp
+index 9ad6de97..c1c68f2c 100644
+--- a/Code/client/Services/Generic/QuestService.cpp
++++ b/Code/client/Services/Generic/QuestService.cpp
+@@ -1,6 +1,9 @@
+ #include <TiltedOnlinePCH.h>
+ 
+ #include <Events/ConnectedEvent.h>
++#include <Events/UpdateEvent.h>
++#include <Messages/RequestQuestSync.h>
++#include <Messages/NotifyQuestSync.h>
+ 
+ #include <Services/QuestService.h>
+ #include <Services/ImguiService.h>
+@@ -18,6 +21,177 @@
+ 
+ #include <Messages/RequestQuestUpdate.h>
+ #include <Messages/NotifyQuestUpdate.h>
++#include <Interface/UI.h>
++#include <QuestSyncPolicy.h>
++
++namespace
++{
++bool QuestSyncReady()
++{
++    auto* player = PlayerCharacter::Get();
++    if (!player || !player->GetNiNode() || !player->parentCell) return false;
++    auto* ui = UI::Get();
++    return !ui || !ui->GetMenuOpen(BSFixedString("Loading Menu"));
++}
++constexpr uint16_t kJournalFlags = TESQuest::Completed | TESQuest::Failed | TESQuest::Active;
++}
++
++void QuestService::SyncStatus(const String& text) noexcept
++{
++    auto args = CefListValue::Create();
++    args->SetString(0, text.c_str());
++    if (auto* app = m_world.GetOverlayService().GetOverlayApp()) app->ExecuteAsync("questSyncStatus", args);
++}
++
++void QuestService::SyncWithHost() noexcept
++{
++    const auto& party = m_world.GetPartyService();
++    if (!m_world.GetTransport().IsOnline() || !party.IsInParty())
++    { SyncStatus("Join the host's party first."); return; }
++    if (party.IsLeader())
++    { SyncStatus("You are the quest host (party leader)."); return; }
++    if (m_pending && m_world.GetTick() < m_requestDeadline) return;
++    m_pending = true;
++    m_requestDeadline = m_world.GetTick() + 15000;
++    m_world.GetTransport().Send(RequestQuestSync{});
++    SyncStatus("Requesting the host's quest journal...");
++}
++
++void QuestService::Publish(bool force) noexcept
++{
++    if (!QuestSyncReady() || !m_world.GetPartyService().IsLeader()) return;
++    for (TESQuest* quest : ModManager::Get()->quests)
++    {
++        if (!quest || IsNonSyncableQuest(quest)) continue;
++        // Never publish unstarted background/initialization quests.
++        if (!quest->currentStage) continue;
++        QuestState state;
++        if (!m_world.GetModSystem().GetServerModId(quest->formID, state.Id)) continue;
++        state.Action = QuestSyncAction::State;
++        state.Authority = m_world.GetPartyService().GetLeaderPlayerId();
++        state.Stage = quest->currentStage;
++        state.Flags = quest->flags & kJournalFlags;
++        state.Type = static_cast<uint8_t>(quest->type);
++        state.Stopped = quest->IsStopped();
++        for (auto* objective : quest->objectives)
++        {
++            if (!objective) continue;
++            if (state.Objectives.size() == 255) break;
++            state.Objectives.push_back({objective->stageId, objective->state});
++        }
++        auto old = m_published.find(state.Id);
++        if (force || old == m_published.end() || old->second != state)
++        {
++            RequestQuestSync message; message.Data = state;
++            m_world.GetTransport().Send(message);
++            m_published[state.Id] = std::move(state);
++        }
++    }
++    if (force)
++    {
++        RequestQuestSync end; end.Data.Action = QuestSyncAction::Complete;
++        m_world.GetTransport().Send(end);
++    }
++}
++
++void QuestService::OnSync(const NotifyQuestSync& message) noexcept
++{
++    const auto& party = m_world.GetPartyService();
++    const auto& state = message.Data;
++    if (!party.IsInParty() || state.Authority != party.GetLeaderPlayerId()) return;
++    if (state.Action == QuestSyncAction::Request)
++    {
++        if (party.IsLeader())
++        {
++            // A loading host will publish after its player is ready again.
++            m_published.clear(); m_nextScan = 0;
++            if (QuestSyncReady()) Publish(true);
++        }
++        return;
++    }
++    if (party.IsLeader()) return;
++    if (state.Action == QuestSyncAction::State && state.Id && state.Stage)
++        m_desired[state.Id] = state;
++    else if (state.Action == QuestSyncAction::Complete && m_pending)
++    {
++        m_pending = false;
++        SyncStatus("Host journal received. Catch-up queued; conflicts are skipped.");
++    }
++}
++
++void QuestService::Apply(const QuestState& state) noexcept
++{
++    const auto form = m_world.GetModSystem().GetGameId(state.Id);
++    auto* quest = Cast<TESQuest>(TESForm::GetById(form));
++    if (!quest || IsNonSyncableQuest(quest)) return;
++    // Rewinding a divergent save cannot undo scripts, inventory or world changes.
++    if (QuestSyncPolicy::ShouldSkip(quest->currentStage, quest->flags, state.Stage, state.Flags,
++                                    state.Stopped, quest->IsStageDone(state.Stage))) return;
++    if (quest->currentStage != state.Stage)
++    {
++        auto previous = m_stageRequests.find(state.Id);
++        if (previous == m_stageRequests.end() || previous->second != state.Stage)
++        {
++            // Papyrus is asynchronous: enqueue each stage once, then await its state.
++            m_stageRequests[state.Id] = state.Stage;
++            quest->ScriptSetStage(state.Stage);
++            spdlog::info("Quest catch-up queued {:X} stage {}", form, state.Stage);
++        }
++        return;
++    }
++    ScopedQuestOverride override;
++    if (!state.Stopped && quest->IsStopped() && !(state.Flags & QuestSyncPolicy::TerminalFlags))
++    {
++        bool started = false;
++        quest->EnsureQuestStarted(started, false);
++        if (!started) return;
++    }
++    bool changed = false;
++    const auto flags = static_cast<uint16_t>((quest->flags & ~kJournalFlags) | (state.Flags & kJournalFlags));
++    if (flags != quest->flags) { quest->flags = flags; changed = true; }
++    if (state.Stopped && !quest->IsStopped()) { quest->SetStopped(); changed = true; }
++    for (auto* objective : quest->objectives)
++    {
++        if (!objective) continue;
++        const auto found = std::find_if(state.Objectives.begin(), state.Objectives.end(),
++            [objective](const auto& o) { return o.Id == objective->stageId; });
++        if (found != state.Objectives.end() && objective->state != found->State)
++        { objective->state = found->State; changed = true; }
++    }
++    if (changed) quest->MarkChanged(2);
++}
++
++void QuestService::OnUpdate(const UpdateEvent&) noexcept
++{
++    const auto& party = m_world.GetPartyService();
++    if (!m_world.GetTransport().IsOnline() || !party.IsInParty())
++    {
++        m_published.clear(); m_desired.clear(); m_stageRequests.clear();
++        m_lastLeader = 0; m_lastMembers = 0; m_pending = false; m_nextScan = 0;
++        return;
++    }
++    const auto now = m_world.GetTick();
++    const auto leader = party.GetLeaderPlayerId();
++    const auto members = party.GetPartyMembers().size();
++    const bool contextChanged = leader != m_lastLeader || members != m_lastMembers;
++    if (leader != m_lastLeader)
++    {
++        m_stageRequests.clear();
++        for (auto it = m_desired.begin(); it != m_desired.end();)
++            if (it->second.Authority != leader) it = m_desired.erase(it); else ++it;
++    }
++    m_lastLeader = leader; m_lastMembers = members;
++    if (m_pending && now >= m_requestDeadline)
++    { m_pending = false; SyncStatus("Host did not respond. Check that both players use this build and try again."); }
++    if (!QuestSyncReady() || (!contextChanged && now < m_nextScan)) return;
++    m_nextScan = now + 2000;
++    if (party.IsLeader()) Publish(contextChanged || m_published.empty());
++    else
++    {
++        if (contextChanged) SyncWithHost();
++        for (const auto& [id, state] : m_desired) Apply(state);
++    }
++}
+ 
+ static TESQuest* FindQuestByNameId(const String& name)
+ {
+@@ -30,6 +204,8 @@ static TESQuest* FindQuestByNameId(const String& name)
+ QuestService::QuestService(World& aWorld, entt::dispatcher& aDispatcher)
+     : m_world(aWorld)
+ {
++    m_syncConnection = aDispatcher.sink<NotifyQuestSync>().connect<&QuestService::OnSync>(this);
++    m_tickConnection = aDispatcher.sink<UpdateEvent>().connect<&QuestService::OnUpdate>(this);
+     m_joinedConnection = aDispatcher.sink<ConnectedEvent>().connect<&QuestService::OnConnected>(this);
+     m_questUpdateConnection = aDispatcher.sink<NotifyQuestUpdate>().connect<&QuestService::OnQuestUpdate>(this);
+ 
+@@ -68,6 +244,8 @@ BSTEventResult QuestService::OnEvent(const TESQuestStartStopEvent* apEvent, cons
+         return BSTEventResult::kOk;
+     }
+ 
++    if (!m_world.GetPartyService().IsLeader()) return BSTEventResult::kOk;
++
+     spdlog::info("Quest start/stop event: {:X}", apEvent->formId);
+ 
+     if (TESQuest* pQuest = Cast<TESQuest>(TESForm::GetById(apEvent->formId)))
+@@ -97,6 +275,7 @@ BSTEventResult QuestService::OnEvent(const TESQuestStartStopEvent* apEvent, cons
+                 auto& modSys = m_world.GetModSystem();
+                 if (modSys.GetServerModId(formId, Id))
+                 {
++                    if (!m_world.GetPartyService().IsLeader()) return;
+                     RequestQuestUpdate update;
+                     update.Id = Id;
+                     update.Stage = stageId;
+@@ -122,6 +301,8 @@ BSTEventResult QuestService::OnEvent(const TESQuestStageEvent* apEvent, const Ev
+         return BSTEventResult::kOk;
+     }
+ 
++    if (!m_world.GetPartyService().IsLeader()) return BSTEventResult::kOk;
++
+     spdlog::info("Quest stage event: {:X}, stage: {}", apEvent->formId, apEvent->stageId);
+ 
+     // there is no reason to even fetch the quest object, since the event provides everything already....
+@@ -153,6 +334,7 @@ BSTEventResult QuestService::OnEvent(const TESQuestStageEvent* apEvent, const Ev
+                 auto& modSys = m_world.GetModSystem();
+                 if (modSys.GetServerModId(formId, Id))
+                 {
++                    if (!m_world.GetPartyService().IsLeader()) return;
+                     RequestQuestUpdate update;
+                     update.Id = Id;
+                     update.Stage = stageId;
+@@ -169,6 +351,8 @@ BSTEventResult QuestService::OnEvent(const TESQuestStageEvent* apEvent, const Ev
+ 
+ void QuestService::OnQuestUpdate(const NotifyQuestUpdate& aUpdate) noexcept
+ {
++    if (!m_world.GetPartyService().IsInParty() || m_world.GetPartyService().IsLeader()) return;
++    ScopedQuestOverride override;
+     ModSystem& modSystem = World::Get().GetModSystem();
+     uint32_t formId = modSystem.GetGameId(aUpdate.Id);
+     TESQuest* pQuest = Cast<TESQuest>(TESForm::GetById(formId));
+diff --git a/Code/client/Services/QuestService.h b/Code/client/Services/QuestService.h
+index 4901eeb8..6835d4c4 100644
+--- a/Code/client/Services/QuestService.h
++++ b/Code/client/Services/QuestService.h
+@@ -1,17 +1,20 @@
+ #pragma once
+ 
+ #include <World.h>
++#include <Structs/QuestState.h>
+ #include <Events/EventDispatcher.h>
+ #include <Games/Events.h>
+ 
+ struct NotifyQuestUpdate;
++struct NotifyQuestSync;
++struct UpdateEvent;
+ 
+ struct TESQuest;
+ 
+ /**
+  * @brief Handles quest sync
+  *
+- * This service is currently not in use.
++ * The party leader supplies live state and requested catch-up snapshots.
+  */
+ class QuestService final : public BSTEventSink<TESQuestStartStopEvent>, BSTEventSink<TESQuestStageEvent>
+ {
+@@ -21,6 +24,7 @@ public:
+ 
+     static bool IsNonSyncableQuest(TESQuest* apQuest);
+     static void DebugDumpQuests();
++    void SyncWithHost() noexcept;
+     static bool StopQuest(uint32_t aformId);
+ 
+ private:
+@@ -34,6 +38,21 @@ private:
+     void OnQuestUpdate(const NotifyQuestUpdate&) noexcept;
+     void NotifyOverlayOfQuestUpdate(uint32_t aFormId) noexcept;
+ 
++    void OnSync(const NotifyQuestSync&) noexcept;
++    void OnUpdate(const UpdateEvent&) noexcept;
++    void Publish(bool aForce) noexcept;
++    void Apply(const QuestState&) noexcept;
++    void SyncStatus(const String&) noexcept;
++    Map<GameId, QuestState> m_published;
++    Map<GameId, QuestState> m_desired;
++    Map<GameId, uint16_t> m_stageRequests;
++    uint64_t m_nextScan{};
++    uint64_t m_requestDeadline{};
++    uint32_t m_lastLeader{};
++    size_t m_lastMembers{};
++    bool m_pending{};
++    entt::scoped_connection m_syncConnection;
++    entt::scoped_connection m_tickConnection;
+     World& m_world;
+ 
+     entt::scoped_connection m_joinedConnection;
+diff --git a/Code/common/BuildInfo.h.in b/Code/common/BuildInfo.h.in
+index 999706ca..33cc05f3 100644
+--- a/Code/common/BuildInfo.h.in
++++ b/Code/common/BuildInfo.h.in
+@@ -1,4 +1,4 @@
+ #pragma once
+ // This file was autogenerated by xmake
+ #define BUILD_BRANCH "survival-worlditems"
+-#define BUILD_COMMIT "survival-sync-v06-coop-chests-draft"
++#define BUILD_COMMIT "survival-sync-v07-quest-sync-draft"
+diff --git a/Code/common/QuestSyncPolicy.h b/Code/common/QuestSyncPolicy.h
+new file mode 100644
+index 00000000..bb730e7d
+--- /dev/null
++++ b/Code/common/QuestSyncPolicy.h
+@@ -0,0 +1,14 @@
++#pragma once
++#include <cstdint>
++
++namespace QuestSyncPolicy
++{
++constexpr uint16_t TerminalFlags = (1 << 1) | (1 << 6);
++constexpr bool ShouldSkip(uint16_t localStage, uint16_t localFlags, uint16_t hostStage,
++                          uint16_t hostFlags, bool hostStopped, bool hostStageDone)
++{
++    return localStage > hostStage || ((localFlags & TerminalFlags) & ~hostFlags) ||
++        (localStage != hostStage && hostStageDone) ||
++        (!localStage && (hostStopped || (hostFlags & TerminalFlags)));
++}
++}
+diff --git a/Code/encoding/Messages/ClientMessageFactory.h b/Code/encoding/Messages/ClientMessageFactory.h
+index 9bd57cb7..a899b729 100644
+--- a/Code/encoding/Messages/ClientMessageFactory.h
++++ b/Code/encoding/Messages/ClientMessageFactory.h
+@@ -60,6 +60,8 @@
+ #include <Messages/RequestSetWaypoint.h>
+ #include <Messages/RequestRemoveWaypoint.h>
+ 
++#include <Messages/RequestQuestSync.h>
++
+ using TiltedPhoques::UniquePtr;
+ 
+ struct ClientMessageFactory
+@@ -76,7 +78,7 @@ struct ClientMessageFactory
+             ProjectileLaunchRequest, InterruptCastRequest, AddTargetRequest, ScriptAnimationRequest, DrawWeaponRequest, MountRequest, NewPackageRequest, RequestRespawn,
+             SyncExperienceRequest, RequestEquipmentChanges, SendChatMessageRequest, TeleportCommandRequest, PlayerRespawnRequest, DialogueRequest, SubtitleRequest,
+             PlayerDialogueRequest, PlayerLevelRequest, TeleportRequest, RequestPlayerHealthUpdate, RequestWeatherChange, RequestCurrentWeather, RequestSetWaypoint,
+-            RequestRemoveWaypoint, RemoveSpellRequest, SetTimeCommandRequest, RequestActionEvents, RequestTimeSkip, RequestWorldItem, RequestHomestead>;
++            RequestRemoveWaypoint, RemoveSpellRequest, SetTimeCommandRequest, RequestActionEvents, RequestTimeSkip, RequestWorldItem, RequestHomestead, RequestQuestSync>;
+ 
+         return s_visitor(std::forward<T>(func));
+     }
+diff --git a/Code/encoding/Messages/NotifyQuestSync.h b/Code/encoding/Messages/NotifyQuestSync.h
+new file mode 100644
+index 00000000..109a8713
+--- /dev/null
++++ b/Code/encoding/Messages/NotifyQuestSync.h
+@@ -0,0 +1,11 @@
++#pragma once
++#include "Message.h"
++#include <Structs/QuestState.h>
++struct NotifyQuestSync final : ServerMessage
++{
++    static constexpr ServerOpcode Opcode = kNotifyQuestSync;
++    NotifyQuestSync() : ServerMessage(Opcode) {}
++    QuestState Data;
++    void SerializeRaw(Buffer::Writer& w) const noexcept override { Data.Serialize(w); }
++    void DeserializeRaw(Buffer::Reader& r) noexcept override { ServerMessage::DeserializeRaw(r); Data.Deserialize(r); }
++};
+diff --git a/Code/encoding/Messages/RequestQuestSync.h b/Code/encoding/Messages/RequestQuestSync.h
+new file mode 100644
+index 00000000..d7e3e027
+--- /dev/null
++++ b/Code/encoding/Messages/RequestQuestSync.h
+@@ -0,0 +1,11 @@
++#pragma once
++#include "Message.h"
++#include <Structs/QuestState.h>
++struct RequestQuestSync final : ClientMessage
++{
++    static constexpr ClientOpcode Opcode = kRequestQuestSync;
++    RequestQuestSync() : ClientMessage(Opcode) {}
++    QuestState Data;
++    void SerializeRaw(Buffer::Writer& w) const noexcept override { Data.Serialize(w); }
++    void DeserializeRaw(Buffer::Reader& r) noexcept override { ClientMessage::DeserializeRaw(r); Data.Deserialize(r); }
++};
+diff --git a/Code/encoding/Messages/ServerMessageFactory.h b/Code/encoding/Messages/ServerMessageFactory.h
+index 16e8f80d..009fdfc9 100644
+--- a/Code/encoding/Messages/ServerMessageFactory.h
++++ b/Code/encoding/Messages/ServerMessageFactory.h
+@@ -62,6 +62,8 @@
+ #include <Messages/NotifyWorldItem.h>
+ #include <Messages/NotifyHomestead.h>
+ 
++#include <Messages/NotifyQuestSync.h>
++
+ using TiltedPhoques::UniquePtr;
+ 
+ struct ServerMessageFactory
+@@ -78,7 +80,7 @@ struct ServerMessageFactory
+             NotifyDrawWeapon, NotifyMount, NotifyNewPackage, NotifyRespawn, NotifySyncExperience, NotifyEquipmentChanges, NotifyChatMessageBroadcast, TeleportCommandResponse,
+             NotifyPlayerRespawn, NotifyDialogue, NotifySubtitle, NotifyPlayerDialogue, NotifyActorTeleport, NotifyPlayerLeft, NotifyPlayerJoined, NotifyDialogue, NotifySubtitle,
+             NotifyPlayerDialogue, NotifyPlayerLevel, NotifyPlayerCellChanged, NotifyTeleport, NotifyPlayerHealthUpdate, NotifySettingsChange, NotifyWeatherChange,
+-            NotifySetWaypoint, NotifyRemoveWaypoint, NotifySetTimeResult, NotifyRemoveSpell, NotifyActionEvents, NotifyWorldItem, NotifyHomestead>;
++            NotifySetWaypoint, NotifyRemoveWaypoint, NotifySetTimeResult, NotifyRemoveSpell, NotifyActionEvents, NotifyWorldItem, NotifyHomestead, NotifyQuestSync>;
+ 
+         return s_visitor(std::forward<T>(func));
+     }
+diff --git a/Code/encoding/Opcodes.h b/Code/encoding/Opcodes.h
+index 49d946af..b200c3fd 100644
+--- a/Code/encoding/Opcodes.h
++++ b/Code/encoding/Opcodes.h
+@@ -57,6 +57,7 @@ enum ClientOpcode : unsigned char
+     kRequestTimeSkip,
+     kRequestWorldItem,
+     kRequestHomestead,
++    kRequestQuestSync,
+     kClientOpcodeMax
+ };
+ 
+@@ -119,5 +120,6 @@ enum ServerOpcode : unsigned char
+     kNotifyActionEvents,
+     kNotifyWorldItem,
+     kNotifyHomestead,
++    kNotifyQuestSync,
+     kServerOpcodeMax
+ };
+diff --git a/Code/encoding/Structs/QuestState.cpp b/Code/encoding/Structs/QuestState.cpp
+new file mode 100644
+index 00000000..a8b6eebe
+--- /dev/null
++++ b/Code/encoding/Structs/QuestState.cpp
+@@ -0,0 +1,38 @@
++#include <Structs/QuestState.h>
++#include <TiltedCore/Serialization.hpp>
++
++void QuestState::Serialize(Buffer::Writer& w) const noexcept
++{
++    w.WriteBits(static_cast<uint8_t>(Action), 8);
++    w.WriteBits(Authority, 32);
++    Id.Serialize(w);
++    w.WriteBits(Stage, 16);
++    w.WriteBits(Flags, 16);
++    w.WriteBits(Type, 8);
++    w.WriteBits(Stopped, 1);
++    const auto count = std::min<size_t>(Objectives.size(), 255);
++    w.WriteBits(count, 8);
++    for (size_t i = 0; i < count; ++i)
++    {
++        w.WriteBits(Objectives[i].Id, 16);
++        w.WriteBits(Objectives[i].State, 8);
++    }
++}
++void QuestState::Deserialize(Buffer::Reader& r) noexcept
++{
++    uint64_t value{};
++    r.ReadBits(value, 8); Action = static_cast<QuestSyncAction>(value);
++    r.ReadBits(value, 32); Authority = static_cast<uint32_t>(value);
++    Id.Deserialize(r);
++    r.ReadBits(value, 16); Stage = static_cast<uint16_t>(value);
++    r.ReadBits(value, 16); Flags = static_cast<uint16_t>(value);
++    r.ReadBits(value, 8); Type = static_cast<uint8_t>(value);
++    r.ReadBits(value, 1); Stopped = value != 0;
++    r.ReadBits(value, 8);
++    Objectives.clear(); Objectives.resize(static_cast<size_t>(value));
++    for (auto& objective : Objectives)
++    {
++        r.ReadBits(value, 16); objective.Id = static_cast<uint16_t>(value);
++        r.ReadBits(value, 8); objective.State = static_cast<uint8_t>(value);
++    }
++}
+diff --git a/Code/encoding/Structs/QuestState.h b/Code/encoding/Structs/QuestState.h
+new file mode 100644
+index 00000000..23005daf
+--- /dev/null
++++ b/Code/encoding/Structs/QuestState.h
+@@ -0,0 +1,25 @@
++#pragma once
++#include <Structs/GameId.h>
++
++// One quest per packet keeps even large journals below the transport limit.
++enum class QuestSyncAction : uint8_t { Request, State, Complete };
++struct QuestState
++{
++    struct Objective
++    {
++        uint16_t Id{};
++        uint8_t State{};
++        bool operator==(const Objective&) const = default;
++    };
++    QuestSyncAction Action{QuestSyncAction::Request};
++    uint32_t Authority{};
++    GameId Id{};
++    uint16_t Stage{};
++    uint16_t Flags{};
++    uint8_t Type{};
++    bool Stopped{};
++    TiltedPhoques::Vector<Objective> Objectives;
++    bool operator==(const QuestState&) const = default;
++    void Serialize(Buffer::Writer&) const noexcept;
++    void Deserialize(Buffer::Reader&) noexcept;
++};
+diff --git a/Code/server/Services/QuestService.cpp b/Code/server/Services/QuestService.cpp
+index 42716891..7406432c 100644
+--- a/Code/server/Services/QuestService.cpp
++++ b/Code/server/Services/QuestService.cpp
+@@ -5,6 +5,8 @@
+ #include <Services/QuestService.h>
+ 
+ #include <Messages/RequestQuestUpdate.h>
++#include <Messages/RequestQuestSync.h>
++#include <Messages/NotifyQuestSync.h>
+ #include <Messages/NotifyQuestUpdate.h>
+ 
+ #include <Setting.h>
+@@ -17,12 +19,16 @@ Console::Setting bEnableMiscQuestSync{"Gameplay:bEnableMiscQuestSync", "(Experim
+ QuestService::QuestService(World& aWorld, entt::dispatcher& aDispatcher)
+     : m_world(aWorld)
+ {
++    m_syncConnection = aDispatcher.sink<PacketEvent<RequestQuestSync>>().connect<&QuestService::OnSync>(this);
+     m_questUpdateConnection = aDispatcher.sink<PacketEvent<RequestQuestUpdate>>().connect<&QuestService::OnQuestChanges>(this);
+ }
+ 
+ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessage) noexcept
+ {
++    // Reject guest progression before touching the authoritative party journal.
++    if (!acMessage.pPlayer || !m_world.GetPartyService().IsPlayerLeader(acMessage.pPlayer)) return;
+     const auto& message = acMessage.Packet;
++    if (message.Status > RequestQuestUpdate::Stopped) return;
+ 
+     auto* pPlayer = acMessage.pPlayer;
+ 
+@@ -94,5 +100,36 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
+     if (!partyComponent.JoinedPartyId.has_value())
+         return;
+ 
+-    GameServer::Get()->SendToParty(notify, partyComponent, acMessage.GetSender());
++    // QuestState snapshots are the single apply path, including live progression.
++    // Sending the legacy stage event as well could enqueue its Papyrus fragment twice.
++}
++
++void QuestService::OnSync(const PacketEvent<RequestQuestSync>& event) noexcept
++{
++    auto* player = event.pPlayer;
++    if (!player || !player->GetCharacter()) return;
++    const auto* party = m_world.GetPartyService().GetPlayerParty(player);
++    if (!party) return;
++    const auto& state = event.Packet.Data;
++    NotifyQuestSync notify;
++    notify.Data = state;
++    notify.Data.Authority = party->LeaderPlayerId; // Ignore client-supplied authority.
++    if (state.Action == QuestSyncAction::Request)
++    {
++        const auto now = GameServer::Get()->GetTick();
++        auto& next = m_nextRequest[player->GetId()];
++        if (now < next || player->GetId() == party->LeaderPlayerId) return;
++        next = now + 2000;
++        notify.Data = {}; notify.Data.Authority = party->LeaderPlayerId;
++        if (auto* host = m_world.GetPlayerManager().GetById(party->LeaderPlayerId)) host->Send(notify);
++        return;
++    }
++    if (player->GetId() != party->LeaderPlayerId) return;
++    if (state.Action != QuestSyncAction::State && state.Action != QuestSyncAction::Complete) return;
++    if (state.Action == QuestSyncAction::State)
++    {
++        if (!state.Id || !state.Stage || state.Type > 11) return;
++        if ((state.Type == 0 || state.Type == 6) && !bEnableMiscQuestSync) return;
++    }
++    GameServer::Get()->SendToParty(notify, player->GetParty(), event.GetSender());
+ }
+diff --git a/Code/server/Services/QuestService.h b/Code/server/Services/QuestService.h
+index 1e6a9053..dda487df 100644
+--- a/Code/server/Services/QuestService.h
++++ b/Code/server/Services/QuestService.h
+@@ -6,11 +6,12 @@
+ struct World;
+ struct UpdateEvent;
+ struct RequestQuestUpdate;
++struct RequestQuestSync;
+ 
+ /**
+  * @brief Dispatch quest sync messages.
+  *
+- * This service is currently not in use.
++ * Only party leaders may publish authoritative quest state.
+  */
+ class QuestService
+ {
+@@ -20,6 +21,9 @@ public:
+ private:
+     void OnQuestChanges(const PacketEvent<RequestQuestUpdate>& aChanges) noexcept;
+ 
++    void OnSync(const PacketEvent<RequestQuestSync>&) noexcept;
++    Map<uint32_t, uint64_t> m_nextRequest;
++    entt::scoped_connection m_syncConnection;
+     World& m_world;
+ 
+     entt::scoped_connection m_questUpdateConnection;
+diff --git a/Code/skyrim_ui/src/app/components/root/root.component.html b/Code/skyrim_ui/src/app/components/root/root.component.html
+index 3e3f1207..1e9efe77 100644
+--- a/Code/skyrim_ui/src/app/components/root/root.component.html
++++ b/Code/skyrim_ui/src/app/components/root/root.component.html
+@@ -47,6 +47,11 @@
+           title="Refresh nearby remote NPC positions, animations and world items from the server">
+           {{ resyncPending ? 'Resync requested' : 'Resync with host' }}
+         </button>
++        <button data-style-ornament="inverted" (click)="syncQuests()"
++          title="Catch up to the party leader's quest journal. Quests ahead of the host are skipped.">
++          Sync quests with host
++        </button>
++        <span role="status" aria-live="polite">{{ questSyncStatus$ | async }}</span>
+         <label>
+           <input type="checkbox" [checked]="autoResync" (change)="setAutoResync(!autoResync)">
+           Auto resync
+diff --git a/Code/skyrim_ui/src/app/components/root/root.component.ts b/Code/skyrim_ui/src/app/components/root/root.component.ts
+index 86459f2f..2821dbc3 100644
+--- a/Code/skyrim_ui/src/app/components/root/root.component.ts
++++ b/Code/skyrim_ui/src/app/components/root/root.component.ts
+@@ -40,6 +40,8 @@ export class RootComponent implements OnInit {
+   view$ = this.uiRepository.view$;
+ 
+   connected$ = this.client.connectionStateChange.asObservable();
++  questSyncStatus$ = this.client.questSyncStatusChange.asObservable();
++  public syncQuests(): void { this.client.syncQuests(); }
+   resyncCountdown$ = this.client.resyncCountdownChange.asObservable();
+   coopChestView$ = this.client.coopChestViewChange.asObservable();
+   menuOpen$ = this.client.openingMenuChange.asObservable();
+diff --git a/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts b/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts
+index 135fed22..5b8453d2 100644
+--- a/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts
++++ b/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts
+@@ -106,6 +106,7 @@ export class SkyrimtogetherMock extends EventEmitter implements SkyrimTogether {
+   autoResyncOn(): void { console.info("Auto resync enabled"); }
+   autoResyncOff(): void { console.info("Auto resync disabled"); }
+ 
++  syncQuests(): void { console.info("Quest sync requested"); }
+   resync(): void {
+     console.info("Client resync requested");
+   }
+diff --git a/Code/skyrim_ui/src/app/services/client.service.ts b/Code/skyrim_ui/src/app/services/client.service.ts
+index 273327ff..87ca96dd 100644
+--- a/Code/skyrim_ui/src/app/services/client.service.ts
++++ b/Code/skyrim_ui/src/app/services/client.service.ts
+@@ -29,6 +29,7 @@ export class ClientService implements OnDestroy {
+   /** Connection state change. */
+   public connectionStateChange = new BehaviorSubject(false);
+ 
++  public questSyncStatusChange = new BehaviorSubject('');
+   public resyncCountdownChange = new BehaviorSubject(-1);
+   public coopChestViewChange = new BehaviorSubject<string | null>(null);
+ 
+@@ -124,6 +125,9 @@ export class ClientService implements OnDestroy {
+     skyrimtogether.on('coopChestView', (contents: string) => {
+       this.zone.run(() => this.coopChestViewChange.next(contents));
+     });
++    skyrimtogether.on('questSyncStatus', (status: string) => {
++      this.zone.run(() => this.questSyncStatusChange.next(status));
++    });
+     skyrimtogether.on('resyncCountdown', (seconds: number) => {
+       this.zone.run(() => this.resyncCountdownChange.next(seconds));
+     });
+@@ -171,6 +175,7 @@ export class ClientService implements OnDestroy {
+    */
+   public ngOnDestroy(): void {
+     skyrimtogether.off('coopChestView');
++    skyrimtogether.off('questSyncStatus');
+     skyrimtogether.off('resyncCountdown');
+     skyrimtogether.off('init');
+     skyrimtogether.off('activate');
+@@ -299,6 +304,8 @@ export class ClientService implements OnDestroy {
+     else skyrimtogether.autoResyncOff();
+   }
+ 
++  public syncQuests(): void { skyrimtogether.syncQuests(); }
++
+   public resync(): void {
+     skyrimtogether.resync();
+   }
+@@ -392,6 +399,7 @@ export class ClientService implements OnDestroy {
+     void this.zone.run(async () => {
+       this.localPlayerId = undefined;
+       this.connectionStateChange.next(false);
++      this.questSyncStatusChange.next('');
+       this.resyncCountdownChange.next(-1);
+       this.isConnectionInProgressChange.next(false);
+ 
+diff --git a/Code/skyrim_ui/src/typings.d.ts b/Code/skyrim_ui/src/typings.d.ts
+index 3e5e8cfc..52eb4999 100644
+--- a/Code/skyrim_ui/src/typings.d.ts
++++ b/Code/skyrim_ui/src/typings.d.ts
+@@ -175,6 +175,7 @@ interface SkyrimTogether {
+   ): void;
+ 
+   on(event: 'coopChestView', callback: (contents: string) => void): void;
++  on(event: 'questSyncStatus', callback: (status: string) => void): void;
+   on(event: 'resyncCountdown', callback: (seconds: number) => void): void;
+   on(event: 'setHealth', callback: SkyrimTogetherTypes.SetHealthCallback): void;
+ 
+@@ -230,6 +231,7 @@ interface SkyrimTogether {
+ 
+   /** Remove listener from when the application is first initialized. */
+   off(event: 'coopChestView', callback?: (contents: string) => void): void;
++  off(event: 'questSyncStatus', callback?: (status: string) => void): void;
+   off(event: 'resyncCountdown', callback?: (seconds: number) => void): void;
+   off(event: 'init', callback?: SkyrimTogetherTypes.InitCallback): void;
+ 
+@@ -410,6 +412,7 @@ interface SkyrimTogether {
+    * Reconnect the client.
+    */
+   reconnect(): void;
++  syncQuests(): void;
+   resync(): void;
+   setResyncInterval(seconds: number): void;
+   setResyncHotkey(key: number): void;
+diff --git a/Code/tests/encoding.cpp b/Code/tests/encoding.cpp
+index 8c6a45d0..8c828c2a 100644
+--- a/Code/tests/encoding.cpp
++++ b/Code/tests/encoding.cpp
+@@ -819,6 +819,58 @@ TEST_CASE("Jump and locomotion state stay on the displayed snapshot timeline", "
+ }
+ 
+ #include <CoopChestLocations.h>
++#include <Messages/RequestQuestSync.h>
++#include <Messages/NotifyQuestSync.h>
++#include <QuestSyncPolicy.h>
++
++TEST_CASE("Quest catch-up packets preserve authority, lifecycle and objectives", "[encoding.questsync]")
++{
++    for (auto action : {QuestSyncAction::Request, QuestSyncAction::State, QuestSyncAction::Complete})
++    {
++        QuestState state;
++        state.Action = action; state.Authority = 42; state.Id = GameId(3, 0x12345);
++        state.Stage = 65535; state.Flags = 0x842; state.Type = 11; state.Stopped = true;
++        for (uint16_t i = 0; i < 255; ++i) state.Objectives.push_back({i, static_cast<uint8_t>(i)});
++        RequestQuestSync request; request.Data = state;
++        Buffer clientBuffer(4096); Buffer::Writer cw(&clientBuffer); request.Serialize(cw);
++        Buffer::Reader cr(&clientBuffer); ClientMessageFactory cf; auto cm = cf.Extract(cr); REQUIRE(cm);
++        auto decodedRequest = CastUnique<RequestQuestSync>(std::move(cm));
++        REQUIRE(decodedRequest->Data == state);
++        NotifyQuestSync notify; notify.Data = state;
++        Buffer serverBuffer(4096); Buffer::Writer sw(&serverBuffer); notify.Serialize(sw);
++        Buffer::Reader sr(&serverBuffer); ServerMessageFactory sf; auto sm = sf.Extract(sr); REQUIRE(sm);
++        auto decodedNotify = CastUnique<NotifyQuestSync>(std::move(sm));
++        REQUIRE(decodedNotify->Data == state);
++    }
++}
++
++TEST_CASE("Quest catch-up never rewinds or reopens divergent terminal progress", "[encoding.questsync]")
++{
++    using QuestSyncPolicy::ShouldSkip;
++    REQUIRE_FALSE(ShouldSkip(10, 0, 20, 0, false, false));
++    REQUIRE_FALSE(ShouldSkip(0, 0, 20, 0, false, false));
++    REQUIRE_FALSE(ShouldSkip(20, 0, 20, 2, true, true));
++    REQUIRE(ShouldSkip(30, 0, 20, 0, false, true));
++    REQUIRE(ShouldSkip(10, 2, 20, 0, false, false));
++    REQUIRE(ShouldSkip(10, 64, 20, 0, false, false));
++    REQUIRE(ShouldSkip(10, 0, 20, 0, false, true));
++    REQUIRE(ShouldSkip(0, 0, 20, 2, true, false));
++    REQUIRE(ShouldSkip(0, 0, 20, 0, true, false));
++    REQUIRE_FALSE(ShouldSkip(20, 2, 20, 2, true, true));
++}
++
++TEST_CASE("Quest objectives are bounded to one small packet", "[encoding.questsync]")
++{
++    RequestQuestSync request;
++    request.Data.Action = QuestSyncAction::State;
++    for (uint16_t i = 0; i < 300; ++i) request.Data.Objectives.push_back({i, 1});
++    Buffer buffer(4096); Buffer::Writer w(&buffer); request.Serialize(w);
++    Buffer::Reader r(&buffer); ClientMessageFactory f; auto message = f.Extract(r); REQUIRE(message);
++    auto decoded = CastUnique<RequestQuestSync>(std::move(message));
++    REQUIRE(decoded->Data.Objectives.size() == 255);
++    REQUIRE(decoded->Data.Objectives.back().Id == 254);
++}
++
+ TEST_CASE("Shared network chest transfers retain portal and commit identity", "[encoding.coopchest]")
+ {
+     for (auto action : {HomesteadAction::CoopPoll, HomesteadAction::CoopOpen, HomesteadAction::CoopTransfer})
+diff --git a/Code/tp_process/ProcessHandler.cpp b/Code/tp_process/ProcessHandler.cpp
+index a423e00d..0b1fac0a 100644
+--- a/Code/tp_process/ProcessHandler.cpp
++++ b/Code/tp_process/ProcessHandler.cpp
+@@ -15,6 +15,7 @@ void ProcessHandler::OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<C
+ 
+     m_pCoreObject->SetValue("connect", CefV8Value::CreateFunction("connect", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
+     m_pCoreObject->SetValue("disconnect", CefV8Value::CreateFunction("disconnect", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
++    m_pCoreObject->SetValue("syncQuests", CefV8Value::CreateFunction("syncQuests", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
+     m_pCoreObject->SetValue("resync", CefV8Value::CreateFunction("resync", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
+     m_pCoreObject->SetValue("setResyncInterval", CefV8Value::CreateFunction("setResyncInterval", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
+     m_pCoreObject->SetValue("setResyncHotkey", CefV8Value::CreateFunction("setResyncHotkey", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);

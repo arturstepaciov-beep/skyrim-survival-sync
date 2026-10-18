@@ -1,3 +1,39 @@
+# Survival Sync alpha 0.7 — Quest journal sync
+
+Install the matching v0.7 client on both PCs and the matching server. Retains the
+v0.6 shared chests, home construction, survival time, weather and Volcano changes.
+
+The **party leader** is the quest host. Join that player's party. The host publishes
+changed quest stages, journal objectives, active selection and completed/failed/stopped
+state every two seconds. Joining or changing leader requests a full host snapshot.
+The overlay now has a **Sync quests with host** button and request/receipt/timeout status.
+Guests cannot publish authoritative quest changes; the server checks party membership
+and leader identity. Miscellaneous/hidden quests obey the existing server setting
+Gameplay:bEnableMiscQuestSync (off by default).
+
+This is conservative catch-up, not a save-game merge. Quests ahead of the host,
+locally completed/failed quests that would reopen, and already-done divergent stages
+are skipped. Old finished quests that the guest never started are also skipped.
+Quests missing on the host are not removed. Stage zero and quest resets are not
+replicated. Missing plugins and non-syncable transformation/engine quests are skipped.
+Objective lists are capped at 255 entries per quest.
+
+Catch-up sets a missing current stage through Skyrim's normal Papyrus path once per
+stage per party session. Already-completed stages are not replayed. A newly applied
+stage can still run its normal scripts and rewards. Earlier stage fragments, aliases,
+quest inventories and arbitrary mod-script state are not cloned, so a large jump
+can require game-specific recovery. Journal flags/objectives alone do not guarantee
+identical world state. Reconnect after loading another save while in a party.
+
+Validation required before calling this an in-game fix: test with two backed-up saves,
+stage advancement, objective-only changes, completion/failure/stopping, repeated button
+clicks, late joining, leader change, load/reconnect, missing mods and divergent progress.
+The build runs packet round trips, objective bounds and conservative catch-up policy
+tests in addition to retained v0.6 tests. Native compilation and two-player behavior
+must be checked separately; a successful build is not proof of engine correctness.
+
+## Retained v0.6 notes
+
 # Survival Sync v0.6 draft — separate shared-chest network
 
 **Source preparation only: no v0.6 Windows package has been built or tested in Skyrim.**
