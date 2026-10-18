@@ -9,8 +9,8 @@ $vilniusZone = [TimeZoneInfo]::FindSystemTimeZoneById('FLE Standard Time')
 $startedLocal = [TimeZoneInfo]::ConvertTimeFromUtc($startedUtc, $vilniusZone)
 if (-not $BuildStamp) { $BuildStamp = $startedLocal.ToString('yyyy-MM-dd_HH-mm-ss') + '-LT' }
 if ($BuildStamp -notmatch '^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-LT$') { throw 'Invalid build timestamp' }
-$packageName = "SurvivalSync-v0.7-$BuildStamp-Windows"
-$buildVersion = "survival-sync-v07-quest-sync-$BuildStamp"
+$packageName = "SurvivalSync-v0.8-$BuildStamp-Windows"
+$buildVersion = "survival-sync-v08-world-progress-$BuildStamp"
 $sourceCommit = (& git -C $PSScriptRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot determine package source commit' }
 function Run([string]$Program, [string[]]$Arguments) {
@@ -39,9 +39,17 @@ try {
     [IO.File]::WriteAllText($questPatch, [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'quest-sync-v07.patch')).Replace("`r`n", "`n"), [Text.UTF8Encoding]::new($false))
     Run -Program 'git' -Arguments @('apply','--check',$questPatch)
     Run -Program 'git' -Arguments @('apply',$questPatch)
+    $progressPatch = Join-Path $WorkDirectory 'world-progress.patch'
+    [IO.File]::WriteAllText($progressPatch, [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'world-progress-v08.patch')).Replace("`r`n", "`n"), [Text.UTF8Encoding]::new($false))
+    Run -Program 'git' -Arguments @('apply','--check',$progressPatch)
+    Run -Program 'git' -Arguments @('apply',$progressPatch)
+    $manifestInput = [IO.File]::OpenRead((Join-Path $PSScriptRoot 'WorldProgressBindings.h.gz'))
+    $manifestGzip = [IO.Compression.GZipStream]::new($manifestInput, [IO.Compression.CompressionMode]::Decompress)
+    $manifestOutput = [IO.File]::Create((Join-Path $source 'Code/common/WorldProgressBindings.h'))
+    try { $manifestGzip.CopyTo($manifestOutput) } finally { $manifestOutput.Dispose(); $manifestGzip.Dispose(); $manifestInput.Dispose() }
     $buildInfoPath = Join-Path $source 'Code/common/BuildInfo.h.in'
     $buildInfo = Get-Content $buildInfoPath -Raw
-    $buildInfo = $buildInfo.Replace('survival-sync-v07-quest-sync-draft', $buildVersion)
+    $buildInfo = $buildInfo.Replace('survival-sync-v08-world-progress-draft', $buildVersion)
     [IO.File]::WriteAllText($buildInfoPath, $buildInfo, [Text.UTF8Encoding]::new($false))
     Run -Program 'git' -Arguments @('submodule','update','--init','--recursive','--depth=1')
     Run -Program 'xmake' -Arguments @('config','--plat=windows','--arch=x64','--mode=releasedbg','--yes')
@@ -50,7 +58,7 @@ try {
     Run -Program 'xmake' -Arguments @('run','CoopChestStoreTests')
     Run -Program 'xmake' -Arguments @('-y','TPTests')
     # Native encoding tests include the new request packet round trip.
-    Run -Program 'xmake' -Arguments @('run','TPTests','[encoding.survival],[encoding.worlditems],[encoding.weather],[encoding.homestead],[encoding.presentation],[encoding.coopchest],[encoding.questsync]')
+    Run -Program 'xmake' -Arguments @('run','TPTests','[encoding.survival],[encoding.worlditems],[encoding.weather],[encoding.homestead],[encoding.presentation],[encoding.coopchest],[encoding.questsync],[percentage-health],[world-progress],[encoding.worldprogress]')
     Run -Program 'xmake' -Arguments @('-y')
     Run -Program 'xmake' -Arguments @('run','WorldItemPolicyTests')
     Run -Program 'xmake' -Arguments @('run','HomesteadPolicyTests')
@@ -100,4 +108,3 @@ try {
     Write-Host "Windows package created: $zip"
     Write-Host 'This script never changes your installed Skyrim files.'
 } finally { Pop-Location }
-

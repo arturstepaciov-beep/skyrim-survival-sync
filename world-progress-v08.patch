@@ -1,0 +1,2024 @@
+diff --git a/Code/client/Events/HealthChangeEvent.h b/Code/client/Events/HealthChangeEvent.h
+index 64a90d1d..5cfe5b00 100644
+--- a/Code/client/Events/HealthChangeEvent.h
++++ b/Code/client/Events/HealthChangeEvent.h
+@@ -18,4 +18,8 @@ struct HealthChangeEvent
+ 
+     uint32_t HitteeId;
+     float DeltaHealth;
++    uint32_t ServerId{};
++    uint32_t OwnershipEpoch{};
++    float MaximumHealth{};
++    bool Percentage{};
+ };
+diff --git a/Code/client/Games/Skyrim/Actor.cpp b/Code/client/Games/Skyrim/Actor.cpp
+index 36e73c9a..d4734831 100644
+--- a/Code/client/Games/Skyrim/Actor.cpp
++++ b/Code/client/Games/Skyrim/Actor.cpp
+@@ -16,6 +16,7 @@
+ #include <Events/InventoryChangeEvent.h>
+ #include <Events/WorldItemDropEvent.h>
+ #include <Services/WorldItemService.h>
++#include <PercentageHealth.h>
+ #include <Events/MountEvent.h>
+ #include <Events/DialogueEvent.h>
+ #include <Games/Misc/MenuTopicManager.h>
+@@ -59,6 +60,24 @@
+ 
+ namespace
+ {
++bool QueueHealthChange(Actor* actor, float delta)
++{
++    HealthChangeEvent event(actor->formID, delta);
++    if (World::Get().GetTransport().IsOnline() && !actor->GetExtension()->IsPlayer() && !actor->IsEssential())
++    {
++        auto token = Utils::GetLocalOwnershipToken(actor->formID);
++        if (!token) token = Utils::GetRemoteOwnershipToken(actor->formID);
++        const auto maximum = actor->GetActorPermanentValue(ActorValueInfo::kHealth);
++        if (token && PercentageHealth::ValidMaximum(maximum))
++        {
++            event.Percentage = true; event.ServerId = token->ServerId;
++            event.OwnershipEpoch = token->OwnershipEpoch; event.MaximumHealth = maximum;
++        }
++    }
++    World::Get().GetRunner().Trigger(event);
++    return event.Percentage;
++}
++
+ void QueueActorInventoryChange(Actor* apActor, InventoryChangeEvent aEvent, TESObjectREFR* apTransferReference = nullptr)
+ {
+     auto ownershipToken = Utils::GetLocalOwnershipToken(apActor->formID);
+@@ -739,13 +758,23 @@ void Actor::SetMagicEquipment(const MagicEquipment& acEquipment) noexcept
+ void Actor::SetActorValues(const ActorValues& acActorValues) noexcept
+ {
+     const bool localRental = HasLocalRentalState();
++    const bool percentage = World::Get().GetTransport().IsOnline() && !GetExtension()->IsPlayer() && !IsEssential();
++    const auto localMaximum = GetActorPermanentValue(ActorValueInfo::kHealth);
+     for (auto& value : acActorValues.ActorMaxValuesList)
+-        if (!(localRental && value.first == ActorValueInfo::kVariable09))
++        if (!(localRental && value.first == ActorValueInfo::kVariable09) && !(percentage && value.first == ActorValueInfo::kHealth))
+             ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, value.first, value.second);
+ 
+     for (auto& value : acActorValues.ActorValuesList)
+-        if (!(localRental && value.first == ActorValueInfo::kVariable09))
++        if (!(localRental && value.first == ActorValueInfo::kVariable09) && !(percentage && value.first == ActorValueInfo::kHealth))
+             ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, value.first, value.second);
++    if (percentage && PercentageHealth::ValidMaximum(localMaximum))
++    {
++        const auto health = acActorValues.ActorValuesList.find(ActorValueInfo::kHealth);
++        const auto maximum = acActorValues.ActorMaxValuesList.find(ActorValueInfo::kHealth);
++        if (health != acActorValues.ActorValuesList.end() && maximum != acActorValues.ActorMaxValuesList.end())
++            ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth,
++                PercentageHealth::Ratio(health->second, maximum->second) * localMaximum);
++    }
+ }
+ 
+ void Actor::SetFactions(const Factions& acFactions) noexcept
+@@ -996,8 +1025,8 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
+                 return false;
+         }
+ 
+-        World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, -realDamage));
+-        return TiltedPhoques::ThisCall(RealDamageActor, apThis, aDamage, apHitter, aKillMove);
++        const bool percentage = QueueHealthChange(apThis, -realDamage);
++        return TiltedPhoques::ThisCall(RealDamageActor, apThis, percentage && wouldKill ? 0.f : aDamage, apHitter, percentage ? false : aKillMove);
+     }
+     else if (pExHittee->IsRemotePlayer())
+     {
+@@ -1009,8 +1038,8 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
+         const auto* pExHitter = apHitter->GetExtension();
+         if (pExHitter->IsLocalPlayer())
+         {
+-            World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, -realDamage));
+-            return TiltedPhoques::ThisCall(RealDamageActor, apThis, aDamage, apHitter, aKillMove);
++            const bool percentage = QueueHealthChange(apThis, -realDamage);
++            return TiltedPhoques::ThisCall(RealDamageActor, apThis, percentage && wouldKill ? 0.f : aDamage, apHitter, percentage ? false : aKillMove);
+         }
+         if (pExHitter->IsRemotePlayer())
+         {
+@@ -1020,8 +1049,8 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
+ 
+     if (pExHittee->IsLocal())
+     {
+-        World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, -realDamage));
+-        return TiltedPhoques::ThisCall(RealDamageActor, apThis, aDamage, apHitter, aKillMove);
++        const bool percentage = QueueHealthChange(apThis, -realDamage);
++        return TiltedPhoques::ThisCall(RealDamageActor, apThis, percentage && wouldKill ? 0.f : aDamage, apHitter, percentage ? false : aKillMove);
+     }
+     else
+     {
+@@ -1045,7 +1074,7 @@ void TP_MAKE_THISCALL(HookApplyActorEffect, ActiveEffect, Actor* apTarget, float
+                 const auto pExTarget = apTarget->GetExtension();
+                 if (pExTarget->IsLocal())
+                 {
+-                    World::Get().GetRunner().Trigger(HealthChangeEvent(apTarget->formID, aEffectValue));
++                    QueueHealthChange(apTarget, aEffectValue);
+                     return TiltedPhoques::ThisCall(RealApplyActorEffect, apThis, apTarget, aEffectValue, unk1);
+                 }
+                 return;
+@@ -1072,7 +1101,7 @@ void* TP_MAKE_THISCALL(HookRegenAttributes, Actor, int aId, float aRegenValue)
+         return 0;
+     }
+ 
+-    World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, aRegenValue));
++    QueueHealthChange(apThis, aRegenValue);
+     return TiltedPhoques::ThisCall(RealRegenAttributes, apThis, aId, aRegenValue);
+ }
+ 
+diff --git a/Code/client/Games/Skyrim/TESObjectREFR.cpp b/Code/client/Games/Skyrim/TESObjectREFR.cpp
+index 2cf6e6b0..dca99025 100644
+--- a/Code/client/Games/Skyrim/TESObjectREFR.cpp
++++ b/Code/client/Games/Skyrim/TESObjectREFR.cpp
+@@ -8,6 +8,7 @@
+ #include <Events/ActivateEvent.h>
+ #include <Services/WorldItemService.h>
+ #include <Services/HomesteadService.h>
++#include <Services/WorldProgressService.h>
+ #include <Services/CoopChestService.h>
+ #include <Events/InventoryChangeEvent.h>
+ #include <Events/ScriptAnimationEvent.h>
+@@ -1100,6 +1101,9 @@ bool TP_MAKE_THISCALL(HookPlayAnimation, void, uint32_t auiStackID, TESObjectREF
+ 
+ bool TP_MAKE_THISCALL(HookActivate, TESObjectREFR, TESObjectREFR* apActivator, uint8_t aUnk1, TESBoundObject* apObjectToGet, int32_t aCount, char aDefaultProcessing)
+ {
++    if (WorldProgressService::HarvestCommit)
++        return TiltedPhoques::ThisCall(RealActivate, apThis, apActivator, aUnk1, apObjectToGet, aCount, aDefaultProcessing);
++    if (apActivator == PlayerCharacter::Get() && World::Get().ctx().at<WorldProgressService>().TryHarvest(apThis)) return true;
+     auto& coop = World::Get().ctx().at<CoopChestService>();
+     if (coop.IsPortal(apThis))
+     {
+diff --git a/Code/client/Services/ActorValueService.h b/Code/client/Services/ActorValueService.h
+index cab85f22..025c2134 100644
+--- a/Code/client/Services/ActorValueService.h
++++ b/Code/client/Services/ActorValueService.h
+@@ -18,6 +18,7 @@ struct NotifyHealthChangeBroadcast;
+ struct NotifyDeathStateChange;
+ 
+ struct Actor;
++struct RequestHealthChangeBroadcast;
+ 
+ /**
+  * @brief Broadcast and apply actor values and death state.
+@@ -38,6 +39,7 @@ public:
+     ~ActorValueService() noexcept = default;
+ 
+     TP_NOCOPYMOVE(ActorValueService);
++    void ReapplyNpcHealth(Actor* apActor) const noexcept;
+ 
+ private:
+     enum ValueType : uint8_t
+@@ -79,7 +81,7 @@ private:
+     /**
+      * @brief Receives health value changes and applies them locally.
+      */
+-    void OnHealthChangeBroadcast(const NotifyHealthChangeBroadcast& acMessage) const noexcept;
++    void OnHealthChangeBroadcast(const NotifyHealthChangeBroadcast& acMessage) noexcept;
+     /**
+      * @brief Receives death state changes and applies them locally.
+      */
+@@ -114,6 +116,12 @@ private:
+      */
+     void CreateActorValuesComponent(entt::entity aEntity, Actor* apActor) noexcept;
+ 
++    void SendNpcHealth(uint32_t id, uint32_t epoch, float delta, float maximum) noexcept;
++    void PollNpcHealth() noexcept;
++    struct NpcHealthState { uint32_t Epoch{}; uint64_t Revision{}; float Fraction{1.f}; };
++    Map<uint32_t, NpcHealthState> m_npcHealth;
++    uint64_t m_nextNpcPoll{};
++    uint64_t m_healthSequence{};
+     World& m_world;
+     entt::dispatcher& m_dispatcher;
+     TransportService& m_transport;
+diff --git a/Code/client/Services/CoopChestService.h b/Code/client/Services/CoopChestService.h
+index 1c1cc217..6a8d71e6 100644
+--- a/Code/client/Services/CoopChestService.h
++++ b/Code/client/Services/CoopChestService.h
+@@ -34,7 +34,7 @@ private:
+     Inventory m_contents;
+     HomesteadWire::Assembler m_assembler;
+     std::unordered_map<uint32_t, std::string> m_modNames;
+-    std::array<uint32_t, 10> m_portals{};
++    std::array<uint32_t, CoopChests::Locations.size()> m_portals{};
+     bool m_cacheLoaded{}, m_haveSnapshot{}, m_ready{}, m_wasOnline{}, m_dirty{true};
+     uint32_t m_token{}, m_openToken{}, m_openRef{}, m_nativeOpenRef{};
+     uint64_t m_openDeadline{}, m_nextScan{}, m_nextPoll{}, m_nextNotice{};
+diff --git a/Code/client/Services/Generic/ActorValueService.cpp b/Code/client/Services/Generic/ActorValueService.cpp
+index 6df327cd..18074f98 100644
+--- a/Code/client/Services/Generic/ActorValueService.cpp
++++ b/Code/client/Services/Generic/ActorValueService.cpp
+@@ -22,6 +22,7 @@
+ #include <Messages/RequestDeathStateChange.h>
+ 
+ #include <misc/ActorValueOwner.h>
++#include <PercentageHealth.h>
+ 
+ ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept
+     : m_world(aWorld)
+@@ -70,12 +71,12 @@ void ActorValueService::OnDisconnected(const DisconnectedEvent& acEvent) noexcep
+ {
+     // TODO: this crashes sometimes, no clue why
+     m_world.clear<ActorValuesComponent>();
++    m_npcHealth.clear(); m_nextNpcPoll = 0; m_smallHealthChanges.clear();
+ }
+ 
+ void ActorValueService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept
+ {
+-    if (!m_transport.IsConnected())
+-        return;
++    if (!m_transport.IsConnected()) return;
+ 
+     auto view = m_world.view<FormIdComponent>();
+     const uint32_t formId = acEvent.FormId;
+@@ -95,6 +96,7 @@ void ActorValueService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcep
+ 
+ void ActorValueService::OnUpdate(const UpdateEvent& acEvent) noexcept
+ {
++    PollNpcHealth();
+     RunSmallHealthUpdates();
+     RunDeathStateUpdates();
+     RunActorValuesUpdates();
+@@ -131,7 +133,7 @@ void ActorValueService::BroadcastActorValues() noexcept
+ 
+         for (int i = 0; i < ActorValueInfo::kActorValueCount; i++)
+         {
+-            if ((isPlayer && i == ActorValueInfo::kDragonSouls) || (localRental && i == ActorValueInfo::kVariable09))
++            if ((!isPlayer && !pActor->IsEssential() && i == ActorValueInfo::kHealth) || (isPlayer && i == ActorValueInfo::kDragonSouls) || (localRental && i == ActorValueInfo::kVariable09))
+                 continue;
+             
+             float newValue = pActor->GetActorValue(i);
+@@ -168,6 +170,12 @@ void ActorValueService::OnHealthChange(const HealthChangeEvent& acEvent) noexcep
+     if (!m_transport.IsConnected())
+         return;
+ 
++    if (acEvent.Percentage)
++    {
++        SendNpcHealth(acEvent.ServerId, acEvent.OwnershipEpoch, acEvent.DeltaHealth, acEvent.MaximumHealth);
++        return;
++    }
++
+     auto view = m_world.view<FormIdComponent>();
+ 
+     const auto hitteeIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.HitteeId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == id; });
+@@ -286,8 +294,23 @@ void ActorValueService::RunActorValuesUpdates() noexcept
+     BroadcastActorValues();
+ }
+ 
+-void ActorValueService::OnHealthChangeBroadcast(const NotifyHealthChangeBroadcast& acMessage) const noexcept
++void ActorValueService::OnHealthChangeBroadcast(const NotifyHealthChangeBroadcast& acMessage) noexcept
+ {
++    if (acMessage.Percentage)
++    {
++        const auto entity = Utils::FindEntityByServerId(acMessage.Id);
++        if (!entity || !std::isfinite(acMessage.HealthFraction) || acMessage.HealthFraction < 0.f || acMessage.HealthFraction > 1.f) return;
++        uint32_t epoch{};
++        if (const auto* local = m_world.try_get<LocalComponent>(*entity)) epoch = local->OwnershipEpoch;
++        else if (const auto* remote = m_world.try_get<RemoteComponent>(*entity)) epoch = remote->OwnershipEpoch;
++        if (!epoch || epoch != acMessage.OwnershipEpoch || !acMessage.Serial) return;
++        auto& state = m_npcHealth[acMessage.Id];
++        if (state.Epoch == epoch && acMessage.Serial < state.Revision) return;
++        state = {epoch, acMessage.Serial, acMessage.HealthFraction};
++        if (auto* waiting = m_world.try_get<WaitingFor3D>(*entity)) waiting->SpawnRequest.IsDead = acMessage.HealthFraction == 0.f;
++        ReapplyNpcHealth(Utils::GetByServerId<Actor>(acMessage.Id));
++        return;
++    }
+     Actor* pActor = Utils::GetByServerId<Actor>(acMessage.Id);
+     if (!pActor)
+     {
+@@ -375,7 +398,7 @@ void ActorValueService::OnActorMaxValueChanges(const NotifyActorMaxValueChanges&
+     for (const auto& [key, value] : acMessage.Values)
+     {
+         if (localRental && key == ActorValueInfo::kVariable09) continue;
+-        if (key == ActorValueInfo::kDragonSouls)
++        if (key == ActorValueInfo::kDragonSouls || (key == ActorValueInfo::kHealth && !pActor->GetExtension()->IsPlayer() && !pActor->IsEssential()))
+             continue;
+ 
+         spdlog::debug("Actor max value update, server ID: {:X}, key: {}, value: {}", acMessage.Id, key, value);
+@@ -414,9 +437,58 @@ void ActorValueService::OnDeathStateChange(const NotifyDeathStateChange& acMessa
+     if (pExtension->IsPlayer())
+         return;
+ 
++    if (m_npcHealth.contains(acMessage.Id)) { ReapplyNpcHealth(pActor); return; }
++    if (auto* waiting = m_world.try_get<WaitingFor3D>(*it)) waiting->SpawnRequest.IsDead = acMessage.IsDead;
+     if (pActor->IsDead() != acMessage.IsDead)
+     {
+         spdlog::info("Applying death state {} to remote actor {:X}, server id: {:X}", acMessage.IsDead, pActor->formID, acMessage.Id);
+         acMessage.IsDead ? pActor->Kill() : pActor->Respawn();
+     }
+ }
++
++void ActorValueService::SendNpcHealth(uint32_t id, uint32_t epoch, float delta, float maximum) noexcept
++{
++    if (!id || !epoch || !std::isfinite(delta) || !PercentageHealth::ValidMaximum(maximum)) return;
++    RequestHealthChangeBroadcast request;
++    request.Id = id; request.Percentage = true; request.OwnershipEpoch = epoch;
++    request.Serial = ++m_healthSequence; request.DeltaHealth = delta; request.MaximumHealth = maximum;
++    m_transport.Send(request);
++}
++
++void ActorValueService::ReapplyNpcHealth(Actor* actor) const noexcept
++{
++    if (!actor || actor->GetExtension()->IsPlayer() || actor->IsEssential() || !actor->GetNiNode() ||
++        actor->GetExtension()->Reconciliation != ActorExtension::ReconciliationStage::None) return;
++    auto token = Utils::GetLocalOwnershipToken(actor->formID);
++    if (!token) token = Utils::GetRemoteOwnershipToken(actor->formID);
++    if (!token) return;
++    const auto found = m_npcHealth.find(token->ServerId);
++    if (found == m_npcHealth.end() || found->second.Epoch != token->OwnershipEpoch) return;
++    const auto maximum = actor->GetActorPermanentValue(ActorValueInfo::kHealth);
++    if (!PercentageHealth::ValidMaximum(maximum)) return;
++    const auto fraction = found->second.Fraction;
++    if (fraction > 0.f && actor->IsDead()) { actor->Respawn(); return; }
++    actor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, fraction * maximum);
++    if (fraction == 0.f && !actor->IsDead()) actor->Kill();
++}
++
++void ActorValueService::PollNpcHealth() noexcept
++{
++    if (!m_transport.IsOnline() || m_world.GetTick() < m_nextNpcPoll) return;
++    m_nextNpcPoll = m_world.GetTick() + 1000;
++    auto view = m_world.view<FormIdComponent>();
++    for (auto entity : view)
++    {
++        auto* actor = Cast<Actor>(TESForm::GetById(view.get<FormIdComponent>(entity).Id));
++        if (!actor || !actor->GetNiNode() || actor->GetExtension()->IsPlayer() || actor->IsEssential()) continue;
++        const auto* local = m_world.try_get<LocalComponent>(entity);
++        const auto* remote = m_world.try_get<RemoteComponent>(entity);
++        const auto id = local ? local->Id : remote ? remote->Id : 0;
++        const auto epoch = local ? local->OwnershipEpoch : remote ? remote->OwnershipEpoch : 0;
++        if (!id || !epoch) continue;
++        ReapplyNpcHealth(actor);
++        const auto cached = m_npcHealth.find(id);
++        if (local || cached == m_npcHealth.end() || cached->second.Epoch != epoch)
++            SendNpcHealth(id, epoch, 0.f, actor->GetActorPermanentValue(ActorValueInfo::kHealth));
++    }
++}
+diff --git a/Code/client/Services/Generic/CalendarService.cpp b/Code/client/Services/Generic/CalendarService.cpp
+index ac24ad06..196783f0 100644
+--- a/Code/client/Services/Generic/CalendarService.cpp
++++ b/Code/client/Services/Generic/CalendarService.cpp
+@@ -79,7 +79,7 @@ void CalendarService::BeginTimeSkip(float aStartTimeInDays, float aDesiredEndTim
+     if (!s_gameClockLocked || !m_transport.IsOnline() || !m_hasServerTime)
+         return;
+     const float hours = (aDesiredEndTimeInDays - aStartTimeInDays) * 24.f;
+-    if (!std::isfinite(hours) || hours <= 0.f || hours > 24.01f)
++    if (!std::isfinite(hours) || hours <= 0.f || hours > SurvivalTime::MaxSkipHours + 0.01f)
+         return;
+     s_localTimeSkip = true;
+     m_deferredSkipDays = 0;
+@@ -114,7 +114,7 @@ void CalendarService::EndTimeSkip(bool aInterrupted, const char* apKind) noexcep
+     if (!s_gameClockLocked || !m_transport.IsOnline())
+         return;
+ 
+-    if (!(hours > 0.f) || hours > 24.01f)
++    if (!(hours > 0.f) || hours > SurvivalTime::MaxSkipHours + 0.01f)
+     {
+         spdlog::info("{} ended without a time skip: interrupted {}, hours {}", apKind, aInterrupted, hours);
+         return;
+@@ -137,7 +137,7 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
+     if (s_gameClockLocked && m_hasServerTime)
+     {
+         const double skippedDays = SurvivalTime::InDays(newServerTime.m_timeModel) - SurvivalTime::InDays(m_serverTime.m_timeModel);
+-        if (skippedDays > 0.f && skippedDays <= 2.0)
++        if (skippedDays > 0.f && skippedDays <= 8.0)
+         {
+             if (s_localTimeSkip)
+                 m_deferredSkipDays += static_cast<float>(skippedDays);
+@@ -217,6 +217,8 @@ void CalendarService::ToggleGameClock(bool aEnable)
+ 
+ void CalendarService::HandleUpdate(const UpdateEvent& aEvent) noexcept
+ {
++    extern void ConfigureSurvivalWaitMenu();
++    ConfigureSurvivalWaitMenu();
+     if (s_gameClockLocked)
+     {
+         const auto updateDelta = static_cast<float>(aEvent.Delta);
+diff --git a/Code/client/Services/Generic/CharacterService.cpp b/Code/client/Services/Generic/CharacterService.cpp
+index 57a9247a..7f390ead 100644
+--- a/Code/client/Services/Generic/CharacterService.cpp
++++ b/Code/client/Services/Generic/CharacterService.cpp
+@@ -4,6 +4,7 @@
+ #include <Services/PartyService.h>
+ 
+ #include <Services/CharacterService.h>
++#include <Services/ActorValueService.h>
+ #include <Services/QuestService.h>
+ #include <Services/TransportService.h>
+ 
+@@ -1725,6 +1726,7 @@ void CharacterService::ProcessLeveledConforms() noexcept
+             {
+                 spdlog::info("Completed leveled NPC reconciliation for actor {:X}, base: {:X}, pick: {:X}", it->first, pActor->baseForm->formID, cPickFormId);
+                 stage = ReconciliationStage::None;
++                m_world.ctx().at<ActorValueService>().ReapplyNpcHealth(pActor);
+                 it = m_pendingLeveledConforms.erase(it);
+                 continue;
+             }
+@@ -1911,6 +1913,9 @@ void CharacterService::RunRemoteUpdates() noexcept
+         if (!pActor || !pActor->GetNiNode())
+             continue;
+ 
++        if (pActor->GetExtension()->Reconciliation != ActorExtension::ReconciliationStage::None) continue;
++        m_world.ctx().at<ActorValueService>().ReapplyNpcHealth(pActor);
++
+         // By now, the actor has materialized in the world and is ready for further setup
+ 
+         pActor->SetActorInventory(waitingFor3D.SpawnRequest.InventoryContent);
+@@ -1925,6 +1930,7 @@ void CharacterService::RunRemoteUpdates() noexcept
+ 
+         if (pActor->IsDead() != waitingFor3D.SpawnRequest.IsDead)
+             waitingFor3D.SpawnRequest.IsDead ? pActor->Kill() : pActor->Respawn();
++        m_world.ctx().at<ActorValueService>().ReapplyNpcHealth(pActor);
+ 
+         if (pActor->IsVampireLord())
+             pActor->FixVampireLordModel();
+diff --git a/Code/client/Services/Generic/CoopChestService.cpp b/Code/client/Services/Generic/CoopChestService.cpp
+index c6232fc4..1baf428d 100644
+--- a/Code/client/Services/Generic/CoopChestService.cpp
++++ b/Code/client/Services/Generic/CoopChestService.cpp
+@@ -137,7 +137,7 @@ bool CoopChestService::TryTransfer(TESObjectREFR* source, TESObjectREFR* destina
+ void CoopChestService::OnNotify(const NotifyHomestead& n)
+ {
+     const auto& data = n.Data;
+-    if (data.Action < HomesteadAction::CoopState || !m_transport.IsOnline()) return;
++    if (data.Action < HomesteadAction::CoopState || data.Action > HomesteadAction::CoopResult || !m_transport.IsOnline()) return;
+     bool completed = false;
+     for (const auto& part : data.Records)
+     {
+@@ -210,6 +210,7 @@ void CoopChestService::OnUpdate(const UpdateEvent&)
+         for (size_t i = 0; i < CoopChests::Locations.size(); ++i)
+         {
+             const auto& location = CoopChests::Locations[i];
++            if (location.RequiredPlugin && !Form(location.RequiredPlugin, 0x87F)) continue;
+             if (location.Farming && !Form("ccvsvsse004-beafarmer.esl", 0xB20)) continue;
+             const glm::vec3 position(location.X, location.Y, location.Z);
+             if (glm::distance(glm::vec3(player->position), position) > 2200.f) continue;
+diff --git a/Code/client/Services/Generic/HomesteadService.cpp b/Code/client/Services/Generic/HomesteadService.cpp
+index 1edb4dba..3cada7b5 100644
+--- a/Code/client/Services/Generic/HomesteadService.cpp
++++ b/Code/client/Services/Generic/HomesteadService.cpp
+@@ -130,7 +130,7 @@ void HomesteadService::OnUpdate(const UpdateEvent&)
+     HomesteadData q; q.Action = HomesteadAction::Publish;
+     for (uint32_t id : m_ids)
+     {
+-        auto* ref = Cast<TESObjectREFR>(TESForm::GetById(id)); if (!Structure(ref)) continue;
++        auto* ref = Cast<TESObjectREFR>(TESForm::GetById(id)); if (!Structure(ref) || ref->baseForm->formType != FormType::Container) continue;
+         const bool disabled = ref->IsDisabled();
+         const auto old = m_published.find(id);
+         if (old != m_published.end() && old->second == disabled) continue;
+@@ -171,10 +171,6 @@ void HomesteadService::Apply(const HomesteadRecord& record)
+         if (record.HasInventory && cell && cell->IsAttached()) { original.HasInventory = true; original.Contents = ref->GetInventory(); }
+         m_original.emplace(id, std::move(original));
+     }
+-    if (guest && ref->IsDisabled() != record.Disabled)
+-    {
+-        if (record.Disabled) ref->Disable(); else ref->Enable();
+-    }
+     if (record.HasInventory && (!guest || (cell && cell->IsAttached())) && !ref->IsDisabled())
+     {
+         Inventory current = ref->GetInventory();
+@@ -229,7 +225,7 @@ void HomesteadService::OnDisconnected(const DisconnectedEvent&)
+     for (const auto& [id, original] : m_original)
+     {
+         auto* ref = Cast<TESObjectREFR>(TESForm::GetById(id)); if (!ref) continue;
+-        if (ref->IsDisabled() != original.Disabled) { if (original.Disabled) ref->Disable(); else ref->Enable(); }
++
+         if (original.HasInventory)
+         {
+             ScopedInventoryOverride guard;
+diff --git a/Code/client/Services/Generic/SurvivalWaitMenu.cpp b/Code/client/Services/Generic/SurvivalWaitMenu.cpp
+new file mode 100644
+index 00000000..12b37886
+--- /dev/null
++++ b/Code/client/Services/Generic/SurvivalWaitMenu.cpp
+@@ -0,0 +1,42 @@
++#include <TiltedOnlinePCH.h>
++#include <Interface/UI.h>
++#include <Interface/IMenu.h>
++#include <Misc/BSFixedString.h>
++#include <SurvivalTimePolicy.h>
++
++// Numeric GFxValue is unmanaged; it has no Scaleform ownership or destructor.
++void ConfigureSurvivalWaitMenu()
++{
++    auto* ui = UI::Get();
++    auto* menu = ui ? ui->FindMenuByName(BSFixedString("Sleep/Wait Menu")) : nullptr;
++    if (!menu) return;
++    auto* movie = menu->uiMovie;
++    if (!movie) return;
++    struct Value { void* Interface{}; uint32_t Type{3}; uint32_t Padding{}; double Number{SurvivalTime::MaxSkipHours}; } value;
++    static_assert(sizeof(Value) == 24);
++    using SetVariable = bool(*)(void*, const char*, const Value&, uint32_t);
++    auto set = reinterpret_cast<SetVariable>((*reinterpret_cast<void***>(movie))[0x10]);
++    set(movie, "_root.SleepWaitMenu_mc.HoursSlider.maximum", value, 0);
++}
++
++static TiltedPhoques::Initializer s_survivalWaitSpeed([]
++{
++    VersionDbPtr<uint8_t> address(52486);
++    auto* site = address.Get() + 0x1D0;
++    // Fail closed if another mod has already replaced this instruction.
++    if (site[0] != 0x0F || site[1] != 0x2F || site[2] != 0x05)
++    {
++        spdlog::warn("SurvivalSync: sleep/wait speed hook unavailable or already patched");
++        return;
++    }
++    static const float secondsPerHour = 1.f / SurvivalTime::SkipSpeed;
++    struct Stub : TiltedPhoques::CodeGenerator
++    {
++        Stub(uint8_t* site, const float* seconds)
++        {
++            push(rax); mov(rax, reinterpret_cast<uintptr_t>(seconds));
++            comiss(xmm0, ptr[rax]); pop(rax); jmp_S(site + 7);
++        }
++    } stub(site, &secondsPerHour);
++    TiltedPhoques::Jump(site, stub.getCode());
++});
+diff --git a/Code/client/Services/Generic/WorldProgressService.cpp b/Code/client/Services/Generic/WorldProgressService.cpp
+new file mode 100644
+index 00000000..be02819a
+--- /dev/null
++++ b/Code/client/Services/Generic/WorldProgressService.cpp
+@@ -0,0 +1,284 @@
++#include <Services/WorldProgressService.h>
++#include <Services/ScriptStateAccess.h>
++#include <Services/TransportService.h>
++#include <Services/PapyrusService.h>
++#include <WorldProgressBindings.h>
++#include <World.h>
++#include <Games/TES.h>
++#include <Games/Overrides.h>
++#include <PlayerCharacter.h>
++#include <TESObjectREFR.h>
++#include <Forms/TESObjectCELL.h>
++#include <Forms/TESGlobal.h>
++#include <Forms/TESFaction.h>
++#include <TimeManager.h>
++#include <Messages/RequestHomestead.h>
++#include <Messages/NotifyHomestead.h>
++#include <Events/UpdateEvent.h>
++#include <Events/DisconnectedEvent.h>
++namespace
++{
++TESForm* Resolve(WorldProgress::Form form)
++{
++    auto* mods = ModManager::Get(); auto* mod = mods ? mods->GetByName(form.Plugin) : nullptr;
++    return mod && mod->IsLoaded() && form.Base ? TESForm::GetById(mod->GetFormId(form.Base)) : nullptr;
++}
++float Day() { auto* time = TimeData::Get(); return time && time->GameDaysPassed ? time->GameDaysPassed->f : 0.f; }
++int Count(TESObjectREFR* ref, TESForm* base)
++{
++    if (!ref || !base) return 0;
++    GameId id{}; if (!World::Get().GetModSystem().GetServerModId(base->formID, id)) return 0;
++    int total{}; for (const auto& entry : ref->GetInventory().Entries) if (entry.BaseId == id) total += entry.Count; return total;
++}
++void SetCount(TESObjectREFR* ref, TESForm* base, int count)
++{
++    if (!ref || !base) return;
++    Inventory::Entry entry; if (!World::Get().GetModSystem().GetServerModId(base->formID, entry.BaseId)) return;
++    entry.Count = count - Count(ref, base);
++    if (entry.Count) { ScopedInventoryOverride guard; ref->AddOrRemoveItem(entry, true); }
++}
++bool InCraftingTrigger(const WorldProgress::Binding& binding)
++{
++    auto* trigger = Resolve(binding.Cell); std::vector<float> v;
++    return trigger && ScriptStateAccess::Numbers(trigger, "BYOHHouseCraftingTriggerScript", "bPlayerInTrigger", 0, v) && v[0] != 0;
++}
++bool Attached(TESObjectREFR* ref) { auto* cell = ref ? ref->GetParentCellEx() : nullptr; return cell && cell->IsAttached(); }
++const char* Flora(const WorldProgress::Plot& p) { return p.Family ? "myPlantedFloraBase" : "plantedFloraBase"; }
++const char* Grown(const WorldProgress::Plot& p) { return p.Family ? "myPlantedFloraRef" : "plantedFloraRef"; }
++const char* Seed(const WorldProgress::Plot& p) { return p.Family ? "myPlantedItem" : "plantedItem"; }
++float Number(TESForm* form, const char* script, const char* field, float fallback)
++{
++    std::vector<float> v; return ScriptStateAccess::Numbers(form, script, field, 0, v) && !v.empty() ? v[0] : fallback;
++}
++void SetNumber(TESForm* form, const char* script, const char* field, float value)
++{
++    std::vector<float> v{value}; ScriptStateAccess::Numbers(form, script, field, 0, v, true);
++}
++}
++bool WorldProgressService::HarvestCommit = false;
++WorldProgressService::WorldProgressService(World& w, entt::dispatcher& d, TransportService& t) : m_world(w), m_transport(t)
++{
++    m_update = d.sink<UpdateEvent>().connect<&WorldProgressService::OnUpdate>(this);
++    m_notify = d.sink<NotifyHomestead>().connect<&WorldProgressService::OnNotify>(this);
++    m_disconnect = d.sink<DisconnectedEvent>().connect<&WorldProgressService::OnDisconnected>(this);
++}
++void WorldProgressService::Send(HomesteadData data) { RequestHomestead q; q.Data = std::move(data); m_transport.Send(q); }
++bool WorldProgressService::Capture(uint32_t key, std::vector<float>& out)
++{
++    if (key >= WorldProgress::PlotKeyBase)
++    {
++        const auto& p = WorldProgress::Plots[key - WorldProgress::PlotKeyBase];
++        auto* soil = Cast<TESObjectREFR>(Resolve(p.Soil)); auto* container = Resolve(p.Container);
++        if (!Attached(soil) || !container) return false;
++        auto* flora = ScriptStateAccess::Form(container, p.Script, Flora(p));
++        auto* seed = ScriptStateAccess::Form(container, p.Script, Seed(p));
++        auto* grown = Cast<TESObjectREFR>(ScriptStateAccess::Form(container, p.Script, Grown(p)));
++        uint32_t crop{};
++        for (size_t i = 0; i < WorldProgress::Crops.size(); ++i)
++        {
++            const auto& c = WorldProgress::Crops[i];
++            if (c.Family == p.Family && ((flora && flora == Resolve(c.Flora)) || (seed && seed == Resolve(c.Seed)))) { crop = uint32_t(i + 1); break; }
++        }
++        if (grown) m_grownPlots[grown->formID] = key;
++        out = {float(crop), std::max(0.f, Day() - Number(container, p.Script, "plantedTimestamp", Day())),
++               grown && (grown->flags & 0x2000) ? 1.f : 0.f, std::max(0.f, Day() - Number(container, p.Script, "resetTimestamp", Day()))};
++        return true;
++    }
++    const auto& b = WorldProgress::Bindings[key]; auto* form = Resolve(b.Target); if (!form) return false;
++    if (b.Kind == 0) { auto* ref = Cast<TESObjectREFR>(form); if (!ref || ref->IsDeleted()) return false; out = {ref->IsDisabled() ? 1.f : 0.f}; return true; }
++    if (b.Kind == 1) { out = {static_cast<TESGlobal*>(form)->f}; return std::isfinite(out[0]); }
++    if (b.Kind == 2) return ScriptStateAccess::Numbers(form, b.Script, b.Variable, b.Type, out);
++    if (b.Kind == 3 || b.Kind == 5)
++    {
++        const auto* fn = m_world.ctx().at<PapyrusService>().Get("Cell", "GetFactionOwner"); if (!fn) return false;
++        PapyrusFunction<TESFaction*, TESObjectCELL> get(fn);
++        out = {get(static_cast<TESObjectCELL*>(form)) == Resolve({"Skyrim.esm", 0xDB1}) ? 1.f : 0.f}; return true;
++    }
++    if (b.Kind == 4)
++    {
++        auto* chest = Cast<TESObjectREFR>(form); if (!chest) return false;
++        auto* token = Resolve(b.Aux); if (!token) return false;
++        out = {float(Count(chest, token) + (InCraftingTrigger(b) ? Count(PlayerCharacter::Get(), token) : 0))}; return true;
++    }
++    return false;
++}
++void WorldProgressService::Apply(uint32_t key)
++{
++    const auto found = m_state.find(key); if (found == m_state.end()) return;
++    const auto& v = found->second.Numbers;
++    if (key >= WorldProgress::PlotKeyBase)
++    {
++        const auto& p = WorldProgress::Plots[key - WorldProgress::PlotKeyBase];
++        auto* soil = Cast<TESObjectREFR>(Resolve(p.Soil)); auto* container = Resolve(p.Container);
++        if (!Attached(soil) || !container || v.size() != 4) return;
++        const uint32_t crop = uint32_t(v[0]);
++        if (crop > WorldProgress::Crops.size()) return;
++        auto* flora = crop ? Resolve(WorldProgress::Crops[crop - 1].Flora) : nullptr;
++        auto* grown = Cast<TESObjectREFR>(ScriptStateAccess::Form(container, p.Script, Grown(p)));
++        const float serverDay = m_serverDay + Day() - m_localDay;
++        const bool mature = crop && serverDay - v[1] >= 1.f;
++        const bool harvested = v[2] != 0.f && serverDay - v[3] < 3.f;
++        if (grown && (!flora || grown->baseForm != flora || (!harvested && (grown->flags & 0x2000))))
++        {
++            m_grownPlots.erase(grown->formID); grown->Disable(); grown->Delete(); grown = nullptr;
++            ScriptStateAccess::SetForm(container, p.Script, Grown(p), nullptr);
++        }
++        ScriptStateAccess::SetForm(container, p.Script, Flora(p), flora);
++        // Native gift menus still choose the seed. Once committed, the shared clock
++        // owns growth; don't let a second native seed/growth callback duplicate it.
++        if (auto* seed = ScriptStateAccess::Form(container, p.Script, Seed(p)))
++        {
++            SetCount(Cast<TESObjectREFR>(container), seed, 0);
++            ScriptStateAccess::SetForm(container, p.Script, Seed(p), nullptr);
++        }
++        SetNumber(container, p.Script, "plantedTimestamp", Day() - std::max(0.f, serverDay - v[1]));
++        SetNumber(container, p.Script, "resetTimestamp", Day());
++        if (mature && !grown && flora)
++        {
++            const auto* fn = m_world.ctx().at<PapyrusService>().Get("ObjectReference", "PlaceAtMe");
++            if (fn) { PapyrusFunction<TESObjectREFR*, TESObjectREFR, TESForm*, int32_t, bool, bool> place(fn); grown = place(soil, flora, 1, true, false); }
++            if (grown) ScriptStateAccess::SetForm(container, p.Script, Grown(p), grown);
++        }
++        if (grown)
++        {
++            m_grownPlots[grown->formID] = key;
++            if (harvested && !grown->IsDisabled()) grown->Disable();
++            if (!harvested && grown->IsDisabled()) grown->Enable();
++        }
++        ScriptStateAccess::State(soil, p.SoilScript, mature ? "Planted" : "Empty");
++        if (p.Family) SetNumber(soil, p.SoilScript, "IsPlanted", mature ? 1.f : 0.f);
++    }
++    else
++    {
++        const auto& b = WorldProgress::Bindings[key]; auto* form = Resolve(b.Target); if (!form || v.empty()) return;
++        if (b.Kind == 0)
++        {
++            auto* ref = Cast<TESObjectREFR>(form); if (!ref || ref->IsDeleted()) return;
++            if (ref->IsDisabled() != (v[0] != 0.f)) { if (v[0]) ref->Disable(); else ref->Enable(); }
++        }
++        else if (b.Kind == 1)
++        {
++            const auto* fn = m_world.ctx().at<PapyrusService>().Get("GlobalVariable", "SetValue");
++            if (fn) { PapyrusFunction<void, TESGlobal, float> set(fn); set(static_cast<TESGlobal*>(form), v[0]); }
++        }
++        else if (b.Kind == 2) { auto numbers = v; ScriptStateAccess::Numbers(form, b.Script, b.Variable, b.Type, numbers, true); }
++        else if (b.Kind == 3)
++        {
++            const auto* fn = m_world.ctx().at<PapyrusService>().Get("Cell", "SetFactionOwner");
++            if (fn) { PapyrusFunction<void, TESObjectCELL, TESFaction*> set(fn); set(static_cast<TESObjectCELL*>(form), v[0] ? static_cast<TESFaction*>(Resolve({"Skyrim.esm", 0xDB1})) : nullptr); }
++        }
++        else if (b.Kind == 4)
++        {
++            auto* chest = Cast<TESObjectREFR>(form); auto* token = Resolve(b.Aux);
++            const bool active = InCraftingTrigger(b);
++            SetCount(chest, token, active ? 0 : std::clamp(int(v[0]), 0, 99));
++            if (active) SetCount(PlayerCharacter::Get(), token, std::clamp(int(v[0]), 0, 99));
++        }
++        else if (b.Kind == 5 && v[0])
++        {
++            auto* keyForm = Resolve(b.Aux);
++            if (keyForm && !Count(PlayerCharacter::Get(), keyForm)) SetCount(PlayerCharacter::Get(), keyForm, 1);
++        }
++    }
++    std::vector<float> current; if (Capture(key, current)) m_seen[key] = std::move(current);
++}
++void WorldProgressService::OnUpdate(const UpdateEvent&)
++{
++    if (!m_transport.IsOnline() || !PlayerCharacter::Get()) return;
++    const auto now = m_world.GetTick();
++    if (now >= m_poll)
++    {
++        m_poll = now + (m_authority ? 60000 : 2000);
++        HomesteadData q; q.Action = HomesteadAction::WorldPoll; Send(std::move(q));
++    }
++    if (!m_authority || now < m_scan) return;
++    m_scan = now + 50;
++    HomesteadData q; q.Action = HomesteadAction::WorldPublish;
++    const uint32_t count = uint32_t(WorldProgress::Bindings.size() + WorldProgress::Plots.size());
++    for (uint32_t step = 0; step < 128; ++step)
++    {
++        const auto index = m_cursor++ % count;
++        const auto key = index < WorldProgress::Bindings.size() ? index : WorldProgress::PlotKeyBase + index - uint32_t(WorldProgress::Bindings.size());
++        std::vector<float> current; if (!Capture(key, current)) continue;
++        auto remote = m_state.find(key); auto seen = m_seen.find(key);
++        const bool plot = key >= WorldProgress::PlotKeyBase;
++        const bool changed = seen != m_seen.end() && (plot ? seen->second[0] != current[0] : seen->second != current);
++        const bool seed = remote == m_state.end() && m_authority == m_transport.GetLocalPlayerId();
++        if (seed || (changed && remote != m_state.end()))
++        {
++            q.Progress.push_back({key, remote == m_state.end() ? 0 : remote->second.Revision, current});
++            if (q.Progress.size() == 32) { Send(q); q.Progress.clear(); }
++        }
++        m_seen[key] = std::move(current);
++        if (!changed && remote != m_state.end()) Apply(key);
++    }
++    if (!q.Progress.empty()) Send(std::move(q));
++}
++bool WorldProgressService::TryHarvest(TESObjectREFR* ref)
++{
++    if (!m_transport.IsOnline() || !ref || HarvestCommit) return false;
++    auto found = m_grownPlots.find(ref->formID);
++    if (found == m_grownPlots.end())
++    {
++        for (uint32_t i = 0; i < WorldProgress::Plots.size(); ++i)
++        {
++            const auto& p = WorldProgress::Plots[i]; auto* soil = Cast<TESObjectREFR>(Resolve(p.Soil));
++            if (!Attached(soil)) continue;
++            if (ScriptStateAccess::Form(Resolve(p.Container), p.Script, Grown(p)) == ref) { found = m_grownPlots.emplace(ref->formID, WorldProgress::PlotKeyBase + i).first; break; }
++        }
++    }
++    if (found == m_grownPlots.end()) return false;
++    const auto state = m_state.find(found->second); if (state == m_state.end()) return true;
++    if (m_pendingHarvests.contains(ref->formID)) return true;
++    HomesteadData q; q.Action = HomesteadAction::WorldHarvest; q.Token = ++m_token; q.Progress.push_back(state->second);
++    m_pendingHarvests[ref->formID] = q.Token; Send(std::move(q)); return true;
++}
++void WorldProgressService::OnNotify(const NotifyHomestead& notify)
++{
++    const auto& data = notify.Data;
++    if (!m_transport.IsOnline() || (data.Action != HomesteadAction::WorldState && data.Action != HomesteadAction::WorldHarvestResult)) return;
++    if (m_authority != data.Authority) { m_state.clear(); m_seen.clear(); m_pendingHarvests.clear(); m_authority = data.Authority; }
++    m_serverDay = data.Day; m_localDay = Day();
++    if (data.Action == HomesteadAction::WorldHarvestResult && data.Reference.BaseId == m_transport.GetLocalPlayerId())
++    {
++        for (auto it = m_pendingHarvests.begin(); it != m_pendingHarvests.end();)
++        {
++            if (it->second != data.Token) { ++it; continue; }
++            if (data.Accepted)
++            {
++                auto* ref = Cast<TESObjectREFR>(TESForm::GetById(it->first));
++                if (Attached(ref)) { HarvestCommit = true; ref->Activate(PlayerCharacter::Get(), 0, nullptr, 1, 0); HarvestCommit = false; }
++            }
++            it = m_pendingHarvests.erase(it);
++        }
++    }
++    for (const auto& value : data.Progress)
++    {
++        if (!WorldProgress::Valid(value) || !value.Revision || (value.Key >= WorldProgress::Bindings.size() &&
++            (value.Key < WorldProgress::PlotKeyBase || value.Key - WorldProgress::PlotKeyBase >= WorldProgress::Plots.size()))) continue;
++        const auto existing = m_state.find(value.Key);
++        if (existing != m_state.end() && value.Revision < existing->second.Revision) continue;
++        m_state[value.Key] = value; Apply(value.Key);
++    }
++}
++void WorldProgressService::OnDisconnected(const DisconnectedEvent&)
++{
++    // Return unfinished crops to the native timer so an offline save keeps growing.
++    for (const auto& [key, state] : m_state)
++    {
++        if (key < WorldProgress::PlotKeyBase || state.Numbers.size() != 4) continue;
++        const auto crop = uint32_t(state.Numbers[0]); if (!crop || crop > WorldProgress::Crops.size()) continue;
++        const auto& p = WorldProgress::Plots[key - WorldProgress::PlotKeyBase]; auto* container = Resolve(p.Container);
++        if (!container) continue;
++        const float serverDay = m_serverDay + Day() - m_localDay;
++        SetNumber(container, p.Script, "resetTimestamp", Day() - std::max(0.f, serverDay - state.Numbers[3]));
++        if (serverDay - state.Numbers[1] < 1.f)
++        {
++            auto* seed = Resolve(WorldProgress::Crops[crop - 1].Seed);
++            ScriptStateAccess::SetForm(container, p.Script, Seed(p), seed);
++            SetCount(Cast<TESObjectREFR>(container), seed, 1);
++        }
++    }
++    m_state.clear(); m_seen.clear(); m_grownPlots.clear(); m_pendingHarvests.clear();
++    m_authority = m_cursor = 0; m_scan = m_poll = 0; HarvestCommit = false;
++}
+diff --git a/Code/client/Services/ScriptStateAccess.h b/Code/client/Services/ScriptStateAccess.h
+new file mode 100644
+index 00000000..94d8dde2
+--- /dev/null
++++ b/Code/client/Services/ScriptStateAccess.h
+@@ -0,0 +1,134 @@
++#pragma once
++#include <Misc/BSScript.h>
++#include <Misc/GameVM.h>
++#include <Forms/TESForm.h>
++#include <Games/Memory.h>
++#include <vector>
++#include <cmath>
++#include <cstring>
++#include <string>
++
++// Narrow SE/AE Papyrus adapter. Layouts and vtable slots follow CommonLibSSE-NG.
++// Bound objects remain referenced throughout each operation; no script/reward is replayed.
++namespace ScriptStateAccess
++{
++template <size_t Slot, class R, class... A> R Call(void* self, A... args)
++{
++    using Fn = R(*)(void*, A...);
++    return reinterpret_cast<Fn>((*reinterpret_cast<void***>(self))[Slot])(self, args...);
++}
++struct Object
++{
++    BSScript::Object* Pointer{};
++    Object(TESForm* form, const char* script)
++    {
++        auto* vm = GameVM::Get() ? GameVM::Get()->virtualMachine : nullptr;
++        auto* policy = vm ? vm->GetObjectHandlePolicy() : nullptr;
++        if (!policy || !form) return;
++        const auto handle = Call<4, uint64_t, uint32_t, const void*>(policy, static_cast<uint32_t>(form->formType), form);
++        Call<0x1C, bool, uint64_t, const char*, BSScript::Object**>(vm, handle, script, &Pointer);
++    }
++    ~Object()
++    {
++        if (!Pointer) return;
++        using Dec = uint32_t(BSScript::Object*);
++        POINTER_SKYRIMSE(Dec, dec, 104253);
++        if (!dec(Pointer))
++        {
++            using Destroy = void(BSScript::Object*);
++            POINTER_SKYRIMSE(Destroy, destroy, 104246);
++            destroy(Pointer); Memory::Free(Pointer);
++        }
++    }
++    BSScript::Variable* At(const char* name) const
++    {
++        if (!Pointer || !name) return nullptr;
++        auto* type = *reinterpret_cast<uint8_t**>(reinterpret_cast<uint8_t*>(Pointer) + 8);
++        const std::string automatic = std::string("::") + name + "_var";
++        for (unsigned depth = 0; type && depth < 16; ++depth)
++        {
++            const auto flags = *reinterpret_cast<uint32_t*>(type + 0x20);
++            if ((flags & 3) != 3) return nullptr;
++            const auto count = (flags >> 8) & 0x3FF;
++            auto* names = *reinterpret_cast<uint8_t**>(type + 0x30);
++            if (!names && count) return nullptr;
++            names += ((flags >> 2) & 0x3F) * 8;
++            uint32_t parentCount = 0;
++            auto* parent = *reinterpret_cast<uint8_t**>(type + 0x10);
++            unsigned parents = 0;
++            for (auto* p = parent; p && parents++ < 16; p = *reinterpret_cast<uint8_t**>(p + 0x10))
++            { parentCount += (*reinterpret_cast<uint32_t*>(p + 0x20) >> 8) & 0x3FF; if (parentCount > 1024) return nullptr; }
++            if (parents >= 16) return nullptr;
++            for (uint32_t i = 0; i < count; ++i)
++            {
++                const auto* label = reinterpret_cast<BSFixedString*>(names + i * 16)->AsAscii();
++                if (label && (_stricmp(label, name) == 0 || _stricmp(label, automatic.c_str()) == 0))
++                    return reinterpret_cast<BSScript::Variable*>(reinterpret_cast<uint8_t*>(Pointer) + 0x30) + parentCount + i;
++            }
++            type = parent;
++        }
++        return nullptr;
++    }
++};
++inline bool Numbers(TESForm* form, const char* script, const char* index, uint8_t type, std::vector<float>& out, bool write = false)
++{
++    Object object(form, script); auto* value = object.At(index); if (!value) return false;
++    if (!type) type = static_cast<uint8_t>(value->type);
++    if (static_cast<uint64_t>(value->type) != type) return false;
++    auto* first = value; uint32_t count = 1;
++    if (type >= 13 && type <= 15)
++    {
++        auto* array = reinterpret_cast<uint8_t*>(value->data.pObj); if (!array) return false;
++        count = *reinterpret_cast<uint32_t*>(array + 0x10); if (!count || count > 128) return false;
++        first = reinterpret_cast<BSScript::Variable*>(array + 0x20); type -= 10;
++    }
++    if (type < 3 || type > 5 || (write && out.size() != count)) return false;
++    if (!write) out.clear();
++    for (uint32_t i = 0; i < count; ++i)
++    {
++        if (first[i].type != type) return false;
++        if (write)
++        {
++            if (!std::isfinite(out[i])) return false;
++            if (type == 3) first[i].data.i = static_cast<int32_t>(out[i]);
++            else if (type == 4) first[i].data.f = out[i];
++            else first[i].data.b = out[i] != 0.f;
++        }
++        else out.push_back(type == 3 ? float(first[i].data.i) : type == 4 ? first[i].data.f : first[i].data.b ? 1.f : 0.f);
++    }
++    return true;
++}
++inline TESForm* Form(TESForm* form, const char* script, const char* index)
++{
++    Object object(form, script); auto* value = object.At(index);
++    auto* bound = value ? value->GetObject() : nullptr;
++    auto* policy = BSScript::IObjectHandlePolicy::Get();
++    return bound && policy ? static_cast<TESForm*>(policy->GetObjectForHandle(0, bound->GetHandle())) : nullptr;
++}
++inline bool SetForm(TESForm* form, const char* script, const char* index, TESForm* desired)
++{
++    Object object(form, script); auto* value = object.At(index); if (!value) return false;
++    const auto declared = value->type;
++    if (static_cast<uint64_t>(declared) <= 16 || (static_cast<uint64_t>(declared) & 1)) return false;
++    if (!desired) { value->Reset(); value->type = declared; value->data.pObj = nullptr; return true; }
++    auto* vm = GameVM::Get()->virtualMachine; auto* policy = vm->GetObjectHandlePolicy();
++    const auto* className = reinterpret_cast<BSFixedString*>(static_cast<uintptr_t>(declared) + 8);
++    const auto handle = Call<4, uint64_t, uint32_t, const void*>(policy, 0, desired);
++    BSScript::Object* result{};
++    if (!Call<0x1C, bool, uint64_t, const char*, BSScript::Object**>(vm, handle, className->AsAscii(), &result))
++    {
++        if (!Call<0x15, bool, const BSFixedString*, BSScript::Object**>(vm, className, &result) || !result) return false;
++        auto* binder = Call<0x2F, void*>(vm);
++        using Bind = void(void*, BSScript::Object**, uint64_t);
++        POINTER_SKYRIMSE(Bind, bind, 104184); bind(binder, &result, handle);
++    }
++    if (!result) return false;
++    value->Reset(); value->type = declared; value->data.pObj = result;
++    return true;
++}
++inline void State(TESForm* form, const char* script, const char* state)
++{
++    Object object(form, script);
++    if (object.Pointer) reinterpret_cast<BSFixedString*>(reinterpret_cast<uint8_t*>(object.Pointer) + 0x10)->Set(state);
++}
++}
+diff --git a/Code/client/Services/WorldProgressService.h b/Code/client/Services/WorldProgressService.h
+new file mode 100644
+index 00000000..e92da70c
+--- /dev/null
++++ b/Code/client/Services/WorldProgressService.h
+@@ -0,0 +1,27 @@
++#pragma once
++#include <Structs/HomesteadData.h>
++#include <unordered_map>
++struct World; struct TransportService; struct UpdateEvent; struct NotifyHomestead; struct DisconnectedEvent; struct TESObjectREFR;
++struct WorldProgressService
++{
++    WorldProgressService(World&, entt::dispatcher&, TransportService&);
++    bool TryHarvest(TESObjectREFR*);
++    static bool HarvestCommit;
++private:
++    void OnUpdate(const UpdateEvent&);
++    void OnNotify(const NotifyHomestead&);
++    void OnDisconnected(const DisconnectedEvent&);
++    bool Capture(uint32_t, std::vector<float>&);
++    void Apply(uint32_t);
++    void Send(HomesteadData);
++    World& m_world;
++    TransportService& m_transport;
++    std::unordered_map<uint32_t, WorldProgress::Value> m_state;
++    std::unordered_map<uint32_t, std::vector<float>> m_seen;
++    std::unordered_map<uint32_t, uint32_t> m_grownPlots;
++    std::unordered_map<uint32_t, uint32_t> m_pendingHarvests;
++    uint32_t m_authority{}, m_cursor{}, m_token{};
++    uint64_t m_scan{}, m_poll{};
++    float m_serverDay{}, m_localDay{};
++    entt::scoped_connection m_update, m_notify, m_disconnect;
++};
+diff --git a/Code/client/World.cpp b/Code/client/World.cpp
+index 6d60709b..34e1d91f 100644
+--- a/Code/client/World.cpp
++++ b/Code/client/World.cpp
+@@ -13,6 +13,7 @@
+ #include <Services/WorldItemService.h>
+ #include <Services/VolcanoService.h>
+ #include <Services/HomesteadService.h>
++#include <Services/WorldProgressService.h>
+ #include <Services/CoopChestService.h>
+ #include <Services/QuestService.h>
+ #include <Services/ActorValueService.h>
+@@ -49,6 +50,7 @@ World::World()
+     ctx().emplace<WorldItemService>(*this, m_dispatcher, m_transport);
+     ctx().emplace<VolcanoService>(*this, m_dispatcher, m_transport);
+     ctx().emplace<HomesteadService>(*this, m_dispatcher, m_transport);
++    ctx().emplace<WorldProgressService>(*this, m_dispatcher, m_transport);
+     ctx().emplace<CoopChestService>(*this, m_dispatcher, m_transport);
+     ctx().emplace<CalendarService>(*this, m_dispatcher, m_transport);
+     ctx().emplace<QuestService>(*this, m_dispatcher);
+diff --git a/Code/common/BuildInfo.h.in b/Code/common/BuildInfo.h.in
+index 33cc05f3..e41e5f98 100644
+--- a/Code/common/BuildInfo.h.in
++++ b/Code/common/BuildInfo.h.in
+@@ -1,4 +1,4 @@
+ #pragma once
+ // This file was autogenerated by xmake
+ #define BUILD_BRANCH "survival-worlditems"
+-#define BUILD_COMMIT "survival-sync-v07-quest-sync-draft"
++#define BUILD_COMMIT "survival-sync-v08-world-progress-draft"
+diff --git a/Code/common/CoopChestLocations.h b/Code/common/CoopChestLocations.h
+index ae1a97d0..206073e9 100644
+--- a/Code/common/CoopChestLocations.h
++++ b/Code/common/CoopChestLocations.h
+@@ -6,8 +6,8 @@ constexpr uint32_t VirtualMod = 0xFFFFFFFE;
+ constexpr uint32_t LocalFormMod = 0xFFFFFFFD;
+ constexpr const char* Plugin = "SurvivalSyncCoop.esp";
+ constexpr uint32_t ContainerBase = 0x800;
+-struct Location { const char* Name; float X, Y, Z, Yaw; bool Farming; };
+-inline constexpr std::array<Location, 10> Locations{{
++struct Location { const char* Name; float X, Y, Z, Yaw; bool Farming; const char* RequiredPlugin = nullptr; };
++inline constexpr std::array<Location, 11> Locations{{
+     {"Whiterun", 17524.757f, -10484.579f, -4604.976f, 5.597788f, false},
+     {"Solitude", -75058.247f, 97034.559f, -11380.862f, 5.497787f, false},
+     {"Windhelm", 135943.774f, 26828.250f, -12455.554f, 0.000000f, false},
+@@ -18,5 +18,6 @@ inline constexpr std::array<Location, 10> Locations{{
+     {"Morthal", -40133.050f, 65312.923f, -13801.952f, 5.759587f, false},
+     {"Winterhold", 110104.848f, 101708.334f, -8954.719f, 1.186824f, false},
+     {"Goldenhills Plantation", -73444.615f, 886.764f, -4931.176f, 5.497787f, true},
++    {"Tundra Homestead", 39062.210f, 145.170f, -4172.343f, 5.912394f, false, "cceejsse001-hstead.esm"},
+ }};
+ }
+diff --git a/Code/common/PercentageHealth.h b/Code/common/PercentageHealth.h
+new file mode 100644
+index 00000000..69ce7a3e
+--- /dev/null
++++ b/Code/common/PercentageHealth.h
+@@ -0,0 +1,46 @@
++#pragma once
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <unordered_map>
++
++namespace PercentageHealth
++{
++inline bool ValidMaximum(float maximum) { return std::isfinite(maximum) && maximum > 0.f; }
++inline float Ratio(float current, float maximum)
++{
++    return ValidMaximum(maximum) && std::isfinite(current) ? std::clamp(current / maximum, 0.f, 1.f) : 1.f;
++}
++inline float Delta(float damageOrHealing, float maximum)
++{
++    return std::isfinite(damageOrHealing) && ValidMaximum(maximum)
++        ? std::clamp(damageOrHealing / maximum, -1.f, 1.f) : 0.f;
++}
++struct State
++{
++    double Fraction{1.0};
++    uint64_t Revision{1};
++    uint32_t Epoch{};
++    std::unordered_map<uint32_t, uint64_t> LastSequence;
++
++    void Seed(float current, float maximum, bool dead)
++    {
++        Fraction = dead ? 0.0 : Ratio(current, maximum);
++        Revision = 1; Epoch = 0; LastSequence.clear();
++    }
++    // The caller validates the packet against the actor's CURRENT ownership epoch.
++    bool Apply(uint32_t epoch, uint32_t sender, uint64_t sequence, float delta)
++    {
++        if (!epoch || !sequence || !std::isfinite(delta) || delta < -1.f || delta > 1.f) return false;
++        if (Epoch != epoch) { Epoch = epoch; LastSequence.clear(); }
++        auto& last = LastSequence[sender];
++        if (sequence <= last) return false;
++        last = sequence;
++        // Healing never resurrects a shared corpse. World respawns need a new entity/reset.
++        if (Fraction > 0.0 && delta != 0.f)
++        { Fraction = std::clamp(Fraction + static_cast<double>(delta), 0.0, 1.0); if (Fraction < 1e-6) Fraction = 0.0; ++Revision; }
++        return true;
++    }
++    void Kill() { if (Fraction != 0.0) { Fraction = 0.0; ++Revision; } }
++};
++}
+diff --git a/Code/common/SurvivalTimePolicy.h b/Code/common/SurvivalTimePolicy.h
+index 824b2508..427d63c3 100644
+--- a/Code/common/SurvivalTimePolicy.h
++++ b/Code/common/SurvivalTimePolicy.h
+@@ -4,6 +4,8 @@
+ 
+ namespace SurvivalTime
+ {
++constexpr float MaxSkipHours = 168.f;
++constexpr float SkipSpeed = 3.f;
+ constexpr uint32_t MonthDays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+ template <class T> bool Valid(const T& t) noexcept
+ {
+@@ -23,7 +25,7 @@ template <class T> float HoursToTarget(const T& current, const T& target) noexce
+     if (!Valid(current) || !Valid(target))
+         return 0.f;
+     const double hours = (InDays(target) - InDays(current)) * 24.0;
+-    if (!std::isfinite(hours) || hours <= 0.0 || hours > 24.01)
++    if (!std::isfinite(hours) || hours <= 0.0 || hours > MaxSkipHours + 0.01)
+         return 0.f;
+     return static_cast<float>(hours);
+ }
+diff --git a/Code/common/WorldProgressPolicy.h b/Code/common/WorldProgressPolicy.h
+new file mode 100644
+index 00000000..a99c96ea
+--- /dev/null
++++ b/Code/common/WorldProgressPolicy.h
+@@ -0,0 +1,24 @@
++#pragma once
++#include <vector>
++#include <cmath>
++#include <cstdint>
++#include <algorithm>
++namespace WorldProgress
++{
++struct Value
++{
++    uint32_t Key{};
++    uint64_t Revision{};
++    std::vector<float> Numbers;
++};
++inline bool Valid(const Value& value)
++{
++    return !value.Numbers.empty() && value.Numbers.size() <= 128 &&
++        std::all_of(value.Numbers.begin(), value.Numbers.end(), [](float f) { return std::isfinite(f) && std::abs(f) < 1000000000.f; });
++}
++inline bool Commit(Value& state, const Value& request)
++{
++    if (!Valid(request) || state.Key != request.Key || state.Revision != request.Revision || state.Numbers.size() != request.Numbers.size()) return false;
++    state.Numbers = request.Numbers; ++state.Revision; return true;
++}
++}
+diff --git a/Code/encoding/Messages/NotifyHealthChangeBroadcast.cpp b/Code/encoding/Messages/NotifyHealthChangeBroadcast.cpp
+index 4ab6f647..877b842a 100644
+--- a/Code/encoding/Messages/NotifyHealthChangeBroadcast.cpp
++++ b/Code/encoding/Messages/NotifyHealthChangeBroadcast.cpp
+@@ -4,6 +4,11 @@ void NotifyHealthChangeBroadcast::SerializeRaw(TiltedPhoques::Buffer::Writer& aW
+ {
+     Serialization::WriteVarInt(aWriter, Id);
+     Serialization::WriteFloat(aWriter, DeltaHealth);
++    Serialization::WriteBool(aWriter, Percentage);
++    Serialization::WriteVarInt(aWriter, OwnershipEpoch);
++    Serialization::WriteVarInt(aWriter, Serial);
++    Serialization::WriteFloat(aWriter, HealthFraction);
++    Serialization::WriteFloat(aWriter, MaximumHealth);
+ }
+ 
+ void NotifyHealthChangeBroadcast::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
+@@ -12,4 +17,9 @@ void NotifyHealthChangeBroadcast::DeserializeRaw(TiltedPhoques::Buffer::Reader&
+ 
+     Id = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+     DeltaHealth = Serialization::ReadFloat(aReader);
++    Percentage = Serialization::ReadBool(aReader);
++    OwnershipEpoch = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
++    Serial = Serialization::ReadVarInt(aReader);
++    HealthFraction = Serialization::ReadFloat(aReader);
++    MaximumHealth = Serialization::ReadFloat(aReader);
+ }
+diff --git a/Code/encoding/Messages/NotifyHealthChangeBroadcast.h b/Code/encoding/Messages/NotifyHealthChangeBroadcast.h
+index 65bad8d4..1a1306d8 100644
+--- a/Code/encoding/Messages/NotifyHealthChangeBroadcast.h
++++ b/Code/encoding/Messages/NotifyHealthChangeBroadcast.h
+@@ -14,8 +14,13 @@ struct NotifyHealthChangeBroadcast final : ServerMessage
+     void SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept override;
+     void DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept override;
+ 
+-    bool operator==(const NotifyHealthChangeBroadcast& acRhs) const noexcept { return Id == acRhs.Id && DeltaHealth == acRhs.DeltaHealth && GetOpcode() == acRhs.GetOpcode(); }
++    bool operator==(const NotifyHealthChangeBroadcast& acRhs) const noexcept { return Percentage == acRhs.Percentage && OwnershipEpoch == acRhs.OwnershipEpoch && Serial == acRhs.Serial && HealthFraction == acRhs.HealthFraction && MaximumHealth == acRhs.MaximumHealth && Id == acRhs.Id && DeltaHealth == acRhs.DeltaHealth && GetOpcode() == acRhs.GetOpcode(); }
+ 
+-    uint32_t Id;
+-    float DeltaHealth;
++    uint32_t Id{};
++    float DeltaHealth{};
++    bool Percentage{};
++    uint32_t OwnershipEpoch{};
++    uint64_t Serial{}; // Request: per-sender sequence; notification: server revision.
++    float HealthFraction{};
++    float MaximumHealth{};
+ };
+diff --git a/Code/encoding/Messages/RequestHealthChangeBroadcast.cpp b/Code/encoding/Messages/RequestHealthChangeBroadcast.cpp
+index cfa78d65..dc2b243c 100644
+--- a/Code/encoding/Messages/RequestHealthChangeBroadcast.cpp
++++ b/Code/encoding/Messages/RequestHealthChangeBroadcast.cpp
+@@ -4,6 +4,11 @@ void RequestHealthChangeBroadcast::SerializeRaw(TiltedPhoques::Buffer::Writer& a
+ {
+     Serialization::WriteVarInt(aWriter, Id);
+     Serialization::WriteFloat(aWriter, DeltaHealth);
++    Serialization::WriteBool(aWriter, Percentage);
++    Serialization::WriteVarInt(aWriter, OwnershipEpoch);
++    Serialization::WriteVarInt(aWriter, Serial);
++    Serialization::WriteFloat(aWriter, HealthFraction);
++    Serialization::WriteFloat(aWriter, MaximumHealth);
+ }
+ 
+ void RequestHealthChangeBroadcast::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
+@@ -12,4 +17,9 @@ void RequestHealthChangeBroadcast::DeserializeRaw(TiltedPhoques::Buffer::Reader&
+ 
+     Id = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+     DeltaHealth = Serialization::ReadFloat(aReader);
++    Percentage = Serialization::ReadBool(aReader);
++    OwnershipEpoch = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
++    Serial = Serialization::ReadVarInt(aReader);
++    HealthFraction = Serialization::ReadFloat(aReader);
++    MaximumHealth = Serialization::ReadFloat(aReader);
+ }
+diff --git a/Code/encoding/Messages/RequestHealthChangeBroadcast.h b/Code/encoding/Messages/RequestHealthChangeBroadcast.h
+index 057595a6..f1da38e0 100644
+--- a/Code/encoding/Messages/RequestHealthChangeBroadcast.h
++++ b/Code/encoding/Messages/RequestHealthChangeBroadcast.h
+@@ -14,8 +14,13 @@ struct RequestHealthChangeBroadcast final : ClientMessage
+     void SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept override;
+     void DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept override;
+ 
+-    bool operator==(const RequestHealthChangeBroadcast& acRhs) const noexcept { return Id == acRhs.Id && DeltaHealth == acRhs.DeltaHealth && GetOpcode() == acRhs.GetOpcode(); }
++    bool operator==(const RequestHealthChangeBroadcast& acRhs) const noexcept { return Percentage == acRhs.Percentage && OwnershipEpoch == acRhs.OwnershipEpoch && Serial == acRhs.Serial && HealthFraction == acRhs.HealthFraction && MaximumHealth == acRhs.MaximumHealth && Id == acRhs.Id && DeltaHealth == acRhs.DeltaHealth && GetOpcode() == acRhs.GetOpcode(); }
+ 
+-    uint32_t Id;
+-    float DeltaHealth;
++    uint32_t Id{};
++    float DeltaHealth{};
++    bool Percentage{};
++    uint32_t OwnershipEpoch{};
++    uint64_t Serial{}; // Request: per-sender sequence; notification: server revision.
++    float HealthFraction{};
++    float MaximumHealth{};
+ };
+diff --git a/Code/encoding/Structs/HomesteadData.cpp b/Code/encoding/Structs/HomesteadData.cpp
+index e1b16966..475374d2 100644
+--- a/Code/encoding/Structs/HomesteadData.cpp
++++ b/Code/encoding/Structs/HomesteadData.cpp
+@@ -27,6 +27,16 @@ void HomesteadData::Serialize(Buffer::Writer& w) const noexcept
+     const auto count = std::min<size_t>(Records.size(), 64);
+     w.WriteBits(count, 8);
+     for (size_t i = 0; i < count; ++i) Records[i].Serialize(w);
++    Serialization::WriteFloat(w, Day);
++    const auto progressCount = std::min<size_t>(Progress.size(), 32);
++    w.WriteBits(progressCount, 8);
++    for (size_t i = 0; i < progressCount; ++i)
++    {
++        const auto& value = Progress[i];
++        Serialization::WriteVarInt(w, value.Key); Serialization::WriteVarInt(w, value.Revision);
++        const auto size = std::min<size_t>(value.Numbers.size(), 128); w.WriteBits(size, 8);
++        for (size_t j = 0; j < size; ++j) Serialization::WriteFloat(w, value.Numbers[j]);
++    }
+ }
+ void HomesteadData::Deserialize(Buffer::Reader& r) noexcept
+ {
+@@ -44,4 +54,14 @@ void HomesteadData::Deserialize(Buffer::Reader& r) noexcept
+         HomesteadRecord record; record.Deserialize(r);
+         if (i < 64) Records.push_back(std::move(record));
+     }
++    Day = Serialization::ReadFloat(r);
++    r.ReadBits(count, 8); Progress.clear();
++    for (uint64_t i = 0; i < count; ++i)
++    {
++        WorldProgress::Value value;
++        value.Key = Serialization::ReadVarInt(r) & 0xFFFFFFFF; value.Revision = Serialization::ReadVarInt(r);
++        uint64_t size{}; r.ReadBits(size, 8);
++        for (uint64_t j = 0; j < size; ++j) { const auto number = Serialization::ReadFloat(r); if (j < 128) value.Numbers.push_back(number); }
++        if (i < 32 && size <= 128) Progress.push_back(std::move(value));
++    }
+ }
+diff --git a/Code/encoding/Structs/HomesteadData.h b/Code/encoding/Structs/HomesteadData.h
+index abd6d0e8..63deee17 100644
+--- a/Code/encoding/Structs/HomesteadData.h
++++ b/Code/encoding/Structs/HomesteadData.h
+@@ -2,8 +2,9 @@
+ #include <Structs/Inventory.h>
+ #include <Structs/GameId.h>
+ #include <Structs/GridCellCoords.h>
++#include <WorldProgressPolicy.h>
+ // Both directions are bounded to 64 records per packet.
+-enum class HomesteadAction : uint8_t { Poll, Publish, Open, Transfer, State, Opened, Rejected, Result, CoopPoll, CoopOpen, CoopTransfer, CoopState, CoopOpened, CoopRejected, CoopResult };
++enum class HomesteadAction : uint8_t { Poll, Publish, Open, Transfer, State, Opened, Rejected, Result, CoopPoll, CoopOpen, CoopTransfer, CoopState, CoopOpened, CoopRejected, CoopResult, WorldPoll, WorldPublish, WorldState, WorldHarvest, WorldHarvestResult };
+ struct HomesteadRecord
+ {
+     GameId Reference{};
+@@ -28,6 +29,8 @@ struct HomesteadData
+     bool Accepted{};
+     Inventory::Entry Item{};
+     TiltedPhoques::Vector<HomesteadRecord> Records{};
++    std::vector<WorldProgress::Value> Progress;
++    float Day{};
+     void Serialize(Buffer::Writer& w) const noexcept;
+     void Deserialize(Buffer::Reader& r) noexcept;
+ };
+diff --git a/Code/server/Components/ActorValuesComponent.h b/Code/server/Components/ActorValuesComponent.h
+index fb69dfb0..5348304d 100644
+--- a/Code/server/Components/ActorValuesComponent.h
++++ b/Code/server/Components/ActorValuesComponent.h
+@@ -5,8 +5,11 @@
+ #endif
+ 
+ #include <Structs/ActorValues.h>
++#include <PercentageHealth.h>
+ 
+ struct ActorValuesComponent
+ {
+     ActorValues CurrentActorValues{};
++    PercentageHealth::State SharedHealth;
++    bool PercentageHealthEnabled{};
+ };
+diff --git a/Code/server/Services/ActorValueService.cpp b/Code/server/Services/ActorValueService.cpp
+index bf711b5d..97863f78 100644
+--- a/Code/server/Services/ActorValueService.cpp
++++ b/Code/server/Services/ActorValueService.cpp
+@@ -10,6 +10,7 @@
+ #include <Messages/NotifyActorMaxValueChanges.h>
+ #include <Messages/NotifyHealthChangeBroadcast.h>
+ #include <Messages/NotifyDeathStateChange.h>
++#include <PercentageHealth.h>
+ 
+ ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
+     : m_world(aWorld)
+@@ -34,6 +35,7 @@ void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueC
+     auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
+     for (auto& [id, value] : message.Values)
+     {
++        if (!std::isfinite(value) || (id == 24 && actorValuesComponent.PercentageHealthEnabled)) continue;
+         actorValuesComponent.CurrentActorValues.ActorValuesList[id] = value;
+     }
+ 
+@@ -61,6 +63,7 @@ void ActorValueService::OnActorMaxValueChanges(const PacketEvent<RequestActorMax
+     auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
+     for (auto& [id, value] : message.Values)
+     {
++        if (!std::isfinite(value) || (id == 24 && actorValuesComponent.PercentageHealthEnabled)) continue;
+         actorValuesComponent.CurrentActorValues.ActorMaxValuesList[id] = value;
+     }
+ 
+@@ -78,7 +81,27 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
+ {
+     auto& message = acMessage.Packet;
+ 
+-    // TODO(cosideci): should server side health not be updated?
++    const auto entity = static_cast<entt::entity>(message.Id);
++    auto* values = m_world.try_get<ActorValuesComponent>(entity);
++    auto* owner = m_world.try_get<OwnerComponent>(entity);
++    auto* character = m_world.try_get<CharacterComponent>(entity);
++    if (!values || !owner || !character || !acMessage.pPlayer || !std::isfinite(message.DeltaHealth)) return;
++    if (message.Percentage)
++    {
++        auto* cell = m_world.try_get<CellIdComponent>(entity);
++        if (character->IsPlayer() || !message.OwnershipEpoch || message.OwnershipEpoch != owner->OwnershipEpoch ||
++            !message.Serial || !PercentageHealth::ValidMaximum(message.MaximumHealth) || !cell ||
++            !cell->IsInRange(acMessage.pPlayer->GetCellComponent(), character->IsDragon())) return;
++        if (message.DeltaHealth > 0.f && owner->GetOwner() != acMessage.pPlayer) return;
++        values->PercentageHealthEnabled = true;
++        values->SharedHealth.Apply(message.OwnershipEpoch, acMessage.pPlayer->GetId(), message.Serial,
++            PercentageHealth::Delta(message.DeltaHealth, message.MaximumHealth));
++        character->SetDead(values->SharedHealth.Fraction == 0.0);
++        BroadcastNpcHealth(entity, owner->OwnershipEpoch, *values);
++        return;
++    }
++    if (!character->IsPlayer() && values->PercentageHealthEnabled) return;
++    // Negative damage lowers cached health; positive healing raises it.
+     auto actorValuesView = m_world.view<ActorValuesComponent, OwnerComponent>();
+ 
+     auto it = actorValuesView.find(static_cast<entt::entity>(message.Id));
+@@ -87,7 +110,7 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
+     {
+         auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
+         auto currentHealth = actorValuesComponent.CurrentActorValues.ActorValuesList[24];
+-        actorValuesComponent.CurrentActorValues.ActorValuesList[24] = currentHealth - message.DeltaHealth;
++        actorValuesComponent.CurrentActorValues.ActorValuesList[24] = std::max(0.f, currentHealth + message.DeltaHealth);
+     }
+ 
+     NotifyHealthChangeBroadcast notify;
+@@ -111,6 +134,13 @@ void ActorValueService::OnDeathStateChange(const PacketEvent<RequestDeathStateCh
+         return;
+ 
+     auto& characterComponent = characterView.get<CharacterComponent>(*it);
++    if (auto* values = m_world.try_get<ActorValuesComponent>(*it); values && values->PercentageHealthEnabled && !characterComponent.IsPlayer())
++    {
++        // Scripted owner kills commit death; stale alive reports never resurrect a shared corpse.
++        if (message.IsDead) { values->SharedHealth.Kill(); characterComponent.SetDead(true); }
++        BroadcastNpcHealth(*it, message.OwnershipEpoch, *values);
++        return;
++    }
+     characterComponent.SetDead(message.IsDead);
+     spdlog::debug("Updating death state {:x}:{}", message.Id, message.IsDead);
+ 
+@@ -123,3 +153,15 @@ void ActorValueService::OnDeathStateChange(const PacketEvent<RequestDeathStateCh
+     if (!GameServer::Get()->SendToPlayersInRange(notify, cEntity, acMessage.pPlayer))
+         spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+ }
++
++void ActorValueService::BroadcastNpcHealth(entt::entity entity, uint32_t epoch, ActorValuesComponent& values) const noexcept
++{
++    const auto fraction = static_cast<float>(values.SharedHealth.Fraction);
++    const auto maximum = values.CurrentActorValues.ActorMaxValuesList[24];
++    if (PercentageHealth::ValidMaximum(maximum)) values.CurrentActorValues.ActorValuesList[24] = fraction * maximum;
++    NotifyHealthChangeBroadcast notify;
++    notify.Id = World::ToInteger(entity); notify.Percentage = true; notify.OwnershipEpoch = epoch;
++    notify.Serial = values.SharedHealth.Revision; notify.HealthFraction = fraction;
++    // Include the attacker: this is an absolute acknowledgement, never another damage application.
++    GameServer::Get()->SendToPlayersInRange(notify, entity, nullptr);
++}
+diff --git a/Code/server/Services/ActorValueService.h b/Code/server/Services/ActorValueService.h
+index 88253349..8c0dc27f 100644
+--- a/Code/server/Services/ActorValueService.h
++++ b/Code/server/Services/ActorValueService.h
+@@ -9,6 +9,7 @@ struct RequestActorValueChanges;
+ struct RequestActorMaxValueChanges;
+ struct RequestHealthChangeBroadcast;
+ struct RequestDeathStateChange;
++struct ActorValuesComponent;
+ 
+ /**
+  * @brief Broadcasts changes in (max) actor values and updates them server side.
+@@ -21,6 +22,7 @@ struct ActorValueService
+     TP_NOCOPYMOVE(ActorValueService);
+ 
+ private:
++    void BroadcastNpcHealth(entt::entity entity, uint32_t epoch, ActorValuesComponent& values) const noexcept;
+     World& m_world;
+ 
+     void OnActorValueChanges(const PacketEvent<RequestActorValueChanges>& acMessage) const noexcept;
+diff --git a/Code/server/Services/CalendarService.h b/Code/server/Services/CalendarService.h
+index 41542476..aba75ff2 100644
+--- a/Code/server/Services/CalendarService.h
++++ b/Code/server/Services/CalendarService.h
+@@ -2,6 +2,7 @@
+ 
+ #include <Events/PacketEvent.h>
+ #include <DateTime.h>
++#include <SurvivalTimePolicy.h>
+ #include <Structs/GameId.h>
+ 
+ struct World;
+@@ -34,6 +35,7 @@ public:
+     TDate GetDate() const noexcept;
+ 
+     float GetTimeScale() const noexcept { return m_dateTime.m_timeModel.TimeScale; }
++    float GetDayCount() const noexcept { return static_cast<float>(SurvivalTime::InDays(m_dateTime.m_timeModel)); }
+     bool SetTimeScale(float aScale) noexcept;
+ 
+ private:
+diff --git a/Code/server/Services/CharacterService.cpp b/Code/server/Services/CharacterService.cpp
+index 3bc7b80c..00610cf5 100644
+--- a/Code/server/Services/CharacterService.cpp
++++ b/Code/server/Services/CharacterService.cpp
+@@ -672,6 +672,9 @@ void CharacterService::CreateCharacter(const PacketEvent<AssignCharacterRequest>
+ 
+     auto& actorValuesComponent = m_world.emplace<ActorValuesComponent>(cEntity);
+     actorValuesComponent.CurrentActorValues = message.CurrentActorData.InitialActorValues;
++    actorValuesComponent.SharedHealth.Seed(
++        actorValuesComponent.CurrentActorValues.ActorValuesList[24],
++        actorValuesComponent.CurrentActorValues.ActorMaxValuesList[24], characterComponent.IsDead());
+ 
+     spdlog::debug("FormId: {:x}:{:x} - NpcId: {:x}:{:x} assigned to {:x}", gameId.ModId, gameId.BaseId, baseId.ModId, baseId.BaseId, acMessage.pPlayer->GetConnectionId());
+ 
+diff --git a/Code/server/Services/CoopChestService.cpp b/Code/server/Services/CoopChestService.cpp
+index 8c82e184..e7003158 100644
+--- a/Code/server/Services/CoopChestService.cpp
++++ b/Code/server/Services/CoopChestService.cpp
+@@ -76,6 +76,7 @@ void CoopChestService::OnRequest(const PacketEvent<RequestHomestead>& e)
+     if (q.Action == HomesteadAction::CoopPoll) { Send(player, HomesteadAction::CoopState, 0, true); return; }
+     if (q.Reference.ModId != CoopChests::VirtualMod || q.Reference.BaseId < 1 || q.Reference.BaseId > CoopChests::Locations.size()) return;
+     const auto& location = CoopChests::Locations[q.Reference.BaseId - 1];
++    if (location.RequiredPlugin && !Resolve(m_world, location.RequiredPlugin, 0x87F)) return;
+     const auto worldId = Resolve(m_world, "Skyrim.esm", 0x3C);
+     const auto actor = *player->GetCharacter();
+     auto* movement = m_world.try_get<MovementComponent>(actor);
+diff --git a/Code/server/Services/WorldProgressService.cpp b/Code/server/Services/WorldProgressService.cpp
+new file mode 100644
+index 00000000..d9b884a4
+--- /dev/null
++++ b/Code/server/Services/WorldProgressService.cpp
+@@ -0,0 +1,109 @@
++#include <Services/WorldProgressService.h>
++#include <Services/CalendarService.h>
++#include <World.h>
++#include <Components.h>
++#include <Messages/RequestHomestead.h>
++#include <Messages/NotifyHomestead.h>
++#include <WorldProgressBindings.h>
++namespace
++{
++GameId Resolve(World& w, WorldProgress::Form form)
++{
++    const auto& mods = w.ctx().at<ModsComponent>();
++    for (const auto& [name, info] : mods.GetStandardMods()) if (std::string(name.data(), name.size()) == form.Plugin) return GameId(info.id, form.Base);
++    for (const auto& [name, info] : mods.GetLiteMods()) if (std::string(name.data(), name.size()) == form.Plugin) return GameId(info.id, form.Base);
++    return {};
++}
++bool IsPlot(uint32_t key) { return key >= WorldProgress::PlotKeyBase && key - WorldProgress::PlotKeyBase < WorldProgress::Plots.size(); }
++}
++WorldProgressService::WorldProgressService(World& w, entt::dispatcher& d) : m_world(w)
++{
++    m_request = d.sink<PacketEvent<RequestHomestead>>().connect<&WorldProgressService::OnRequest>(this);
++}
++void WorldProgressService::Send(Player* player, HomesteadData data)
++{
++    data.Authority = m_authority;
++    data.Day = m_world.ctx().at<CalendarService>().GetDayCount();
++    NotifyHomestead notify; notify.Data = std::move(data); player->Send(notify);
++}
++void WorldProgressService::OnRequest(const PacketEvent<RequestHomestead>& event)
++{
++    const auto& q = event.Packet.Data;
++    auto* player = event.pPlayer;
++    if (q.Action < HomesteadAction::WorldPoll || !player || !player->GetCharacter()) return;
++    uint32_t authority{};
++    for (auto* peer : m_world.GetPlayerManager()) if (peer->GetCharacter() && (!authority || peer->GetId() < authority)) authority = peer->GetId();
++    if (authority != m_authority) { m_state.clear(); m_tokens.clear(); m_authority = authority; }
++    if (q.Action == HomesteadAction::WorldPoll)
++    {
++        HomesteadData data; data.Action = HomesteadAction::WorldState;
++        // Initial/reconnect snapshots only. Live commits are broadcast immediately.
++        for (const auto& [key, value] : m_state)
++        {
++            data.Progress.push_back(value);
++            if (data.Progress.size() == 32) { Send(player, data); data.Progress.clear(); }
++        }
++        Send(player, std::move(data)); return;
++    }
++    if (q.Action != HomesteadAction::WorldPublish && q.Action != HomesteadAction::WorldHarvest) return;
++    const float day = m_world.ctx().at<CalendarService>().GetDayCount();
++    HomesteadData reply; reply.Action = HomesteadAction::WorldState;
++    if (q.Action == HomesteadAction::WorldHarvest)
++    {
++        if (q.Progress.size() != 1) return;
++        reply.Action = HomesteadAction::WorldHarvestResult; reply.Token = q.Token; reply.Reference.BaseId = player->GetId();
++    }
++    for (auto proposed : q.Progress)
++    {
++        const bool plot = IsPlot(proposed.Key);
++        if ((!plot && proposed.Key >= WorldProgress::Bindings.size()) || !WorldProgress::Valid(proposed)) continue;
++        const auto target = plot ? WorldProgress::Plots[proposed.Key - WorldProgress::PlotKeyBase].Soil : WorldProgress::Bindings[proposed.Key].Target;
++        if (!Resolve(m_world, target)) continue;
++        auto found = m_state.find(proposed.Key);
++        if (q.Action == HomesteadAction::WorldHarvest)
++        {
++            if (!plot || found == m_state.end() || found->second.Numbers.size() != 4) continue;
++            auto& value = found->second;
++            if (proposed.Revision != value.Revision) { reply.Progress.push_back(value); continue; }
++            const auto cell = Resolve(m_world, WorldProgress::Plots[proposed.Key - WorldProgress::PlotKeyBase].Cell);
++            if (player->GetCellComponent().Cell != cell || !q.Token || q.Token <= m_tokens[player->GetId()]) continue;
++            m_tokens[player->GetId()] = q.Token;
++            reply.Action = HomesteadAction::WorldHarvestResult; reply.Token = q.Token;
++            reply.Reference.BaseId = player->GetId();
++            const bool mature = value.Numbers[0] > 0 && day - value.Numbers[1] >= 1.f;
++            reply.Accepted = mature && (value.Numbers[2] == 0.f || day - value.Numbers[3] >= 3.f);
++            if (reply.Accepted) { value.Numbers[2] = 1.f; value.Numbers[3] = day; ++value.Revision; }
++            reply.Progress.push_back(value); continue;
++        }
++        if (plot)
++        {
++            if (proposed.Numbers.size() != 4 || proposed.Numbers[0] < 0 || proposed.Numbers[0] > WorldProgress::Crops.size() || std::floor(proposed.Numbers[0]) != proposed.Numbers[0]) continue;
++            // Client sends ages; server owns the timestamps and harvest state.
++            if (found == m_state.end())
++            {
++                proposed.Numbers[1] = day - std::clamp(proposed.Numbers[1], 0.f, 10000.f);
++                proposed.Numbers[3] = day - std::clamp(proposed.Numbers[3], 0.f, 10000.f);
++                proposed.Numbers[2] = proposed.Numbers[2] != 0.f ? 1.f : 0.f;
++            }
++            else
++            {
++                if (proposed.Numbers[0] == found->second.Numbers[0]) continue;
++                const auto& p = WorldProgress::Plots[proposed.Key - WorldProgress::PlotKeyBase];
++                if (proposed.Numbers[0] > 0 && WorldProgress::Crops[size_t(proposed.Numbers[0]) - 1].Family != p.Family) continue;
++                proposed.Numbers = {proposed.Numbers[0], day, 0.f, day};
++            }
++        }
++        bool accepted{};
++        if (found == m_state.end())
++        {
++            if (player->GetId() != authority || proposed.Revision) continue;
++            proposed.Revision = 1; m_state.emplace(proposed.Key, proposed); accepted = true;
++        }
++        else accepted = WorldProgress::Commit(found->second, proposed);
++        const auto& current = m_state.at(proposed.Key);
++        if (!accepted) { HomesteadData correction; correction.Action = HomesteadAction::WorldState; correction.Progress.push_back(current); Send(player, std::move(correction)); }
++        else reply.Progress.push_back(current);
++    }
++    if (!reply.Progress.empty()) for (auto* peer : m_world.GetPlayerManager()) Send(peer, reply);
++    else if (q.Action == HomesteadAction::WorldHarvest) Send(player, reply);
++}
+diff --git a/Code/server/Services/WorldProgressService.h b/Code/server/Services/WorldProgressService.h
+new file mode 100644
+index 00000000..58e7b3da
+--- /dev/null
++++ b/Code/server/Services/WorldProgressService.h
+@@ -0,0 +1,18 @@
++#pragma once
++#include <Events/PacketEvent.h>
++#include <Structs/HomesteadData.h>
++#include <unordered_map>
++struct World;
++struct RequestHomestead;
++struct WorldProgressService
++{
++    WorldProgressService(World&, entt::dispatcher&);
++private:
++    void OnRequest(const PacketEvent<RequestHomestead>&);
++    void Send(Player*, HomesteadData);
++    World& m_world;
++    uint32_t m_authority{};
++    std::unordered_map<uint32_t, WorldProgress::Value> m_state;
++    std::unordered_map<uint32_t, uint32_t> m_tokens;
++    entt::scoped_connection m_request;
++};
+diff --git a/Code/server/World.cpp b/Code/server/World.cpp
+index 63000774..844ce2d4 100644
+--- a/Code/server/World.cpp
++++ b/Code/server/World.cpp
+@@ -6,6 +6,7 @@
+ #include <Services/WorldItemService.h>
+ #include <Services/VolcanoService.h>
+ #include <Services/HomesteadService.h>
++#include <Services/WorldProgressService.h>
+ #include <Services/CoopChestService.h>
+ #include <Services/QuestService.h>
+ #include <Services/ServerListService.h>
+@@ -31,6 +32,7 @@ World::World()
+     ctx().emplace<WorldItemService>(*this, m_dispatcher);
+     ctx().emplace<VolcanoService>(*this, m_dispatcher);
+     ctx().emplace<HomesteadService>(*this, m_dispatcher);
++    ctx().emplace<WorldProgressService>(*this, m_dispatcher);
+     ctx().emplace<CoopChestService>(*this, m_dispatcher);
+     ctx().emplace<ModsComponent>();
+     ctx().emplace<ServerListService>(*this, m_dispatcher);
+diff --git a/Code/tests/encoding.cpp b/Code/tests/encoding.cpp
+index 8c828c2a..25d66a2d 100644
+--- a/Code/tests/encoding.cpp
++++ b/Code/tests/encoding.cpp
+@@ -12,6 +12,8 @@
+ #include "Messages/StringCacheUpdate.h"
+ 
+ #include <catch2/catch.hpp>
++#include <Messages/RequestHealthChangeBroadcast.h>
++#include <Messages/NotifyHealthChangeBroadcast.h>
+ 
+ #include <Messages/ClientMessageFactory.h>
+ #include <Messages/ServerMessageFactory.h>
+diff --git a/Code/tests/percentage_health.cpp b/Code/tests/percentage_health.cpp
+new file mode 100644
+index 00000000..ca9b6f6b
+--- /dev/null
++++ b/Code/tests/percentage_health.cpp
+@@ -0,0 +1,41 @@
++#include <catch2/catch.hpp>
++#include <PercentageHealth.h>
++#include <limits>
++
++TEST_CASE("Percentage health reconciles mixed level damage exactly once", "[percentage-health]")
++{
++    PercentageHealth::State state;
++    state.Seed(1000, 1000, false);
++    REQUIRE(state.Apply(1, 1, 1, PercentageHealth::Delta(-300, 1000)));
++    REQUIRE(state.Fraction == Approx(.7));
++    REQUIRE(state.Apply(1, 2, 1, PercentageHealth::Delta(-20, 200)));
++    REQUIRE(state.Fraction == Approx(.6));
++    REQUIRE(state.Fraction * 1000 == Approx(600));
++    REQUIRE(state.Fraction * 200 == Approx(120));
++    REQUIRE_FALSE(state.Apply(1, 1, 1, -.3f));
++    REQUIRE(state.Fraction == Approx(.6));
++    REQUIRE(state.Apply(1, 1, 3, -.1f));
++    REQUIRE_FALSE(state.Apply(1, 1, 2, -.1f));
++    REQUIRE(state.Apply(2, 1, 1, -.1f)); // new ownership epoch
++    REQUIRE(state.Fraction == Approx(.4));
++    REQUIRE(state.Apply(2, 2, 2, 1.f));
++    REQUIRE(state.Fraction == 1);
++    REQUIRE(state.Apply(2, 2, 3, -1.f));
++    REQUIRE(state.Fraction == 0);
++    REQUIRE(state.Apply(2, 2, 4, 1.f));
++    REQUIRE(state.Fraction == 0); // delayed healing cannot revive corpses
++}
++TEST_CASE("Percentage health rejects invalid samples and resolves floating point death", "[percentage-health]")
++{
++    PercentageHealth::State state;
++    REQUIRE_FALSE(state.Apply(0, 1, 1, -.5f));
++    REQUIRE_FALSE(state.Apply(1, 1, 0, -.5f));
++    REQUIRE_FALSE(state.Apply(1, 1, 1, std::numeric_limits<float>::quiet_NaN()));
++    REQUIRE_FALSE(state.Apply(1, 1, 1, -2.f));
++    REQUIRE(PercentageHealth::Delta(-30, 0) == 0);
++    REQUIRE(PercentageHealth::Delta(-30, std::numeric_limits<float>::infinity()) == 0);
++    for (uint64_t i = 1; i <= 10; ++i) REQUIRE(state.Apply(1, 1, i, -.1f));
++    REQUIRE(state.Fraction == 0);
++    state.Seed(200, 1000, true);
++    REQUIRE(state.Fraction == 0);
++}
+diff --git a/Code/tests/world_progress.cpp b/Code/tests/world_progress.cpp
+new file mode 100644
+index 00000000..2f608171
+--- /dev/null
++++ b/Code/tests/world_progress.cpp
+@@ -0,0 +1,29 @@
++#include <catch2/catch.hpp>
++#include <WorldProgressPolicy.h>
++#include <SurvivalTimePolicy.h>
++#include <limits>
++TEST_CASE("World progress commits once and rejects stale simultaneous edits", "[world-progress]")
++{
++    WorldProgress::Value canonical{5, 1, {0, 0, 0}};
++    auto host = canonical; host.Numbers[1] = 1;
++    auto client = canonical; client.Numbers[2] = 1;
++    REQUIRE(WorldProgress::Commit(canonical, host));
++    REQUIRE(canonical.Revision == 2);
++    REQUIRE_FALSE(WorldProgress::Commit(canonical, client));
++    REQUIRE_FALSE(WorldProgress::Commit(canonical, host));
++    client = canonical; client.Numbers[2] = 1;
++    REQUIRE(WorldProgress::Commit(canonical, client));
++    REQUIRE((canonical.Numbers == std::vector<float>{0, 1, 1}));
++    auto invalid = canonical; invalid.Numbers[0] = std::numeric_limits<float>::quiet_NaN();
++    REQUIRE_FALSE(WorldProgress::Commit(canonical, invalid));
++    invalid = canonical; invalid.Numbers.resize(129);
++    REQUIRE_FALSE(WorldProgress::Commit(canonical, invalid));
++}
++TEST_CASE("Shared wait targets allow seven days across month and year boundaries", "[world-progress]")
++{
++    struct Clock { unsigned Year, Month, Day; float Time; };
++    REQUIRE(SurvivalTime::HoursToTarget(Clock{201, 11, 28, 10}, Clock{202, 0, 4, 10}) == Approx(168));
++    REQUIRE(SurvivalTime::HoursToTarget(Clock{201, 11, 28, 10}, Clock{202, 0, 4, 11}) == 0);
++    REQUIRE(SurvivalTime::HoursToTarget(Clock{202, 0, 4, 10}, Clock{202, 0, 4, 10}) == 0);
++    REQUIRE(SurvivalTime::SkipSpeed == 3);
++}
+diff --git a/Code/tests/world_progress_encoding.cpp b/Code/tests/world_progress_encoding.cpp
+new file mode 100644
+index 00000000..73c50935
+--- /dev/null
++++ b/Code/tests/world_progress_encoding.cpp
+@@ -0,0 +1,51 @@
++#include <TiltedCore/Stl.hpp>
++#include <TiltedCore/Allocator.hpp>
++#include <TiltedCore/Buffer.hpp>
++#include <TiltedCore/Serialization.hpp>
++#include <catch2/catch.hpp>
++#include <Messages/ClientMessageFactory.h>
++#include <Messages/ServerMessageFactory.h>
++#include <Messages/RequestHealthChangeBroadcast.h>
++#include <Messages/NotifyHealthChangeBroadcast.h>
++#include <Messages/RequestHomestead.h>
++#include <Messages/NotifyHomestead.h>
++using namespace TiltedPhoques;
++TEST_CASE("Percentage combat packets preserve sequences epochs and fractions", "[encoding.worldprogress]")
++{
++    RequestHealthChangeBroadcast q;
++    q.Id = 72; q.Percentage = true; q.OwnershipEpoch = 34; q.Serial = 0x100000001ULL;
++    q.DeltaHealth = -300; q.MaximumHealth = 1000;
++    Buffer buffer(4096); Buffer::Writer writer(&buffer); q.Serialize(writer);
++    Buffer::Reader reader(&buffer); ClientMessageFactory factory; auto packet = factory.Extract(reader);
++    REQUIRE(packet); auto decoded = CastUnique<RequestHealthChangeBroadcast>(std::move(packet));
++    REQUIRE(*decoded == q);
++    NotifyHealthChangeBroadcast n;
++    n.Id = q.Id; n.Percentage = true; n.OwnershipEpoch = q.OwnershipEpoch; n.Serial = q.Serial; n.HealthFraction = .6f;
++    Buffer response(4096); Buffer::Writer output(&response); n.Serialize(output);
++    Buffer::Reader input(&response); ServerMessageFactory serverFactory; auto message = serverFactory.Extract(input);
++    REQUIRE(message); auto result = CastUnique<NotifyHealthChangeBroadcast>(std::move(message));
++    REQUIRE(*result == n);
++}
++TEST_CASE("World progress wire preserves bounded state and harvest transactions", "[encoding.worldprogress]")
++{
++    for (auto action : {HomesteadAction::WorldPublish, HomesteadAction::WorldHarvest})
++    {
++        RequestHomestead q; q.Data.Action = action; q.Data.Token = 77; q.Data.Day = 73005.5f;
++        q.Data.Progress.push_back({0x100012, 0x100000002ULL, {4, 73004, 1, 73005}});
++        Buffer buffer(16384); Buffer::Writer writer(&buffer); q.Serialize(writer);
++        Buffer::Reader reader(&buffer); ClientMessageFactory factory; auto packet = factory.Extract(reader);
++        REQUIRE(packet); auto result = CastUnique<RequestHomestead>(std::move(packet));
++        REQUIRE(result->Data.Action == action); REQUIRE(result->Data.Token == 77);
++        REQUIRE(result->Data.Progress.size() == 1);
++        REQUIRE(result->Data.Progress[0].Key == 0x100012);
++        REQUIRE(result->Data.Progress[0].Revision == 0x100000002ULL);
++        REQUIRE(result->Data.Progress[0].Numbers == q.Data.Progress[0].Numbers);
++        REQUIRE(result->Data.Day == q.Data.Day);
++    }
++    HomesteadData data;
++    for (uint32_t i = 0; i < 40; ++i) data.Progress.push_back({i, 1, std::vector<float>(140, 1.f)});
++    Buffer buffer(32768); Buffer::Writer writer(&buffer); data.Serialize(writer);
++    Buffer::Reader reader(&buffer); HomesteadData result; result.Deserialize(reader);
++    REQUIRE(result.Progress.size() == 32);
++    REQUIRE(result.Progress[0].Numbers.size() == 128);
++}
+diff --git a/Tests/coop_chest_store.cpp b/Tests/coop_chest_store.cpp
+index 1937c99f..bf505cc4 100644
+--- a/Tests/coop_chest_store.cpp
++++ b/Tests/coop_chest_store.cpp
+@@ -62,7 +62,7 @@ int main()
+     std::filesystem::create_directory(path.string() + ".tmp");
+     CHECK(!CoopChestStore::Save(path, *bytes)); read = CoopChestStore::Read(path); CHECK(read && *read == *emptyBytes);
+     std::filesystem::remove_all(directory);
+-    CHECK(CoopChests::Locations.size() == 10);
++    CHECK(CoopChests::Locations.size() == 11);
+     int64_t lastItem = 1; CHECK(HomesteadPolicy::CanTransfer(lastItem, 0, 1)); --lastItem;
+     CHECK(!HomesteadPolicy::CanTransfer(lastItem, 0, 1)); // competing last-item withdrawal
+     CHECK(!HomesteadPolicy::FreshToken(12, 12));
+diff --git a/Tests/survival_time.cpp b/Tests/survival_time.cpp
+index 27c10fd3..ed66c3eb 100644
+--- a/Tests/survival_time.cpp
++++ b/Tests/survival_time.cpp
+@@ -17,7 +17,8 @@ int main()
+     Clock longer{201, 7, 18, 8};
+     assert(std::abs(HoursToTarget(now, longer) - 4.f) < 0.001f);
+     assert(HoursToTarget(longer, target) == 0);            // out-of-order packet
+-    assert(HoursToTarget(now, Clock{201, 7, 20, 4}) == 0); // over 24h
++    assert(std::abs(HoursToTarget(now, Clock{201, 7, 25, 4}) - 168.f) < .001f);
++    assert(HoursToTarget(now, Clock{201, 7, 25, 5}) == 0); // over seven days
+     assert(std::abs(HoursToTarget(Clock{201, 11, 31, 23}, Clock{202, 0, 1, 1}) - 2.f) < 0.001f);
+     assert(std::abs(HoursToTarget(Clock{201, 1, 28, 23}, Clock{201, 2, 1, 1}) - 2.f) < 0.001f);
+     assert(HoursToTarget(now, Clock{201, 12, 1, 4}) == 0);
+diff --git a/Tools/CoopChests/generate_locations.py b/Tools/CoopChests/generate_locations.py
+index d8f02016..ebb5d35b 100644
+--- a/Tools/CoopChests/generate_locations.py
++++ b/Tools/CoopChests/generate_locations.py
+@@ -7,19 +7,20 @@ from pathlib import Path
+ root = Path(__file__).resolve().parents[2]
+ anchors = json.loads((Path(__file__).with_name('locations.json')).read_text())['anchors']
+ expected = {'Whiterun', 'Solitude', 'Windhelm', 'Riften', 'Markarth', 'Dawnstar',
+-            'Falkreath', 'Morthal', 'Winterhold', 'Goldenhills Plantation'}
+-assert len(anchors) == 10 and {a['city'] for a in anchors} == expected
++            'Falkreath', 'Morthal', 'Winterhold', 'Goldenhills Plantation', 'Tundra Homestead'}
++assert len(anchors) == 11 and {a['city'] for a in anchors} == expected
+ lines = ['#pragma once', '#include <array>', '#include <cstdint>', 'namespace CoopChests {',
+          'constexpr uint32_t VirtualMod = 0xFFFFFFFE;', 'constexpr uint32_t LocalFormMod = 0xFFFFFFFD;',
+          'constexpr const char* Plugin = "SurvivalSyncCoop.esp";', 'constexpr uint32_t ContainerBase = 0x800;',
+-         'struct Location { const char* Name; float X, Y, Z, Yaw; bool Farming; };',
+-         'inline constexpr std::array<Location, 10> Locations{{']
++         'struct Location { const char* Name; float X, Y, Z, Yaw; bool Farming; const char* RequiredPlugin = nullptr; };',
++         'inline constexpr std::array<Location, 11> Locations{{']
+ for anchor in anchors:
+     pose = [*anchor['chestPosition'], anchor['yaw']]
+     assert len(pose) == 4 and all(math.isfinite(v) for v in pose)
+     xyz = ', '.join(f'{v:.3f}f' for v in pose[:3])
+     farm = 'true' if anchor['city'] == 'Goldenhills Plantation' else 'false'
+-    lines.append(f'    {{"{anchor["city"]}", {xyz}, {pose[3]:.6f}f, {farm}}},')
++    required = ', '+json.dumps(anchor['requiredPlugin']) if anchor.get('requiredPlugin') else ''
++    lines.append(f'    {{"{anchor["city"]}", {xyz}, {pose[3]:.6f}f, {farm}{required}}},')
+ lines += ['}};', '}']
+ (root / 'Code/common/CoopChestLocations.h').write_text('\n'.join(lines) + '\n')
+-print('Generated ten named portal locations from the reviewed manifest')
++print('Generated eleven named portal locations from the reviewed manifest')
+diff --git a/Tools/CoopChests/locations.json b/Tools/CoopChests/locations.json
+index c3bab8eb..b4c2122d 100644
+--- a/Tools/CoopChests/locations.json
++++ b/Tools/CoopChests/locations.json
+@@ -11,11 +11,11 @@
+       "position": [
+         17752.11328125,
+         -10388.869140625,
+-        -4552.0
++        -4552
+       ],
+       "rotation": [
+-        0.0,
+-        -0.0,
++        0,
++        0,
+         5.597787857055664
+       ],
+       "status": "anchor and exterior arrival verified from plugin; final ground clearance requires in-game testing",
+@@ -43,8 +43,8 @@
+         -11367.63671875
+       ],
+       "rotation": [
+-        0.0,
+-        -0.0,
++        0,
++        0,
+         5.4977874755859375
+       ],
+       "status": "anchor and exterior arrival verified from plugin; final ground clearance requires in-game testing",
+@@ -72,9 +72,9 @@
+         -12455.5537109375
+       ],
+       "rotation": [
+-        0.0,
+-        0.0,
+-        0.0
++        0,
++        0,
++        0
+       ],
+       "status": "anchor and exterior arrival verified from plugin; final ground clearance requires in-game testing",
+       "chestPosition": [
+@@ -82,7 +82,7 @@
+         26828.25,
+         -12455.554
+       ],
+-      "yaw": 0.0,
++      "yaw": 0,
+       "exteriorArrival": [
+         136051.703125,
+         26673.48828125,
+@@ -98,11 +98,11 @@
+       "position": [
+         172414.609375,
+         -91114.4921875,
+-        11136.0
++        11136
+       ],
+       "rotation": [
+-        0.0,
+-        -0.0,
++        0,
++        0,
+         1.200006365776062
+       ],
+       "status": "anchor and exterior arrival verified from plugin; final ground clearance requires in-game testing",
+@@ -130,21 +130,21 @@
+         -3909.10009765625
+       ],
+       "rotation": [
+-        0.0,
+-        0.0,
++        0,
++        0,
+         0.7853981256484985
+       ],
+       "status": "anchor and exterior arrival verified from plugin; final ground clearance requires in-game testing",
+       "chestPosition": [
+         -171017.187,
+         7220.134,
+-        -3920.0
++        -3920
+       ],
+       "yaw": 0.7853981256484985,
+       "exteriorArrival": [
+-        -170832.0,
+-        7184.0,
+-        -3920.0
++        -170832,
++        7184,
++        -3920
+       ]
+     },
+     {
+@@ -159,8 +159,8 @@
+         -13208.8076171875
+       ],
+       "rotation": [
+-        0.0,
+-        -0.0,
++        0,
++        0,
+         3.141418218612671
+       ],
+       "status": "anchor and exterior arrival verified from plugin; final ground clearance requires in-game testing",
+@@ -188,8 +188,8 @@
+         -3088.14794921875
+       ],
+       "rotation": [
+-        0.0,
+-        -0.0,
++        0,
++        0,
+         5.707226753234863
+       ],
+       "status": "anchor and exterior arrival verified from plugin; final ground clearance requires in-game testing",
+@@ -217,8 +217,8 @@
+         -13801.9521484375
+       ],
+       "rotation": [
+-        0.0,
+-        -0.0,
++        0,
++        0,
+         5.759586811065674
+       ],
+       "status": "anchor and exterior arrival verified from plugin; final ground clearance requires in-game testing",
+@@ -246,8 +246,8 @@
+         -8954.71875
+       ],
+       "rotation": [
+-        0.0,
+-        -0.0,
++        0,
++        0,
+         1.186823844909668
+       ],
+       "status": "anchor and exterior arrival verified from plugin; final ground clearance requires in-game testing",
+@@ -290,6 +290,30 @@
+         1072.773193359375,
+         -4931.17578125
+       ]
++    },
++    {
++      "city": "Tundra Homestead",
++      "anchorPlugin": "Update.esm",
++      "anchorReference": "00002F3C",
++      "requiredPlugin": "cceejsse001-hstead.esm",
++      "worldspace": "0000003C",
++      "position": [
++        39295.21094,
++        55.1697,
++        -4172.34326
++      ],
++      "rotation": [
++        0,
++        0,
++        5.912394
++      ],
++      "chestPosition": [
++        39062.21,
++        145.17,
++        -4172.343
++      ],
++      "yaw": 5.912394,
++      "status": "Exterior door anchor verified from installed plugin; final placement requires in-game testing"
+     }
+   ],
+   "goldenhills": "Farming plugin inspected; baseline and upgraded exterior doors verified",
