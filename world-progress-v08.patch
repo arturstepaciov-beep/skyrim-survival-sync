@@ -1739,14 +1739,16 @@ index 00000000..2f608171
 +}
 diff --git a/Code/tests/world_progress_encoding.cpp b/Code/tests/world_progress_encoding.cpp
 new file mode 100644
-index 00000000..73c50935
+index 00000000..03a20ddc
 --- /dev/null
 +++ b/Code/tests/world_progress_encoding.cpp
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,53 @@
 +#include <TiltedCore/Stl.hpp>
 +#include <TiltedCore/Allocator.hpp>
 +#include <TiltedCore/Buffer.hpp>
 +#include <TiltedCore/Serialization.hpp>
++#include <glm/vec2.hpp>
++#include <glm/vec3.hpp>
 +#include <catch2/catch.hpp>
 +#include <Messages/ClientMessageFactory.h>
 +#include <Messages/ServerMessageFactory.h>
