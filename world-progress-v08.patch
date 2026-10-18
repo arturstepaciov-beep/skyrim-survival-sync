@@ -463,10 +463,27 @@ index 57a9247a..a2bc5957 100644
          if (pActor->IsVampireLord())
              pActor->FixVampireLordModel();
 diff --git a/Code/client/Services/Generic/CoopChestService.cpp b/Code/client/Services/Generic/CoopChestService.cpp
-index c6232fc4..1baf428d 100644
+index c6232fc4..55c53148 100644
 --- a/Code/client/Services/Generic/CoopChestService.cpp
 +++ b/Code/client/Services/Generic/CoopChestService.cpp
-@@ -137,7 +137,7 @@ bool CoopChestService::TryTransfer(TESObjectREFR* source, TESObjectREFR* destina
+@@ -46,12 +46,14 @@ bool CoopChestService::IsPortal(const TESObjectREFR* ref) const
+ uint32_t CoopChestService::PortalIndex(const TESObjectREFR* ref) const
+ {
+     if (!IsPortal(ref) || !ref->GetWorldSpace() || ref->GetWorldSpace()->formID != Form("Skyrim.esm", 0x3C)) return 0;
++    uint32_t closest{}; float distance = 2200.f;
+     for (uint32_t i = 0; i < CoopChests::Locations.size(); ++i)
+     {
+         const auto& p = CoopChests::Locations[i];
+-        if (glm::distance(glm::vec3(ref->position), glm::vec3(p.X, p.Y, p.Z)) < 300.f) return i + 1;
++        const auto candidate = glm::distance(glm::vec3(ref->position), glm::vec3(p.X, p.Y, p.Z));
++        if (candidate < distance) { distance = candidate; closest = i + 1; }
+     }
+-    return 0;
++    return closest;
+ }
+ void CoopChestService::Send(HomesteadData data)
+ {
+@@ -137,7 +139,7 @@ bool CoopChestService::TryTransfer(TESObjectREFR* source, TESObjectREFR* destina
  void CoopChestService::OnNotify(const NotifyHomestead& n)
  {
      const auto& data = n.Data;
@@ -475,7 +492,27 @@ index c6232fc4..1baf428d 100644
      bool completed = false;
      for (const auto& part : data.Records)
      {
-@@ -210,6 +210,7 @@ void CoopChestService::OnUpdate(const UpdateEvent&)
+@@ -198,6 +200,19 @@ void CoopChestService::OnUpdate(const UpdateEvent&)
+             if (existing && existing != ref && PortalIndex(existing) == index && !existing->IsDeleted())
+             { ref->Disable(); ref->Delete(); continue; }
+             const bool adopted = slot != ref->formID; slot = ref->formID;
++            const auto& location = CoopChests::Locations[index - 1];
++            const glm::vec3 desired(location.X, location.Y, location.Z);
++            if (glm::distance(glm::vec3(ref->position), desired) > 2.f)
++            {
++                const auto grid = GridCellCoords::CalculateGridCellCoords(location.X, location.Y);
++                auto* target = ModManager::Get()->GetCellFromCoordinates(grid.X, grid.Y, ref->GetWorldSpace(), false);
++                if (target && target->IsAttached())
++                {
++                    // Move existing gateways saved by earlier builds; never leave
++                    // the old clipping chest behind and spawn another copy.
++                    ref->MoveTo(target, desired); ref->SetRotation(0.f, 0.f, location.Yaw); ref->SetWorldMotion(false);
++                }
++            }
+             if (adopted || m_dirty) Apply(ref);
+         }
+     }
+@@ -210,6 +225,7 @@ void CoopChestService::OnUpdate(const UpdateEvent&)
          for (size_t i = 0; i < CoopChests::Locations.size(); ++i)
          {
              const auto& location = CoopChests::Locations[i];
@@ -587,15 +624,16 @@ index 00000000..12b37886
 +});
 diff --git a/Code/client/Services/Generic/WorldProgressService.cpp b/Code/client/Services/Generic/WorldProgressService.cpp
 new file mode 100644
-index 00000000..121892b5
+index 00000000..5a2537c7
 --- /dev/null
 +++ b/Code/client/Services/Generic/WorldProgressService.cpp
-@@ -0,0 +1,342 @@
+@@ -0,0 +1,391 @@
 +#include <Services/WorldProgressService.h>
 +#include <Services/ScriptStateAccess.h>
 +#include <Services/TransportService.h>
 +#include <Services/PapyrusService.h>
 +#include <WorldProgressBindings.h>
++#include <HousingLayoutPolicy.h>
 +#include <World.h>
 +#include <Games/TES.h>
 +#include <Games/Overrides.h>
@@ -640,6 +678,18 @@ index 00000000..121892b5
 +    return trigger && ScriptStateAccess::Numbers(trigger, "BYOHHouseCraftingTriggerScript", "bPlayerInTrigger", 0, v) && v[0] != 0;
 +}
 +bool Attached(TESObjectREFR* ref) { auto* cell = ref ? ref->GetParentCellEx() : nullptr; return cell && cell->IsAttached(); }
++void SetLayoutDisabled(TESObjectREFR* ref, bool disabled)
++{
++    if (!ref || ref->IsDeleted() || ref->IsDisabled() == disabled) return;
++    // Engine reference methods preserve the enable-parent graph. Papyrus Enable/
++    // Disable reject parented children, so they cannot repair inherited stale state.
++    if (disabled)
++    {
++        using Disable = void(*)(TESObjectREFR*);
++        reinterpret_cast<Disable>((*reinterpret_cast<void***>(ref))[0x89])(ref);
++    }
++    else ref->EnableImpl();
++}
 +const char* Flora(const WorldProgress::Plot& p) { return p.Family ? "myPlantedFloraBase" : "plantedFloraBase"; }
 +const char* Grown(const WorldProgress::Plot& p) { return p.Family ? "myPlantedFloraRef" : "plantedFloraRef"; }
 +const char* Seed(const WorldProgress::Plot& p) { return p.Family ? "myPlantedItem" : "plantedItem"; }
@@ -682,7 +732,18 @@ index 00000000..121892b5
 +        return true;
 +    }
 +    const auto& b = WorldProgress::Bindings[key]; auto* form = Resolve(b.Target); if (!form) return false;
-+    if (b.Kind == 0) { auto* ref = Cast<TESObjectREFR>(form); if (!ref || ref->IsDeleted()) return false; out = {ref->IsDisabled() ? 1.f : 0.f}; return true; }
++    if (b.Kind == 0)
++    {
++        auto* ref = Cast<TESObjectREFR>(form); if (!ref || ref->IsDeleted()) return false;
++        bool disabled = ref->IsDisabled();
++        for (const auto& pair : WorldProgress::Replacements)
++        {
++            if (pair.Before != key) continue;
++            auto* after = Cast<TESObjectREFR>(Resolve(WorldProgress::Bindings[pair.After].Target));
++            if (after && !after->IsDeleted()) disabled = HousingLayout::BeforeDisabled(disabled, !after->IsDisabled());
++        }
++        out = {disabled ? 1.f : 0.f}; return true;
++    }
 +    if (b.Kind == 1) { out = {static_cast<TESGlobal*>(form)->f}; return std::isfinite(out[0]); }
 +    if (b.Kind == 2 || b.Kind == 6) return ScriptStateAccess::Numbers(form, b.Script, b.Variable, b.Type, out);
 +    if (b.Kind == 3 || b.Kind == 5)
@@ -751,7 +812,7 @@ index 00000000..121892b5
 +        if (b.Kind == 0)
 +        {
 +            auto* ref = Cast<TESObjectREFR>(form); if (!ref || ref->IsDeleted()) return;
-+            if (ref->IsDisabled() != (v[0] != 0.f)) { if (v[0]) ref->Disable(); else ref->Enable(); }
++            SetLayoutDisabled(ref, v[0] != 0.f);
 +        }
 +        else if (b.Kind == 1)
 +        {
@@ -779,6 +840,28 @@ index 00000000..121892b5
 +    }
 +    std::vector<float> current; if (Capture(key, current)) m_seen[key] = std::move(current);
 +}
++void WorldProgressService::ApplyLinked(uint32_t key)
++{
++    const auto desired = HousingLayout::Disabled(key,
++        [](uint32_t index) -> std::optional<HousingLayout::Parent>
++        {
++            if (index >= WorldProgress::Bindings.size()) return {};
++            const auto& binding = WorldProgress::Bindings[index];
++            if (binding.Kind != 7) return {};
++            return HousingLayout::Parent{binding.ParentKey, binding.Type != 0};
++        },
++        [this](uint32_t root) -> std::optional<bool>
++        {
++            const auto found = m_state.find(root);
++            if (found == m_state.end() || found->second.Numbers.size() != 1) return {};
++            const auto observed = m_seen.find(root);
++            auto* ref = Cast<TESObjectREFR>(Resolve(WorldProgress::Bindings[root].Target));
++            if (ref && observed != m_seen.end() && observed->second.size() == 1 &&
++                ref->IsDisabled() != (observed->second[0] != 0.f)) return {}; // local edit awaiting publication
++            return found->second.Numbers[0] != 0.f;
++        });
++    if (desired) SetLayoutDisabled(Cast<TESObjectREFR>(Resolve(WorldProgress::Bindings[key].Target)), *desired);
++}
 +void WorldProgressService::OnUpdate(const UpdateEvent&)
 +{
 +    if (!m_transport.IsOnline() || !PlayerCharacter::Get()) return;
@@ -796,6 +879,8 @@ index 00000000..121892b5
 +    {
 +        const auto index = m_cursor++ % count;
 +        const auto key = index < WorldProgress::Bindings.size() ? index : WorldProgress::PlotKeyBase + index - uint32_t(WorldProgress::Bindings.size());
++        if (index < WorldProgress::Bindings.size() && WorldProgress::Bindings[index].Kind == 7)
++        { ApplyLinked(index); continue; }
 +        std::vector<float> current; if (!Capture(key, current)) continue;
 +        auto remote = m_state.find(key); auto seen = m_seen.find(key);
 +        const bool plot = key >= WorldProgress::PlotKeyBase;
@@ -908,7 +993,8 @@ index 00000000..121892b5
 +        if (!WorldProgress::Valid(value) || !value.Revision || (value.Key >= WorldProgress::Bindings.size() &&
 +            (value.Key < WorldProgress::PlotKeyBase || value.Key - WorldProgress::PlotKeyBase >= WorldProgress::Plots.size()))) continue;
 +        const auto existing = m_state.find(value.Key);
-+        if (existing != m_state.end() && value.Revision < existing->second.Revision) continue;
++        if (existing != m_state.end() && (value.Revision < existing->second.Revision ||
++            (value.Revision == existing->second.Revision && data.Action == HomesteadAction::WorldState))) continue;
 +        m_state[value.Key] = value; Apply(value.Key);
 +    }
 +}
@@ -1075,10 +1161,10 @@ index 00000000..94d8dde2
 +}
 diff --git a/Code/client/Services/WorldProgressService.h b/Code/client/Services/WorldProgressService.h
 new file mode 100644
-index 00000000..f9d2c939
+index 00000000..6fc7c5a6
 --- /dev/null
 +++ b/Code/client/Services/WorldProgressService.h
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,31 @@
 +#pragma once
 +#include <Structs/HomesteadData.h>
 +#include <unordered_map>
@@ -1095,6 +1181,7 @@ index 00000000..f9d2c939
 +    void OnDisconnected(const DisconnectedEvent&);
 +    bool Capture(uint32_t, std::vector<float>&);
 +    void Apply(uint32_t);
++    void ApplyLinked(uint32_t);
 +    void Send(HomesteadData);
 +    World& m_world;
 +    TransportService& m_transport;
@@ -1130,7 +1217,7 @@ index 6d60709b..34e1d91f 100644
      ctx().emplace<CalendarService>(*this, m_dispatcher, m_transport);
      ctx().emplace<QuestService>(*this, m_dispatcher);
 diff --git a/Code/common/BuildInfo.h.in b/Code/common/BuildInfo.h.in
-index 33cc05f3..e41e5f98 100644
+index 33cc05f3..5d61d4de 100644
 --- a/Code/common/BuildInfo.h.in
 +++ b/Code/common/BuildInfo.h.in
 @@ -1,4 +1,4 @@
@@ -1138,9 +1225,9 @@ index 33cc05f3..e41e5f98 100644
  // This file was autogenerated by xmake
  #define BUILD_BRANCH "survival-worlditems"
 -#define BUILD_COMMIT "survival-sync-v07-quest-sync-draft"
-+#define BUILD_COMMIT "survival-sync-v08-world-progress-draft"
++#define BUILD_COMMIT "survival-sync-v081-layout-draft"
 diff --git a/Code/common/CoopChestLocations.h b/Code/common/CoopChestLocations.h
-index ae1a97d0..206073e9 100644
+index ae1a97d0..6be124e8 100644
 --- a/Code/common/CoopChestLocations.h
 +++ b/Code/common/CoopChestLocations.h
 @@ -6,8 +6,8 @@ constexpr uint32_t VirtualMod = 0xFFFFFFFE;
@@ -1154,13 +1241,49 @@ index ae1a97d0..206073e9 100644
      {"Whiterun", 17524.757f, -10484.579f, -4604.976f, 5.597788f, false},
      {"Solitude", -75058.247f, 97034.559f, -11380.862f, 5.497787f, false},
      {"Windhelm", 135943.774f, 26828.250f, -12455.554f, 0.000000f, false},
-@@ -18,5 +18,6 @@ inline constexpr std::array<Location, 10> Locations{{
+@@ -17,6 +17,7 @@ inline constexpr std::array<Location, 10> Locations{{
+     {"Falkreath", -32247.451f, -87827.172f, -3099.448f, 5.707227f, false},
      {"Morthal", -40133.050f, 65312.923f, -13801.952f, 5.759587f, false},
      {"Winterhold", 110104.848f, 101708.334f, -8954.719f, 1.186824f, false},
-     {"Goldenhills Plantation", -73444.615f, 886.764f, -4931.176f, 5.497787f, true},
+-    {"Goldenhills Plantation", -73444.615f, 886.764f, -4931.176f, 5.497787f, true},
++    {"Goldenhills Plantation", -73502.200f, -57.500f, -4951.583f, 5.497787f, true},
 +    {"Tundra Homestead", 39062.210f, 145.170f, -4172.343f, 5.912394f, false, "cceejsse001-hstead.esm"},
  }};
  }
+diff --git a/Code/common/HousingLayoutPolicy.h b/Code/common/HousingLayoutPolicy.h
+new file mode 100644
+index 00000000..4013ad70
+--- /dev/null
++++ b/Code/common/HousingLayoutPolicy.h
+@@ -0,0 +1,28 @@
++#pragma once
++#include <cstdint>
++#include <optional>
++namespace HousingLayout
++{
++struct Parent { uint32_t Key; bool Opposite; };
++// Children never publish their inherited enable state as an independent edit.
++template<class GetParent, class GetRoot> std::optional<bool> Disabled(uint32_t key, GetParent parent, GetRoot root)
++{
++    bool invert{};
++    for (unsigned depth = 0; depth < 64; ++depth)
++    {
++        const auto link = parent(key);
++        if (!link)
++        {
++            const auto state = root(key);
++            return state ? std::optional<bool>(*state != invert) : std::nullopt;
++        }
++        if (link->Key == key) return {};
++        invert = invert != link->Opposite; key = link->Key;
++    }
++    return {}; // malformed/cyclic chains never alter the world
++}
++inline bool BeforeDisabled(bool beforeDisabled, bool replacementEnabled)
++{
++    return beforeDisabled || replacementEnabled;
++}
++}
 diff --git a/Code/common/PercentageHealth.h b/Code/common/PercentageHealth.h
 new file mode 100644
 index 00000000..69ce7a3e
@@ -1625,10 +1748,10 @@ index 8c82e184..e7003158 100644
      auto* movement = m_world.try_get<MovementComponent>(actor);
 diff --git a/Code/server/Services/WorldProgressService.cpp b/Code/server/Services/WorldProgressService.cpp
 new file mode 100644
-index 00000000..f7f881e1
+index 00000000..9b7984a7
 --- /dev/null
 +++ b/Code/server/Services/WorldProgressService.cpp
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,119 @@
 +#include <Services/WorldProgressService.h>
 +#include <Services/CalendarService.h>
 +#include <World.h>
@@ -1694,6 +1817,7 @@ index 00000000..f7f881e1
 +    {
 +        const bool plot = IsPlot(proposed.Key);
 +        if ((!plot && proposed.Key >= WorldProgress::Bindings.size()) || !WorldProgress::Valid(proposed)) continue;
++        if (!plot && WorldProgress::Bindings[proposed.Key].Kind == 7) continue;
 +        const auto target = plot ? WorldProgress::Plots[proposed.Key - WorldProgress::PlotKeyBase].Soil : WorldProgress::Bindings[proposed.Key].Target;
 +        if (!Resolve(m_world, target)) continue;
 +        auto found = m_state.find(proposed.Key);
@@ -1804,6 +1928,61 @@ index 8c828c2a..25d66a2d 100644
  
  #include <Messages/ClientMessageFactory.h>
  #include <Messages/ServerMessageFactory.h>
+diff --git a/Code/tests/housing_layout.cpp b/Code/tests/housing_layout.cpp
+new file mode 100644
+index 00000000..bee9047b
+--- /dev/null
++++ b/Code/tests/housing_layout.cpp
+@@ -0,0 +1,49 @@
++#include <catch2/catch.hpp>
++#include <HousingLayoutPolicy.h>
++#include <WorldProgressBindings.h>
++#include <cstring>
++#include <unordered_map>
++TEST_CASE("Housing layout follows initially enabled parents and inverted chains", "[housing-layout]")
++{
++    std::unordered_map<uint32_t, HousingLayout::Parent> links{{1,{0,false}},{2,{1,true}},{3,{2,true}}};
++    std::unordered_map<uint32_t,bool> roots{{0,false}};
++    auto parent = [&](uint32_t key)->std::optional<HousingLayout::Parent> { auto i=links.find(key); return i==links.end()?std::nullopt:std::optional(i->second); };
++    auto root = [&](uint32_t key)->std::optional<bool> { auto i=roots.find(key); return i==roots.end()?std::nullopt:std::optional(i->second); };
++    REQUIRE(HousingLayout::Disabled(1,parent,root) == false);
++    REQUIRE(HousingLayout::Disabled(2,parent,root) == true);
++    REQUIRE(HousingLayout::Disabled(3,parent,root) == false);
++    roots[0] = true; // buying the upgrade disables the old barrel/hay group
++    REQUIRE(HousingLayout::Disabled(1,parent,root) == true);
++    REQUIRE(HousingLayout::Disabled(2,parent,root) == false);
++    REQUIRE(HousingLayout::Disabled(3,parent,root) == true);
++    REQUIRE_FALSE(HousingLayout::Disabled(99,parent,root).has_value());
++    links[4]={4,false}; REQUIRE_FALSE(HousingLayout::Disabled(4,parent,root).has_value());
++    links[5]={6,false}; links[6]={5,false}; REQUIRE_FALSE(HousingLayout::Disabled(5,parent,root).has_value());
++    REQUIRE(HousingLayout::BeforeDisabled(false,true)); // repair a saved overlap
++    REQUIRE_FALSE(HousingLayout::BeforeDisabled(false,false)); // preserve unpurchased layout
++}
++TEST_CASE("Official homestead manifest includes complete enable-parent chains", "[housing-layout]")
++{
++    size_t linked{}, oldFarmControls{};
++    for (uint32_t key=0;key<WorldProgress::Bindings.size();++key)
++    {
++        const auto& b=WorldProgress::Bindings[key];
++        if (std::strcmp(b.Target.Plugin,"ccvsvsse004-beafarmer.esl")==0 && (b.Target.Base==0xE22 || b.Target.Base==0xE23))
++        { REQUIRE(b.Kind==0); ++oldFarmControls; }
++        if (b.Kind!=7) continue;
++        ++linked;
++        REQUIRE(b.ParentKey<WorldProgress::Bindings.size());
++        const auto& p=WorldProgress::Bindings[b.ParentKey];
++        REQUIRE(p.Target.Base==b.Aux.Base);
++        REQUIRE(std::strcmp(p.Target.Plugin,b.Aux.Plugin)==0);
++        const auto state=HousingLayout::Disabled(key,
++            [](uint32_t index)->std::optional<HousingLayout::Parent> {
++                const auto& b=WorldProgress::Bindings[index];
++                return b.Kind==7 ? std::optional(HousingLayout::Parent{b.ParentKey,b.Type!=0}) : std::nullopt;
++            }, [](uint32_t)->std::optional<bool> { return false; });
++        REQUIRE(state.has_value());
++    }
++    REQUIRE(linked>100);
++    REQUIRE(oldFarmControls==2);
++    REQUIRE_FALSE(WorldProgress::Replacements.empty());
++}
 diff --git a/Code/tests/percentage_health.cpp b/Code/tests/percentage_health.cpp
 new file mode 100644
 index 00000000..ca9b6f6b
@@ -2026,7 +2205,7 @@ index d8f02016..ebb5d35b 100644
 -print('Generated ten named portal locations from the reviewed manifest')
 +print('Generated eleven named portal locations from the reviewed manifest')
 diff --git a/Tools/CoopChests/locations.json b/Tools/CoopChests/locations.json
-index c3bab8eb..b4c2122d 100644
+index c3bab8eb..c804a14d 100644
 --- a/Tools/CoopChests/locations.json
 +++ b/Tools/CoopChests/locations.json
 @@ -11,11 +11,11 @@
@@ -2164,9 +2343,29 @@ index c3bab8eb..b4c2122d 100644
          1.186823844909668
        ],
        "status": "anchor and exterior arrival verified from plugin; final ground clearance requires in-game testing",
-@@ -290,6 +290,30 @@
+@@ -279,17 +279,46 @@
+         5.497786998748779
+       ],
+       "chestPosition": [
+-        -73444.615,
+-        886.764,
+-        -4931.176
++        -73502.2,
++        -57.5,
++        -4951.583
+       ],
+       "yaw": 5.497786998748779,
+-      "status": "anchor and exterior arrival verified from plugin; final ground clearance requires in-game testing",
++      "status": "Moved off the porch railing into the front approach; reviewed against official upgraded-layout objects and grow plots. Ground clearance still needs in-game confirmation.",
+       "exteriorArrival": [
+         -73412.984375,
          1072.773193359375,
          -4931.17578125
++      ],
++      "previousChestPosition": [
++        -73444.615,
++        886.764,
++        -4931.176
        ]
 +    },
 +    {

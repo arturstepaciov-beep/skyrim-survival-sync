@@ -1,8 +1,17 @@
-# SurvivalSync v0.8
+# SurvivalSync v0.8.1
 
-Custom Skyrim Together client and server based on upstream commit 9ce0338522277e0ff0a12e8d2aa09ce67ad41a59. Install matching v0.8 client files on both PCs and run the included v0.8 server. Keep SurvivalSyncCoop.esp enabled. Retains v0.7 quest snapshots and earlier features.
+Custom Skyrim Together client and server based on upstream commit 9ce0338522277e0ff0a12e8d2aa09ce67ad41a59. Install matching v0.8.1 client files on both PCs and run the included v0.8.1 server. Keep SurvivalSyncCoop.esp enabled. Retains v0.7 quest snapshots and earlier features.
 
-## Changes
+## Housing layout hotfix
+
+Stop the server and update BOTH clients and the server together. The layout binding indices changed, so mixed v0.8/v0.8.1 sessions are incompatible. Preserve config/CoopChest.dat.
+
+- Includes initially enabled control markers, not just initially disabled upgrade objects. Enable-parent chains and inverted enable relationships are reconciled across all supported official homesteads. Child objects no longer overwrite their parent's shared state.
+- Known before/after upgrade pairs suppress obsolete groups when the replacement is active, including saved Goldenhills barrel/hay overlaps. Duplicate snapshots cannot undo an unsent local upgrade.
+- Moves the Goldenhills network chest off the porch into the approach yard, away from the mapped growing plots. Existing saved gateways are moved and duplicate gateways are consolidated. The shared chest contents remain server-owned.
+- Chest clearance is reviewed against official layout records. Ground clearance, modded layouts and in-game co-op behavior still require verification.
+
+## Retained changes
 
 - NPC health uses signed actual damage divided by the attacker's local maximum enemy HP. The server combines each hit once and broadcasts one shared fraction. A 30% hit and a 10% hit leave 60% on both PCs, even with different enemy maximum HP. Player levels and native damage calculations remain unchanged. Essential NPC protection stays native.
 - Either player can publish official house ownership, building completion flags, furnishings, construction recipe tokens, and enable states. Remote state is applied directly without replaying purchases or charging gold/materials again. The first connected player's save seeds the session; guests should connect before building. Shared progress remains in each connected player's save.
