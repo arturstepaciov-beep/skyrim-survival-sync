@@ -12,10 +12,10 @@ index 64a90d1d..5cfe5b00 100644
 +    bool Percentage{};
  };
 diff --git a/Code/client/Games/Animation.cpp b/Code/client/Games/Animation.cpp
-index ed934f47..5c2976ea 100644
+index ed934f47..6bb9f0c1 100644
 --- a/Code/client/Games/Animation.cpp
 +++ b/Code/client/Games/Animation.cpp
-@@ -13,8 +13,10 @@
+@@ -13,8 +13,11 @@
  #include <Misc/BSFixedString.h>
  
  #include <World.h>
@@ -23,10 +23,11 @@ index ed934f47..5c2976ea 100644
  #include <PlayerCharacter.h>
  #include <Services/TransportService.h>
 +#include <Services/ScriptStateAccess.h>
++#include <Interface/UI.h>
  #include <Events/UpdateEvent.h>
  #include <cstring>
  
-@@ -201,24 +203,28 @@ bool TP_MAKE_THISCALL(HookPlayerGraphEvent, IAnimationGraphManagerHolder, BSFixe
+@@ -201,24 +204,28 @@ bool TP_MAKE_THISCALL(HookPlayerGraphEvent, IAnimationGraphManagerHolder, BSFixe
      const bool result = TiltedPhoques::ThisCall(s_sendPlayerGraphEvent, apThis, eventName);
      auto* player = PlayerCharacter::Get();
      const char* name = eventName ? eventName->AsAscii() : nullptr;
@@ -61,7 +62,7 @@ index ed934f47..5c2976ea 100644
      }
      s_inGraphEvent = false;
      return result;
-@@ -226,15 +232,48 @@ bool TP_MAKE_THISCALL(HookPlayerGraphEvent, IAnimationGraphManagerHolder, BSFixe
+@@ -226,15 +233,49 @@ bool TP_MAKE_THISCALL(HookPlayerGraphEvent, IAnimationGraphManagerHolder, BSFixe
  struct PlayerGraphHook
  {
      entt::scoped_connection update;
@@ -76,6 +77,7 @@ index ed934f47..5c2976ea 100644
 -        s_sendPlayerGraphEvent = reinterpret_cast<TSendPlayerGraphEvent*>(vtable[1]);
 -        TP_HOOK(&s_sendPlayerGraphEvent, HookPlayerGraphEvent);
 -        spdlog::info("Installed TK Dodge player graph event hook");
++        if (auto* ui = UI::Get(); ui && ui->GetMenuOpen(BSFixedString("Loading Menu"))) return;
 +        if (!s_sendPlayerGraphEvent)
 +        {
 +            auto** vtable = *reinterpret_cast<void***>(&player->animationGraphHolder);
@@ -719,10 +721,10 @@ index c6232fc4..1af8666f 100644
              if (glm::distance(glm::vec3(player->position), position) > 2200.f) continue;
 diff --git a/Code/client/Services/Generic/CoopHud.cpp b/Code/client/Services/Generic/CoopHud.cpp
 new file mode 100644
-index 00000000..f635e8af
+index 00000000..894b9f9c
 --- /dev/null
 +++ b/Code/client/Services/Generic/CoopHud.cpp
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,181 @@
 +#include <TiltedOnlinePCH.h>
 +#include <World.h>
 +#include <Components.h>
@@ -737,6 +739,7 @@ index 00000000..f635e8af
 +#include <Forms/TESGlobal.h>
 +#include <Forms/TESObjectCELL.h>
 +#include <Forms/TESWorldSpace.h>
++#include <Interface/UI.h>
 +#include <Games/Memory.h>
 +#include <Structs/GridCellCoords.h>
 +#include <Events/UpdateEvent.h>
@@ -817,7 +820,8 @@ index 00000000..f635e8af
 +        if (now < next) return; next = now + 100;
 +        auto* overlay = world.GetOverlayService().GetOverlayApp();
 +        auto* player = PlayerCharacter::Get();
-+        if (!overlay || !player || !player->GetNiNode() || !player->parentCell) return;
++        if (!overlay || !player || !player->GetNiNode() || !player->parentCell || !player->parentCell->IsAttached()) return;
++        if (auto* ui = UI::Get(); ui && ui->GetMenuOpen(BSFixedString("Loading Menu"))) return;
 +        double hunger = -1;
 +        auto* enabled = Cast<TESGlobal>(SurvivalForm(0x826));
 +        auto* value = Cast<TESGlobal>(SurvivalForm(0x81A));
