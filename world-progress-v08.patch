@@ -721,7 +721,7 @@ index c6232fc4..1af8666f 100644
              if (glm::distance(glm::vec3(player->position), position) > 2200.f) continue;
 diff --git a/Code/client/Services/Generic/CoopHud.cpp b/Code/client/Services/Generic/CoopHud.cpp
 new file mode 100644
-index 00000000..894b9f9c
+index 00000000..1ca1b1a4
 --- /dev/null
 +++ b/Code/client/Services/Generic/CoopHud.cpp
 @@ -0,0 +1,181 @@
@@ -788,7 +788,7 @@ index 00000000..894b9f9c
 +        auto* ref = Cast<TESObjectREFR>(TESForm::GetById(marker.Reference));
 +        if (ref && ref->IsDeleted()) ref = nullptr;
 +        if (ref && marker.World == location.WorldSpaceId && glm::distance(marker.Position, location.Position) < 70.f) return;
-+        const auto grid = GridCellCoords::CalculateGridCellCoords(location.Position);
++        const auto grid = GridCellCoords::CalculateGridCellCoords(location.Position.x, location.Position.y);
 +        auto* cell = space->LoadCell(grid.X, grid.Y); if (!cell) return;
 +        if (!ref)
 +        {
