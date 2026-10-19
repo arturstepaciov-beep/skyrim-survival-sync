@@ -11,7 +11,7 @@ Custom Skyrim Together client and server based on upstream commit 9ce0338522277e
 - Restores the fast-travel control disabled by Survival Mode's watcher while retaining hunger, cold and exhaustion updates. Other normal engine travel checks remain in effect.
 - Crop harvest requests validate world and distance instead of rejecting a nearby exterior plot across a cell boundary. Mature flora activation is unblocked, native harvest uses default processing, and rejected/unready requests provide feedback.
 - Shared chest commits send one revisioned item delta instead of the complete inventory. Open chests reconcile only changed item variants immediately. Snapshot recovery handles missing revisions; the offline view cache is coalesced while server storage is still committed before acknowledgement.
-- Replicates SJG Dual Wield Parrying's blockStart/blockStop graph inputs when its plugin is loaded. Both PCs need matching parry/animation mods.
+- Replicates SJG Dual Wield Parrying's blockStart/blockStop graph inputs when its plugin is loaded. Reconciles local block intent after the legacy script updates its conditional state, with bounded retries if the animation is cancelled. Both PCs need matching parry/animation mods.
 - F2 wait/sleep speed slider ranges from 1x to 10x, defaults to 3x, and retains the 168-hour/seven-day maximum.
 
 Native build, protocol and policy tests are automated. Two-PC gameplay, map-marker save/load behavior, mod compatibility, and physical chest clearance still need in-game testing.

@@ -12,18 +12,21 @@ index 64a90d1d..5cfe5b00 100644
 +    bool Percentage{};
  };
 diff --git a/Code/client/Games/Animation.cpp b/Code/client/Games/Animation.cpp
-index ed934f47..5d9e4441 100644
+index ed934f47..5c2976ea 100644
 --- a/Code/client/Games/Animation.cpp
 +++ b/Code/client/Games/Animation.cpp
-@@ -13,6 +13,7 @@
+@@ -13,8 +13,10 @@
  #include <Misc/BSFixedString.h>
  
  #include <World.h>
 +#include <Games/TES.h>
  #include <PlayerCharacter.h>
  #include <Services/TransportService.h>
++#include <Services/ScriptStateAccess.h>
  #include <Events/UpdateEvent.h>
-@@ -201,24 +202,28 @@ bool TP_MAKE_THISCALL(HookPlayerGraphEvent, IAnimationGraphManagerHolder, BSFixe
+ #include <cstring>
+ 
+@@ -201,24 +203,28 @@ bool TP_MAKE_THISCALL(HookPlayerGraphEvent, IAnimationGraphManagerHolder, BSFixe
      const bool result = TiltedPhoques::ThisCall(s_sendPlayerGraphEvent, apThis, eventName);
      auto* player = PlayerCharacter::Get();
      const char* name = eventName ? eventName->AsAscii() : nullptr;
@@ -58,6 +61,60 @@ index ed934f47..5d9e4441 100644
      }
      s_inGraphEvent = false;
      return result;
+@@ -226,15 +232,48 @@ bool TP_MAKE_THISCALL(HookPlayerGraphEvent, IAnimationGraphManagerHolder, BSFixe
+ struct PlayerGraphHook
+ {
+     entt::scoped_connection update;
++    bool parryHeld{};
++    uint64_t nextParryRetry{};
+     void OnUpdate(const UpdateEvent&)
+     {
+-        if (s_sendPlayerGraphEvent) return;
+         auto* player = PlayerCharacter::Get();
+         if (!player || !player->GetNiNode()) return;
+-        auto** vtable = *reinterpret_cast<void***>(&player->animationGraphHolder);
+-        s_sendPlayerGraphEvent = reinterpret_cast<TSendPlayerGraphEvent*>(vtable[1]);
+-        TP_HOOK(&s_sendPlayerGraphEvent, HookPlayerGraphEvent);
+-        spdlog::info("Installed TK Dodge player graph event hook");
++        if (!s_sendPlayerGraphEvent)
++        {
++            auto** vtable = *reinterpret_cast<void***>(&player->animationGraphHolder);
++            s_sendPlayerGraphEvent = reinterpret_cast<TSendPlayerGraphEvent*>(vtable[1]);
++            TP_HOOK(&s_sendPlayerGraphEvent, HookPlayerGraphEvent);
++            spdlog::info("Installed co-op player graph event hook");
++        }
++        auto* mod = ModManager::Get() ? ModManager::Get()->GetByName("Dual Wield Parrying_SKSE.esp") : nullptr;
++        std::vector<float> want;
++        const bool requested = World::Get().GetTransport().IsOnline() && mod && mod->IsLoaded() &&
++            ScriptStateAccess::Numbers(TESForm::GetById(mod->GetFormId(0xD62)), "DualWieldParryingQuestScript", "wantblock", 0, want) &&
++            !want.empty() && want[0] != 0 && player->actorState.IsWeaponFullyDrawn();
++        BSFixedString desire("iWantBlock"), blocking("IsBlocking");
++        if (requested)
++        {
++            // The legacy script sends blockStart before setting its conditional
++            // wantblock variable. Reconcile after that update and keep the native
++            // block intent aligned while its own configured key is held.
++            player->actorState.flags2 |= 1u << 8;
++            player->animationGraphHolder.SetVariableBool(&desire, true);
++            bool shown = false; player->animationGraphHolder.GetVariableBool(&blocking, &shown);
++            const auto now = World::Get().GetTick();
++            const bool attacking = (player->actorState.flags1 >> 28) != 0;
++            if ((!parryHeld || (!shown && now >= nextParryRetry)) && !attacking)
++            {
++                BSFixedString start("blockStart"); player->SendAnimationEvent(&start);
++                nextParryRetry = now + 300;
++            }
++        }
++        else if (parryHeld)
++        {
++            player->actorState.flags2 &= ~(1u << 8);
++            player->animationGraphHolder.SetVariableBool(&desire, false);
++            BSFixedString stop("blockStop"); player->SendAnimationEvent(&stop);
++        }
++        parryHeld = requested;
+     }
+ };
+ }
 diff --git a/Code/client/Games/Misc/BSScript.cpp b/Code/client/Games/Misc/BSScript.cpp
 index 4eef585e..12642ed4 100644
 --- a/Code/client/Games/Misc/BSScript.cpp
@@ -2904,10 +2961,13 @@ index 52eb4999..9ad554bf 100644
    autoResyncOff(): void;
 diff --git a/Code/tests/coop_fixes.cpp b/Code/tests/coop_fixes.cpp
 new file mode 100644
-index 00000000..9bc6062a
+index 00000000..ccbaf660
 --- /dev/null
 +++ b/Code/tests/coop_fixes.cpp
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,47 @@
++#include <TiltedCore/Stl.hpp>
++#include <TiltedCore/Allocator.hpp>
++#include <TiltedCore/Buffer.hpp>
 +#include <catch2/catch.hpp>
 +#include <QuestRewardPolicy.h>
 +#include <HomesteadInventory.h>
