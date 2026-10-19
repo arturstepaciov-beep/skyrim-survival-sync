@@ -721,10 +721,10 @@ index c6232fc4..1af8666f 100644
              if (glm::distance(glm::vec3(player->position), position) > 2200.f) continue;
 diff --git a/Code/client/Services/Generic/CoopHud.cpp b/Code/client/Services/Generic/CoopHud.cpp
 new file mode 100644
-index 00000000..1ca1b1a4
+index 00000000..d40a7244
 --- /dev/null
 +++ b/Code/client/Services/Generic/CoopHud.cpp
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,195 @@
 +#include <TiltedOnlinePCH.h>
 +#include <World.h>
 +#include <Components.h>
@@ -801,12 +801,26 @@ index 00000000..1ca1b1a4
 +            struct MapData { void* NameVtable; BSFixedString Name; uint8_t Flags; uint8_t Pad; uint16_t Type; uint32_t Padding; };
 +            struct MapExtra { void* Vtable; BSExtraData* Next; MapData* Data; };
 +            static_assert(sizeof(MapData) == 0x18 && sizeof(MapExtra) == 0x18);
-+            auto* data = static_cast<MapData*>(Memory::Allocate(sizeof(MapData))); memset(data, 0, sizeof(MapData));
-+            VersionDbPtr<void> nameVtable(228543); data->NameVtable = nameVtable.Get();
-+            data->Name.Set((std::string("Co-op: ") + name).c_str()); data->Flags = 1; data->Type = 64;
-+            auto* extra = static_cast<MapExtra*>(Memory::Allocate(sizeof(MapExtra))); memset(extra, 0, sizeof(MapExtra));
-+            VersionDbPtr<void> extraVtable(229884); extra->Vtable = extraVtable.Get(); extra->Data = data;
-+            ref->extraData.Add(static_cast<ExtraDataType>(0x2C), reinterpret_cast<BSExtraData*>(extra));
++            auto* extra = reinterpret_cast<MapExtra*>(ref->extraData.GetByType(static_cast<ExtraDataType>(0x2C)));
++            if (!extra)
++            {
++                extra = static_cast<MapExtra*>(Memory::Allocate(sizeof(MapExtra))); memset(extra, 0, sizeof(MapExtra));
++                VersionDbPtr<void> extraVtable(229884); extra->Vtable = extraVtable.Get();
++                // Add/SetType expect a bitfield, but a newly placed reference
++                // may have an empty native extra-data list.
++                if (!ref->extraData.bitfield)
++                {
++                    ref->extraData.bitfield = Memory::Allocate<ExtraDataList::Bitfield>();
++                    memset(ref->extraData.bitfield, 0, sizeof(ExtraDataList::Bitfield));
++                }
++                ref->extraData.Add(static_cast<ExtraDataType>(0x2C), reinterpret_cast<BSExtraData*>(extra));
++            }
++            if (!extra->Data)
++            {
++                extra->Data = static_cast<MapData*>(Memory::Allocate(sizeof(MapData))); memset(extra->Data, 0, sizeof(MapData));
++                VersionDbPtr<void> nameVtable(228543); extra->Data->NameVtable = nameVtable.Get();
++            }
++            extra->Data->Name.Set((std::string("Co-op: ") + name).c_str()); extra->Data->Flags = 1; extra->Data->Type = 64;
 +            marker.Reference = ref->formID;
 +        }
 +        ref->MoveTo(cell, NiPoint3(location.Position)); ref->EnableImpl();
