@@ -1588,14 +1588,13 @@ index 00000000..8fcaea61
 +}
 diff --git a/Code/client/Services/QuestRewardSync.h b/Code/client/Services/QuestRewardSync.h
 new file mode 100644
-index 00000000..06fb05f1
+index 00000000..7b8814f5
 --- /dev/null
 +++ b/Code/client/Services/QuestRewardSync.h
-@@ -0,0 +1,7 @@
+@@ -0,0 +1,6 @@
 +#pragma once
 +struct TESForm;
 +struct NativeFunction;
-+namespace BSScript { struct Variable; struct IVirtualMachine; struct StackFrame; }
 +// Called only for the Papyrus AddItem native wrapper, before inventory mutation.
 +void InstallQuestRewardCapture(NativeFunction*);
 +void InstallQuestRewardSync(entt::dispatcher&);
