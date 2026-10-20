@@ -748,10 +748,10 @@ index c6232fc4..1af8666f 100644
              if (glm::distance(glm::vec3(player->position), position) > 2200.f) continue;
 diff --git a/Code/client/Services/Generic/CoopHud.cpp b/Code/client/Services/Generic/CoopHud.cpp
 new file mode 100644
-index 00000000..37fb7c44
+index 00000000..a9419ed5
 --- /dev/null
 +++ b/Code/client/Services/Generic/CoopHud.cpp
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,128 @@
 +#include <TiltedOnlinePCH.h>
 +#include <World.h>
 +#include <Components.h>
@@ -765,6 +765,7 @@ index 00000000..37fb7c44
 +#include <Games/TES.h>
 +#include <Forms/TESGlobal.h>
 +#include <Forms/TESObjectCELL.h>
++#include <Forms/TESWorldSpace.h>
 +#include <Interface/UI.h>
 +#include <Events/UpdateEvent.h>
 +#include <Events/DisconnectedEvent.h>
