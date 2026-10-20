@@ -1,10 +1,18 @@
-# SurvivalSync v0.8.4
+# SurvivalSync v0.8.5
 
-Custom Skyrim Together client and server based on upstream commit 9ce0338522277e0ff0a12e8d2aa09ce67ad41a59. Install matching v0.8.4 client files on both PCs and run the included v0.8.4 server. Keep SurvivalSyncCoop.esp enabled. Retains v0.8.1 housing repairs and earlier features. Preserve config/CoopChest.dat when updating.
+Custom Skyrim Together client and server based on upstream commit 9ce0338522277e0ff0a12e8d2aa09ce67ad41a59. Install matching v0.8.5 client files on both PCs and run the included v0.8.5 server. Keep SurvivalSyncCoop.esp enabled. Retains v0.8.1 housing repairs and earlier features. Preserve config/CoopChest.dat when updating.
+
+## Direct player teleport hotfix
+
+- F2 Teleport to Player uses the native COC relocation processor with the teammate's server-reported coordinates and no fast-travel marker. It bypasses map travel restrictions, including Survival, interiors, combat and over-encumbrance.
+- Relocation runs on a game update after closing menus and waits for an existing load to finish. Exterior targets resolve the actual grid cell from their worldspace and coordinates.
+- Arrival is checked against the destination world/interior and position. Missing destinations and load timeouts produce explicit messages; disconnect cancels pending relocation. The teleport console command uses the same path.
+- Client and server reject unavailable or invalid destination coordinates.
+- Two-PC gameplay testing is required for interiors, cross-worldspace travel and Survival. Automated tests cover input/arrival validation; they do not run the game.
 
 ## Survival, quests and personal companions
 
-- Corrects the vanilla global Papyrus callback ABI (VM, stack, static base, arguments). Survival fast travel now checks the actual engine control and re-enables it before a co-op teleport, in addition to the HUD update. Native restrictions unrelated to Survival still apply.
+- Corrects the vanilla global Papyrus callback ABI (VM, stack, static base, arguments). The HUD re-enables Survival map fast-travel controls. The direct co-op teleport above is independent of map fast-travel restrictions.
 - Third-person projectile launch angles converge on the engine crosshair ray hit, including local spell projectiles. Corrected angles are transmitted to peers. Projectile gravity, range and collision remain native; empty-sky launches retain native aim.
 - Miscellaneous quest sync defaults on. Visible objective-only quests can sync before their first numbered stage. New side/misc quest progress made by a guest is proposed to the leader and published through the same authoritative journal; old guest quests are baselined rather than bulk-imported. Main-quest authority remains with the leader. If retaining an old STServer.ini, set bEnableMiscQuestSync=true.
 - Holds the completed local rest clock briefly while the server acknowledges a sleep/wait skip so delayed sleep scripts do not observe the pre-sleep hour. Normal outdoor sleep limits and disease modifiers remain.
@@ -24,7 +32,7 @@ Two-PC gameplay validation is still required, especially follower recruitment, r
 ## Co-op fixes and HUD
 
 - Shares item/gold grants issued by Papyrus quest and dialogue fragments (QF_/TIF_) with the current party. Tracks source fragment, callsite, item and occurrence to avoid doubling a reward when the same script executes locally and remotely. This does not invent rewards from a completed journal flag or copy unrelated loot. Custom reward systems outside these script paths need separate adapters.
-- Party locations update every second, including distant players. Adds a compass overlay and projected overhead names for loaded party actors. Native world-map markers are temporarily disabled in v0.8.4 while investigating the crash when a party forms; current-location teleport buttons remain available.
+- Party locations update every second, including distant players. Adds a compass overlay and projected overhead names for loaded party actors. Native world-map markers are temporarily disabled in v0.8.5 while investigating the crash when a party forms; current-location teleport buttons remain available.
 - Adds direct "Teleport to <name>" buttons in F2 using the player's current server location.
 - Adds a separate hunger bar driven by the installed official Survival Mode hunger globals, with percentage and stage label. It is hidden when Survival Mode is inactive.
 - Restores the fast-travel control disabled by Survival Mode's watcher while retaining hunger, cold and exhaustion updates. Other normal engine travel checks remain in effect.

@@ -1,6 +1,6 @@
-# Quest sync v0.8.4 build requested 2026-10-18 (Vilnius).
+# Quest sync v0.8.5 build requested 2026-10-18 (Vilnius).
 name: Build Survival Sync Windows
-run-name: Survival Sync v0.8.4 · ${{ github.run_number }} · ${{ github.event.head_commit.message || 'manual' }}
+run-name: Survival Sync v0.8.5 · ${{ github.run_number }} · ${{ github.event.head_commit.message || 'manual' }}
 on:
   push:
     branches: [main, 'build/**']
@@ -44,7 +44,7 @@ jobs:
           $zone = [TimeZoneInfo]::FindSystemTimeZoneById('FLE Standard Time')
           $stamp = [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, $zone).ToString('yyyy-MM-dd_HH-mm-ss') + '-LT'
           "stamp=$stamp" >> $env:GITHUB_OUTPUT
-          "name=SurvivalSync-v0.8.4-$stamp-Windows" >> $env:GITHUB_OUTPUT
+          "name=SurvivalSync-v0.8.5-$stamp-Windows" >> $env:GITHUB_OUTPUT
       - name: Build and package custom client and server
         shell: pwsh
         run: ./Build-Windows.ps1 -WorkDirectory "${{ runner.temp }}/survival-build" -BuildStamp "${{ steps.metadata.outputs.stamp }}"

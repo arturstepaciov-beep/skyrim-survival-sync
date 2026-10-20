@@ -278,6 +278,70 @@ index e0edcf50..85e37f2e 100644
  }
  
  bool NiCamera::WorldPtToScreenPt3(float* matrix, const NiRect<float>* port, const NiPoint3* p_in, float* x_out, float* y_out, float* z_out, float zeroTolerance)
+diff --git a/Code/client/Games/Skyrim/PlayerCharacter.cpp b/Code/client/Games/Skyrim/PlayerCharacter.cpp
+index efe4f697..4a13e5ed 100644
+--- a/Code/client/Games/Skyrim/PlayerCharacter.cpp
++++ b/Code/client/Games/Skyrim/PlayerCharacter.cpp
+@@ -86,6 +86,47 @@ void PlayerCharacter::AddSkillExperience(int32_t aSkill, float aExperience) noex
+     spdlog::debug("Added {} experience to skill {}", deltaExperience, aSkill);
+ }
+ 
++// Use the same relocation processing as COC, without a map fast-travel marker.
++// Verified against native PLAYER_TARGET_LOC and AE IDs 40442/40438.
++bool PlayerCharacter::TeleportTo(TESObjectCELL* apCell, const NiPoint3& acPosition) noexcept
++{
++    if (!apCell) return false;
++    struct TargetLocation
++    {
++        TESWorldSpace* world{};
++        TESObjectCELL* interior{};
++        NiPoint3 position{};
++        NiPoint3 angle{};
++        void* arrivalFunction{};
++        uint64_t arrivalData{};
++        uint32_t furniture{};
++        uint32_t fastTravelMarker{};
++        bool resetWeather{true};
++        bool allowAutoSave{false};
++        bool valid{true};
++        uint8_t padding[5]{};
++    };
++    static_assert(sizeof(TargetLocation) == 0x48);
++    static_assert(offsetof(TargetLocation, fastTravelMarker) == 0x3C);
++    static_assert(offsetof(TargetLocation, valid) == 0x42);
++    using Queue = void(PlayerCharacter*, const TargetLocation*);
++    using Process = void(PlayerCharacter*);
++    auto* queue = reinterpret_cast<Queue*>(VersionDb::Get().FindAddressById(40442));
++    auto* process = reinterpret_cast<Process*>(VersionDb::Get().FindAddressById(40438));
++    if (!queue || !process) return false;
++    TargetLocation target;
++    if (apCell->cellFlags & 1) target.interior = apCell;
++    else target.world = apCell->worldspace;
++    if (!target.world && !target.interior) return false;
++    target.position = acPosition;
++    target.angle = rotation;
++    target.furniture = target.fastTravelMarker = *TESObjectREFR::GetNullHandle();
++    ScopedReferencesOverride guard;
++    queue(this, &target);
++    process(this);
++    return true;
++}
++
+ NiPoint3 PlayerCharacter::RespawnPlayer() noexcept
+ {
+     // Make bleedout state recoverable
+diff --git a/Code/client/Games/Skyrim/PlayerCharacter.h b/Code/client/Games/Skyrim/PlayerCharacter.h
+index ee9f9876..40b119bc 100644
+--- a/Code/client/Games/Skyrim/PlayerCharacter.h
++++ b/Code/client/Games/Skyrim/PlayerCharacter.h
+@@ -115,6 +115,7 @@ struct PlayerCharacter : Actor
+     float GetSkillExperience(Skills::Skill aSkill) const noexcept { return (*pSkills)->skills[aSkill].xp; }
+ 
+     NiPoint3 RespawnPlayer() noexcept;
++    bool TeleportTo(TESObjectCELL* apCell, const NiPoint3& acPosition) noexcept;
+ 
+     void PayCrimeGoldToAllFactions() noexcept;
+ 
 diff --git a/Code/client/Games/Skyrim/Projectiles/Projectile.cpp b/Code/client/Games/Skyrim/Projectiles/Projectile.cpp
 index 35abd4d9..80d9f9e6 100644
 --- a/Code/client/Games/Skyrim/Projectiles/Projectile.cpp
@@ -796,6 +860,52 @@ index 57a9247a..275e08f9 100644
  
          if (pActor->IsVampireLord())
              pActor->FixVampireLordModel();
+diff --git a/Code/client/Services/Generic/CommandService.cpp b/Code/client/Services/Generic/CommandService.cpp
+index ce1f48e3..aad0979c 100644
+--- a/Code/client/Services/Generic/CommandService.cpp
++++ b/Code/client/Services/Generic/CommandService.cpp
+@@ -13,6 +13,7 @@
+ 
+ #include <Messages/TeleportCommandRequest.h>
+ #include <Messages/TeleportCommandResponse.h>
++#include <Messages/NotifyTeleport.h>
+ #include "Messages/SetTimeCommandRequest.h"
+ 
+ #include <Structs/GridCellCoords.h>
+@@ -36,28 +37,9 @@ void CommandService::OnSetTimeCommand(const SetTimeCommandEvent& acEvent) const
+ 
+ void CommandService::OnTeleportCommandResponse(const TeleportCommandResponse& acMessage) noexcept
+ {
+-    spdlog::info("TeleportCommandResponse: {:X}:{:X} at position {}, {}, {}", acMessage.CellId.ModId, acMessage.CellId.BaseId, acMessage.Position.x, acMessage.Position.y, acMessage.Position.z);
+-    auto& modSystem = m_world.GetModSystem();
+-
+-    const uint32_t cellId = modSystem.GetGameId(acMessage.CellId);
+-    TESObjectCELL* pCell = Cast<TESObjectCELL>(TESForm::GetById(cellId));
+-    if (!pCell)
+-    {
+-        const uint32_t worldSpaceId = modSystem.GetGameId(acMessage.WorldSpaceId);
+-        TESWorldSpace* pWorldSpace = Cast<TESWorldSpace>(TESForm::GetById(worldSpaceId));
+-        if (pWorldSpace)
+-        {
+-            GridCellCoords coordinates = GridCellCoords::CalculateGridCellCoords(acMessage.Position);
+-            pCell = pWorldSpace->LoadCell(coordinates.X, coordinates.Y);
+-        }
+-
+-        if (!pCell)
+-        {
+-            spdlog::error("Failed to fetch cell to teleport to.");
+-            m_world.GetOverlayService().SendSystemMessage("Teleporting to player failed.");
+-            return;
+-        }
+-    }
+-
+-    PlayerCharacter::Get()->MoveTo(pCell, acMessage.Position);
++    NotifyTeleport destination{};
++    destination.CellId = acMessage.CellId;
++    destination.WorldSpaceId = acMessage.WorldSpaceId;
++    destination.Position = acMessage.Position;
++    m_world.GetDispatcher().trigger(destination);
+ }
 diff --git a/Code/client/Services/Generic/CoopChestService.cpp b/Code/client/Services/Generic/CoopChestService.cpp
 index c6232fc4..1af8666f 100644
 --- a/Code/client/Services/Generic/CoopChestService.cpp
@@ -1130,18 +1240,19 @@ index cfc9d925..8f1b342f 100644
          {
              const int seconds = eventArgs->GetInt(0);
 diff --git a/Code/client/Services/Generic/OverlayService.cpp b/Code/client/Services/Generic/OverlayService.cpp
-index 060a5836..c504aa2c 100644
+index 060a5836..9906653e 100644
 --- a/Code/client/Services/Generic/OverlayService.cpp
 +++ b/Code/client/Services/Generic/OverlayService.cpp
-@@ -12,6 +12,7 @@
+@@ -12,6 +12,8 @@
  #include <World.h>
  
  #include <Services/OverlayClient.h>
-+#include <Services/SurvivalTravel.h>
++#include <TeleportPolicy.h>
++#include <Interface/UI.h>
  #include <Services/TransportService.h>
  #include <Services/WorldItemService.h>
  
-@@ -112,6 +113,8 @@ OverlayService::OverlayService(World& aWorld, TransportService& transport, entt:
+@@ -112,6 +114,8 @@ OverlayService::OverlayService(World& aWorld, TransportService& transport, entt:
      : m_world(aWorld)
      , m_transport(transport)
  {
@@ -1150,13 +1261,112 @@ index 060a5836..c504aa2c 100644
      m_updateConnection = aDispatcher.sink<UpdateEvent>().connect<&OverlayService::OnUpdate>(this);
      m_connectedConnection = aDispatcher.sink<ConnectedEvent>().connect<&OverlayService::OnConnectedEvent>(this);
      m_disconnectedConnection = aDispatcher.sink<DisconnectedEvent>().connect<&OverlayService::OnDisconnectedEvent>(this);
-@@ -442,7 +445,8 @@ void OverlayService::OnNotifyTeleport(const NotifyTeleport& acMessage) noexcept
+@@ -295,6 +299,7 @@ void OverlayService::OnUpdate(const UpdateEvent&) noexcept
+             m_lastResyncHudUpdate = now;
          }
      }
++    RunTeleport();
+     RunDebugDataUpdates();
+     RunPlayerHealthUpdates();
+ }
+@@ -310,6 +315,8 @@ void OverlayService::OnConnectedEvent(const ConnectedEvent& acEvent) noexcept
  
+ void OverlayService::OnDisconnectedEvent(const DisconnectedEvent&) noexcept
+ {
++    m_pendingTeleport.reset();
++    m_teleportLaunched = false;
+     m_pOverlay->ExecuteAsync("disconnect");
+ }
+ 
+@@ -420,29 +427,75 @@ void OverlayService::OnPlayerCellChanged(const NotifyPlayerCellChanged& acMessag
+ 
+ void OverlayService::OnNotifyTeleport(const NotifyTeleport& acMessage) noexcept
+ {
+-    auto& modSystem = m_world.GetModSystem();
++    if ((!acMessage.CellId && !acMessage.WorldSpaceId) ||
++        !CoopTeleport::Valid(acMessage.Position.x, acMessage.Position.y, acMessage.Position.z))
++    {
++        SendSystemMessage("Teleport failed: the player's location is unavailable.");
++        return;
++    }
++    m_pendingTeleport = acMessage;
++    m_teleportLaunched = false;
++    m_teleportDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
++    SetActive(false);
++    SendSystemMessage("Teleporting to player...");
++}
+ 
+-    const uint32_t cellId = modSystem.GetGameId(acMessage.CellId);
+-    TESObjectCELL* pCell = Cast<TESObjectCELL>(TESForm::GetById(cellId));
+-    if (!pCell)
++void OverlayService::RunTeleport() noexcept
++{
++    if (!m_pendingTeleport) return;
++    const auto now = std::chrono::steady_clock::now();
++    if (!m_transport.IsOnline()) { m_pendingTeleport.reset(); return; }
++    if (now >= m_teleportDeadline)
+     {
+-        const uint32_t worldSpaceId = modSystem.GetGameId(acMessage.WorldSpaceId);
+-        TESWorldSpace* pWorldSpace = Cast<TESWorldSpace>(TESForm::GetById(worldSpaceId));
+-        if (pWorldSpace)
++        SendSystemMessage("Teleport failed: destination did not finish loading. Try again.");
++        m_pendingTeleport.reset(); return;
++    }
++    auto* player = PlayerCharacter::Get();
++    auto* ui = UI::Get();
++    if (!player || !ui || ui->GetMenuOpen("LoadingMenu") || ui->GetMenuOpen("Main Menu")) return;
++    const auto destination = *m_pendingTeleport;
++    auto& mods = m_world.GetModSystem();
++    const auto worldId = mods.GetGameId(destination.WorldSpaceId);
++    const auto cellId = mods.GetGameId(destination.CellId);
++    if (m_teleportLaunched)
++    {
++        if (now - m_teleportStarted < std::chrono::milliseconds(500) || !player->parentCell ||
++            !player->parentCell->IsAttached() || !player->GetNiNode()) return;
++        auto* world = player->GetWorldSpace();
++        const bool sameDestination = worldId ? world && world->formID == worldId
++            : player->parentCell->formID == cellId;
++        if (sameDestination && CoopTeleport::Arrived(player->position.x, player->position.y, player->position.z,
++            destination.Position.x, destination.Position.y, destination.Position.z))
+         {
+-            GridCellCoords coordinates = GridCellCoords::CalculateGridCellCoords(acMessage.Position);
+-            pCell = pWorldSpace->LoadCell(coordinates.X, coordinates.Y);
++            SendSystemMessage("Arrived at player's location.");
++            m_pendingTeleport.reset();
+         }
+-
+-        if (!pCell)
++        return;
++    }
++    // Do not relocate from a menu callback or interrupt an existing cell load.
++    if (!player->parentCell || !player->parentCell->IsAttached() || !player->GetNiNode()) return;
++    TESObjectCELL* cell = nullptr;
++    if (destination.WorldSpaceId)
++    {
++        // Exterior persistent cells do not identify the destination grid cell.
++        auto* world = Cast<TESWorldSpace>(TESForm::GetById(worldId));
++        if (world)
+         {
+-            spdlog::error("Failed to fetch cell to teleport to.");
+-            m_world.GetOverlayService().SendSystemMessage("Teleporting to player failed.");
+-            return;
++            const auto grid = GridCellCoords::CalculateGridCellCoords(destination.Position);
++            cell = world->LoadCell(grid.X, grid.Y);
+         }
+     }
+-
 -    PlayerCharacter::Get()->MoveTo(pCell, acMessage.Position);
-+    RestoreSurvivalFastTravel();
-+    if (auto* player = PlayerCharacter::Get()) player->MoveTo(pCell, acMessage.Position);
++    else cell = Cast<TESObjectCELL>(TESForm::GetById(cellId));
++    ui->CloseAllMenus();
++    if (!cell || !player->TeleportTo(cell, destination.Position))
++    {
++        SendSystemMessage("Teleport failed: destination is unavailable. Check both players have matching location mods.");
++        m_pendingTeleport.reset(); return;
++    }
++    m_teleportLaunched = true;
++    m_teleportStarted = now;
++    spdlog::info("Co-op direct teleport: cell {:X}, world {:X}, position {}, {}, {}", cellId, worldId,
++        destination.Position.x, destination.Position.y, destination.Position.z);
  }
  
  void OverlayService::OnNotifyPlayerHealthUpdate(const NotifyPlayerHealthUpdate& acMessage) noexcept
@@ -2040,6 +2250,38 @@ index 00000000..42aeb548
 +    m_state.clear(); m_seen.clear(); m_pendingRoleSeeds.clear(); m_grownPlots.clear(); m_pendingHarvests.clear(); m_pendingCrops.clear();
 +    m_authority = m_cursor = 0; m_scan = m_poll = 0; HarvestCommit = false;
 +}
+diff --git a/Code/client/Services/OverlayService.h b/Code/client/Services/OverlayService.h
+index 26736b70..2704a103 100644
+--- a/Code/client/Services/OverlayService.h
++++ b/Code/client/Services/OverlayService.h
+@@ -1,6 +1,8 @@
+ #pragma once
+ 
+ #include <chrono>
++#include <optional>
++#include <Messages/NotifyTeleport.h>
+ 
+ #include <include/internal/cef_ptr.h>
+ 
+@@ -85,6 +87,7 @@ protected:
+     void OnPartyLeftEvent(const PartyLeftEvent& acEvent) noexcept;
+ 
+ private:
++    void RunTeleport() noexcept;
+     void RunDebugDataUpdates() noexcept;
+     void RunPlayerHealthUpdates() noexcept;
+ 
+@@ -94,6 +97,10 @@ private:
+     World& m_world;
+     TransportService& m_transport;
+ 
++    std::optional<NotifyTeleport> m_pendingTeleport;
++    std::chrono::steady_clock::time_point m_teleportDeadline{}, m_teleportStarted{};
++    bool m_teleportLaunched = false;
++
+     int m_lastResyncSeconds = -2;
+     std::chrono::steady_clock::time_point m_lastResyncHudUpdate{};
+     bool m_active = false;
 diff --git a/Code/client/Services/PapyrusService.h b/Code/client/Services/PapyrusService.h
 index 13737da5..91122112 100644
 --- a/Code/client/Services/PapyrusService.h
@@ -2341,7 +2583,7 @@ index 6d60709b..34e1d91f 100644
      ctx().emplace<CalendarService>(*this, m_dispatcher, m_transport);
      ctx().emplace<QuestService>(*this, m_dispatcher);
 diff --git a/Code/common/BuildInfo.h.in b/Code/common/BuildInfo.h.in
-index 33cc05f3..e0be9d6b 100644
+index 33cc05f3..524bb16f 100644
 --- a/Code/common/BuildInfo.h.in
 +++ b/Code/common/BuildInfo.h.in
 @@ -1,4 +1,4 @@
@@ -2349,7 +2591,7 @@ index 33cc05f3..e0be9d6b 100644
  // This file was autogenerated by xmake
  #define BUILD_BRANCH "survival-worlditems"
 -#define BUILD_COMMIT "survival-sync-v07-quest-sync-draft"
-+#define BUILD_COMMIT "survival-sync-v084-survival-companions-draft"
++#define BUILD_COMMIT "survival-sync-v085-direct-teleport-draft"
 diff --git a/Code/common/CompanionRolePolicy.h b/Code/common/CompanionRolePolicy.h
 new file mode 100644
 index 00000000..c026d63c
@@ -2581,6 +2823,28 @@ index 824b2508..427d63c3 100644
          return 0.f;
      return static_cast<float>(hours);
  }
+diff --git a/Code/common/TeleportPolicy.h b/Code/common/TeleportPolicy.h
+new file mode 100644
+index 00000000..09662e40
+--- /dev/null
++++ b/Code/common/TeleportPolicy.h
+@@ -0,0 +1,16 @@
++#pragma once
++#include <cmath>
++namespace CoopTeleport
++{
++inline bool Valid(float x, float y, float z)
++{
++    return std::isfinite(x) && std::isfinite(y) && std::isfinite(z) &&
++        std::abs(x) <= 10000000.f && std::abs(y) <= 10000000.f && std::abs(z) <= 10000000.f;
++}
++inline bool Arrived(float x, float y, float z, float tx, float ty, float tz)
++{
++    if (!Valid(x, y, z) || !Valid(tx, ty, tz)) return false;
++    const double dx = double(x) - tx, dy = double(y) - ty, dz = double(z) - tz;
++    return dx * dx + dy * dy + dz * dz <= 256. * 256.;
++}
++}
 diff --git a/Code/common/WorldProgressPolicy.h b/Code/common/WorldProgressPolicy.h
 new file mode 100644
 index 00000000..78f399b3
@@ -3073,6 +3337,60 @@ index 2afe4a34..4e66b0a5 100644
      std::unordered_map<uint32_t, uint32_t> m_tokens;
      entt::scoped_connection m_request, m_leave;
  };
+diff --git a/Code/server/Services/OverlayService.cpp b/Code/server/Services/OverlayService.cpp
+index df534329..1aef41ac 100644
+--- a/Code/server/Services/OverlayService.cpp
++++ b/Code/server/Services/OverlayService.cpp
+@@ -16,6 +16,7 @@
+ #include "Game/Player.h"
+ 
+ #include <regex>
++#include <TeleportPolicy.h>
+ 
+ 
+ OverlayService::OverlayService(World& aWorld, entt::dispatcher& aDispatcher)
+@@ -75,24 +76,25 @@ void OverlayService::OnPlayerDialogue(const PacketEvent<PlayerDialogueRequest>&
+ 
+ void OverlayService::OnTeleport(const PacketEvent<TeleportRequest>& acMessage) const noexcept
+ {
++    auto fail = [&]()
++    {
++        NotifyChatMessageBroadcast error{};
++        error.MessageType = kSystemMessage;
++        error.ChatMessage = "Teleport failed: target player has no available location. Wait until they finish loading.";
++        acMessage.pPlayer->Send(error);
++    };
+     Player* pTargetPlayer = m_world.GetPlayerManager().GetById(acMessage.Packet.PlayerId);
+-    if (!pTargetPlayer)
+-        return;
+-
++    if (!pTargetPlayer) { fail(); return; }
++    const auto character = pTargetPlayer->GetCharacter();
++    const auto* movement = character ? m_world.try_get<MovementComponent>(*character) : nullptr;
++    const auto& cell = pTargetPlayer->GetCellComponent();
++    if (!movement || (!cell.Cell && !cell.WorldSpaceId) ||
++        !CoopTeleport::Valid(movement->Position.x, movement->Position.y, movement->Position.z))
++    { fail(); return; }
+     NotifyTeleport response{};
+-
+-    auto character = pTargetPlayer->GetCharacter();
+-    if (character)
+-    {
+-        const auto* pMovementComponent = m_world.try_get<MovementComponent>(*character);
+-        if (pMovementComponent)
+-        {
+-            const auto& cellComponent = pTargetPlayer->GetCellComponent();
+-            response.CellId = cellComponent.Cell;
+-            response.Position = pMovementComponent->Position;
+-            response.WorldSpaceId = cellComponent.WorldSpaceId;
+-        }
+-    }
++    response.CellId = cell.Cell;
++    response.Position = movement->Position;
++    response.WorldSpaceId = cell.WorldSpaceId;
+ 
+     acMessage.pPlayer->Send(response);
+ }
 diff --git a/Code/server/Services/PlayerService.cpp b/Code/server/Services/PlayerService.cpp
 index e887a6ae..0daf457e 100644
 --- a/Code/server/Services/PlayerService.cpp
@@ -3416,6 +3734,18 @@ index 63000774..844ce2d4 100644
      ctx().emplace<CoopChestService>(*this, m_dispatcher);
      ctx().emplace<ModsComponent>();
      ctx().emplace<ServerListService>(*this, m_dispatcher);
+diff --git a/Code/skyrim_ui/src/app/components/party-menu/party-menu.component.ts b/Code/skyrim_ui/src/app/components/party-menu/party-menu.component.ts
+index cbc2ce67..d8d3670d 100644
+--- a/Code/skyrim_ui/src/app/components/party-menu/party-menu.component.ts
++++ b/Code/skyrim_ui/src/app/components/party-menu/party-menu.component.ts
+@@ -57,6 +57,7 @@ export class PartyMenuComponent {
+ 
+   public teleportToPlayer(playerId: number) {
+     this.clientService.teleportToPlayer(playerId);
++    this.clientService.deactivate();
+   }
+ 
+   public acceptPartyInvite(inviterId: number) {
 diff --git a/Code/skyrim_ui/src/app/components/root/root.component.html b/Code/skyrim_ui/src/app/components/root/root.component.html
 index 84b59f7e..f61c14bf 100644
 --- a/Code/skyrim_ui/src/app/components/root/root.component.html
@@ -3588,10 +3918,10 @@ index 52eb4999..9ad554bf 100644
    autoResyncOff(): void;
 diff --git a/Code/tests/coop_fixes.cpp b/Code/tests/coop_fixes.cpp
 new file mode 100644
-index 00000000..6d027019
+index 00000000..05c9aa8e
 --- /dev/null
 +++ b/Code/tests/coop_fixes.cpp
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,104 @@
 +#include <TiltedCore/Stl.hpp>
 +#include <TiltedCore/Allocator.hpp>
 +#include <TiltedCore/Buffer.hpp>
@@ -3681,6 +4011,20 @@ index 00000000..6d027019
 +    REQUIRE_FALSE(RestClock::Hold(1400, 4000, 11.25, 11.25)); // Shared skip acknowledged.
 +    REQUIRE_FALSE(RestClock::Hold(4000, 4000, 10.95, 11.25)); // Bounded recovery if server rejects the skip.
 +    REQUIRE_FALSE(RestClock::Hold(1400, 4000, 11.1, 11.05)); // Interrupted sleep uses actual shorter target.
++}
++
++#include <TeleportPolicy.h>
++TEST_CASE("Co-op teleport validates destination and confirms actual arrival", "[coop-fixes]")
++{
++    REQUIRE(CoopTeleport::Valid(-73502.2f, -57.5f, -4951.6f));
++    REQUIRE_FALSE(CoopTeleport::Valid(NAN, 0, 0));
++    REQUIRE_FALSE(CoopTeleport::Valid(0, INFINITY, 0));
++    REQUIRE_FALSE(CoopTeleport::Valid(0, 0, 10000001.f));
++    REQUIRE(CoopTeleport::Arrived(-73502, -57, -4951, -73502, -57, -4951));
++    REQUIRE(CoopTeleport::Arrived(0, 0, 64, 0, 0, 0));
++    REQUIRE_FALSE(CoopTeleport::Arrived(0, 0, 0, 0, 0, 512));
++    REQUIRE_FALSE(CoopTeleport::Arrived(0, 0, 0, 10000, 0, 0));
++    REQUIRE_FALSE(CoopTeleport::Arrived(NAN, 0, 0, 0, 0, 0));
 +}
 diff --git a/Code/tests/encoding.cpp b/Code/tests/encoding.cpp
 index 8c828c2a..feef9c23 100644
