@@ -397,10 +397,10 @@ index 7e86c133..5c9bc2a1 100644
      float m_pendingSkipHours = 0.f;
 diff --git a/Code/client/Services/CompanionAliases.h b/Code/client/Services/CompanionAliases.h
 new file mode 100644
-index 00000000..09097f00
+index 00000000..52f1a814
 --- /dev/null
 +++ b/Code/client/Services/CompanionAliases.h
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,63 @@
 +#pragma once
 +#include <Services/ScriptStateAccess.h>
 +#include <Services/PapyrusService.h>
@@ -415,7 +415,12 @@ index 00000000..09097f00
 +{
 +    ScriptStateAccess::Object object(form, script); auto* value = object.At(property);
 +    auto* bound = value ? value->GetObject() : nullptr; auto* policy = BSScript::IObjectHandlePolicy::Get();
-+    return bound && policy ? policy->GetObjectForHandle(0, bound->GetHandle()) : nullptr;
++    auto* vm = GameVM::Get() ? GameVM::Get()->virtualMachine : nullptr;
++    if (!bound || !policy || !vm) return nullptr;
++    // Native aliases are not TESForms; resolve with their registered VM type.
++    uint32_t nativeType{}; BSFixedString nativeName("ReferenceAlias");
++    if (!ScriptStateAccess::Call<0x0D, bool, const BSFixedString*, uint32_t*>(vm, &nativeName, &nativeType)) return nullptr;
++    return policy->GetObjectForHandle(nativeType, bound->GetHandle());
 +}
 +inline Actor* Get(void* alias)
 +{
@@ -430,7 +435,7 @@ index 00000000..09097f00
 +    if (!alias || !fn) return false;
 +    if (actor) { PapyrusFunction<void, void, TESObjectREFR*> set(fn); set(alias, actor); }
 +    else { PapyrusFunction<void, void> clear(fn); clear(alias); }
-+    return true;
++    return Get(alias) == actor;
 +}
 +inline void Evaluate(Actor* actor)
 +{
@@ -446,8 +451,8 @@ index 00000000..09097f00
 +        auto* alias = Alias(quest, "DialogueFollowerScript", property);
 +        if (Get(alias) != actor) continue;
 +        if (!Set(alias, nullptr)) continue;
-+        auto* count = Cast<TESGlobal>(ScriptStateAccess::Form(quest, "DialogueFollowerScript",
-+            property == std::string("pFollowerAlias") ? "pPlayerFollowerCount" : "pPlayerAnimalCount"));
++        auto* count = Cast<TESGlobal>(TESForm::GetById(
++            property == std::string("pFollowerAlias") ? 0xBCC98 : 0x5C84A));
 +        if (count) count->f = 0;
 +        changed = true;
 +    }
@@ -1157,10 +1162,10 @@ index 060a5836..c504aa2c 100644
  void OverlayService::OnNotifyPlayerHealthUpdate(const NotifyPlayerHealthUpdate& acMessage) noexcept
 diff --git a/Code/client/Services/Generic/PersonalCompanions.cpp b/Code/client/Services/Generic/PersonalCompanions.cpp
 new file mode 100644
-index 00000000..75321f56
+index 00000000..fb5db5ee
 --- /dev/null
 +++ b/Code/client/Services/Generic/PersonalCompanions.cpp
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,81 @@
 +#include <TiltedOnlinePCH.h>
 +#include <Services/PersonalCompanions.h>
 +#include <Services/CompanionAliases.h>
@@ -1171,6 +1176,7 @@ index 00000000..75321f56
 +#include <Games/TES.h>
 +#include <Forms/TESObjectCELL.h>
 +#include <Events/UpdateEvent.h>
++#include <Events/DisconnectedEvent.h>
 +#include <Interface/UI.h>
 +#include <WorldProgressBindings.h>
 +#include <algorithm>
@@ -1183,8 +1189,9 @@ index 00000000..75321f56
 +}
 +struct PersonalCompanions
 +{
-+    entt::scoped_connection update;
++    entt::scoped_connection update, disconnected;
 +    uint64_t next{}, settled{}, ready{}; uint32_t candidate{};
++    void OnDisconnected(const DisconnectedEvent&) { next = settled = ready = 0; candidate = 0; }
 +    void OnUpdate(const UpdateEvent&)
 +    {
 +        auto& world = World::Get(); const auto now = world.GetTick(); if (now < next) return; next = now + 500;
@@ -1208,13 +1215,13 @@ index 00000000..75321f56
 +        std::erase_if(inventory.Entries, [](const auto& e) { return e.IsQuestItem; });
 +        const auto values = follower->GetEssentialActorValues(); const auto factions = follower->GetFactions();
 +        PapyrusFunction<TESObjectREFR*, TESObjectREFR, TESForm*, int32_t, bool, bool> place(fn);
-+        auto* personal = Cast<Actor>(place(player, follower->baseForm, 1, true, true)); if (!personal) return;
++        auto* personal = Cast<Actor>(place(player, follower->baseForm, 1, true, true)); if (!personal) { settled = now + 5000; return; }
 +        personal->GetExtension()->SetRemote(false); personal->SetSkipSaveFlag(false);
 +        { ScopedInventoryOverride guard; personal->SetActorInventory(inventory); }
 +        personal->SetActorValues(values); personal->SetFactions(factions);
 +        personal->SetPlayerTeammate(true); personal->SetActorValue(95, 0);
 +        if (auto* faction = Cast<TESFaction>(TESForm::GetById(0x5C84E))) personal->SetFactionRank(faction, 0);
-+        if (!CompanionAliases::Set(alias, personal)) { personal->Delete(); return; }
++        if (!CompanionAliases::Set(alias, personal)) { personal->Delete(); settled = now + 5000; return; }
 +        follower->SetPlayerTeammate(false);
 +        if (auto* faction = Cast<TESFaction>(TESForm::GetById(0x5C84E))) follower->SetFactionRank(faction, -1);
 +        personal->EnableImpl(); CompanionAliases::Evaluate(personal); CompanionAliases::Evaluate(follower);
@@ -1238,6 +1245,7 @@ index 00000000..75321f56
 +{
 +    static PersonalCompanions service;
 +    service.update = dispatcher.sink<UpdateEvent>().connect<&PersonalCompanions::OnUpdate>(&service);
++    service.disconnected = dispatcher.sink<DisconnectedEvent>().connect<&PersonalCompanions::OnDisconnected>(&service);
 +}
 diff --git a/Code/client/Services/Generic/QuestRewardSync.cpp b/Code/client/Services/Generic/QuestRewardSync.cpp
 new file mode 100644
@@ -1557,10 +1565,10 @@ index 00000000..a77cafa9
 +});
 diff --git a/Code/client/Services/Generic/WorldProgressService.cpp b/Code/client/Services/Generic/WorldProgressService.cpp
 new file mode 100644
-index 00000000..2e5cf977
+index 00000000..42aeb548
 --- /dev/null
 +++ b/Code/client/Services/Generic/WorldProgressService.cpp
-@@ -0,0 +1,462 @@
+@@ -0,0 +1,470 @@
 +#include <Services/WorldProgressService.h>
 +#include <Services/ScriptStateAccess.h>
 +#include <Services/CompanionAliases.h>
@@ -1881,6 +1889,14 @@ index 00000000..2e5cf977
 +        auto remote = m_state.find(key); auto seen = m_seen.find(key);
 +        const bool plot = key >= WorldProgress::PlotKeyBase;
 +        bool changed = seen != m_seen.end() && (plot ? seen->second[0] != current[0] : seen->second != current);
++        if (!plot && WorldProgress::Bindings[index].Kind == 8 && current.size() == 3 && current[0] == 1 &&
++            remote != m_state.end() && current != remote->second.Numbers)
++        {
++            // A saved personal steward receives a fresh network ID on reconnect.
++            // Only its native AI owner can replace that stale replica identity.
++            if (const auto entity = Utils::FindEntityByServerId(uint32_t(current[1])); entity && m_world.all_of<LocalComponent>(*entity))
++                changed = true;
++        }
 +        const bool aliasSeed = index < WorldProgress::Bindings.size() && WorldProgress::Bindings[index].Kind == 8 && current.size() == 3 && (current[0] == 1 || current[2] != 0);
 +        const bool seed = remote == m_state.end() && (m_authority == m_transport.GetLocalPlayerId() || aliasSeed);
 +        if (seed && aliasSeed) q.Deposit = true;
