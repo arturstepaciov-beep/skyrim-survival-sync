@@ -1,6 +1,19 @@
-# SurvivalSync v0.8.3
+# SurvivalSync v0.8.4
 
-Custom Skyrim Together client and server based on upstream commit 9ce0338522277e0ff0a12e8d2aa09ce67ad41a59. Install matching v0.8.3 client files on both PCs and run the included v0.8.3 server. Keep SurvivalSyncCoop.esp enabled. Retains v0.8.1 housing repairs and earlier features. Preserve config/CoopChest.dat when updating.
+Custom Skyrim Together client and server based on upstream commit 9ce0338522277e0ff0a12e8d2aa09ce67ad41a59. Install matching v0.8.4 client files on both PCs and run the included v0.8.4 server. Keep SurvivalSyncCoop.esp enabled. Retains v0.8.1 housing repairs and earlier features. Preserve config/CoopChest.dat when updating.
+
+## Survival, quests and personal companions
+
+- Corrects the vanilla global Papyrus callback ABI (VM, stack, static base, arguments). Survival fast travel now checks the actual engine control and re-enables it before a co-op teleport, in addition to the HUD update. Native restrictions unrelated to Survival still apply.
+- Third-person projectile launch angles converge on the engine crosshair ray hit, including local spell projectiles. Corrected angles are transmitted to peers. Projectile gravity, range and collision remain native; empty-sky launches retain native aim.
+- Miscellaneous quest sync defaults on. Visible objective-only quests can sync before their first numbered stage. New side/misc quest progress made by a guest is proposed to the leader and published through the same authoritative journal; old guest quests are baselined rather than bulk-imported. Main-quest authority remains with the leader. If retaining an old STServer.ini, set bEnableMiscQuestSync=true.
+- Holds the completed local rest clock briefly while the server acknowledges a sleep/wait skip so delayed sleep scripts do not observe the pre-sleep hour. Normal outdoor sleep limits and disease modifiers remain.
+- Each player's vanilla follower receives an independent persistent actor reference after recruitment in a party. Two players can therefore have their own Lydia. The companion uses the existing temporary-actor replication path, with its own AI owner; saved personal companions are preserved when reconnecting. Third-party follower frameworks are not adapted. Original quest reference identities are retained; quest-bound inventory is not copied to a personal companion.
+- Official Hearthfire and Goldenhills steward alias assignments sync alongside housing flags, including named actors and personal-companion replicas. Becoming a steward clears a matching local follower alias/count and refreshes AI packages. Role IDs are committed atomically so concurrent edits cannot mix identities.
+
+Combat dependency fixes for the installed Skyrim 1.7.104 runtime: the current local SKSE log rejects the old Valhalla Combat and Ultimate Combat DLLs. Their ESPs alone do not run native combat or stamina features. Install matching runtime updates on both PCs; this package does not redistribute or replace those third-party DLLs. Valhalla 1.7.104 patch source: https://github.com/DeadOnKeyboard1/ValhallaCombat-v1.3.5-AE-1.7.104.0-Patch . Ultimate Combat NG DLL update: https://www.nexusmods.com/skyrimspecialedition/mods/163377?tab=files .
+
+Two-PC gameplay validation is still required, especially follower recruitment, reconnect/save/load, steward dismissal and indoor sleep. Do not mix client/server versions: the journal proposal action and housing binding indices changed. Preserve config/CoopChest.dat.
 
 ## Party crash hotfix
 
@@ -11,7 +24,7 @@ Custom Skyrim Together client and server based on upstream commit 9ce0338522277e
 ## Co-op fixes and HUD
 
 - Shares item/gold grants issued by Papyrus quest and dialogue fragments (QF_/TIF_) with the current party. Tracks source fragment, callsite, item and occurrence to avoid doubling a reward when the same script executes locally and remotely. This does not invent rewards from a completed journal flag or copy unrelated loot. Custom reward systems outside these script paths need separate adapters.
-- Party locations update every second, including distant players. Adds a compass overlay and projected overhead names for loaded party actors. Native world-map markers are temporarily disabled in v0.8.3 while investigating the crash when a party forms; current-location teleport buttons remain available.
+- Party locations update every second, including distant players. Adds a compass overlay and projected overhead names for loaded party actors. Native world-map markers are temporarily disabled in v0.8.4 while investigating the crash when a party forms; current-location teleport buttons remain available.
 - Adds direct "Teleport to <name>" buttons in F2 using the player's current server location.
 - Adds a separate hunger bar driven by the installed official Survival Mode hunger globals, with percentage and stage label. It is hidden when Survival Mode is inactive.
 - Restores the fast-travel control disabled by Survival Mode's watcher while retaining hunger, cold and exhaustion updates. Other normal engine travel checks remain in effect.

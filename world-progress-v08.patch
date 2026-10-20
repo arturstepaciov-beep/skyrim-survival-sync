@@ -278,6 +278,43 @@ index e0edcf50..85e37f2e 100644
  }
  
  bool NiCamera::WorldPtToScreenPt3(float* matrix, const NiRect<float>* port, const NiPoint3* p_in, float* x_out, float* y_out, float* z_out, float zeroTolerance)
+diff --git a/Code/client/Games/Skyrim/Projectiles/Projectile.cpp b/Code/client/Games/Skyrim/Projectiles/Projectile.cpp
+index 35abd4d9..80d9f9e6 100644
+--- a/Code/client/Games/Skyrim/Projectiles/Projectile.cpp
++++ b/Code/client/Games/Skyrim/Projectiles/Projectile.cpp
+@@ -9,6 +9,9 @@
+ #include <Events/ProjectileLaunchedEvent.h>
+ #include <Games/Skyrim/Forms/TESObjectCELL.h>
+ #include <Forms/SpellItem.h>
++#include <PlayerCharacter.h>
++#include <Camera/PlayerCamera.h>
++#include <CrosshairAimPolicy.h>
+ 
+ TP_THIS_FUNCTION(TLaunch, BSPointerHandle<Projectile>*, BSPointerHandle<Projectile>, Projectile::LaunchData& arData);
+ static TLaunch* RealLaunch = nullptr;
+@@ -41,6 +44,22 @@ BSPointerHandle<Projectile>* Projectile::Launch(BSPointerHandle<Projectile>* apR
+ 
+ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projectile>, Projectile::LaunchData& arData)
+ {
++    // Use the engine's crosshair ray hit so shoulder-camera parallax is removed
++    // before capturing the launch angles sent to the other player.
++    if (arData.pShooter == PlayerCharacter::Get())
++    {
++        auto* camera = PlayerCamera::Get();
++        struct PickData { uint32_t Pad, Target, Actor, Grab; NiPoint3 Point; uint32_t Padding; void* Collider; };
++        static_assert(offsetof(PickData, Point) == 0x10 && offsetof(PickData, Collider) == 0x20);
++        POINTER_SKYRIMSE(PickData*, pick, 401585);
++        const auto* hit = pick.Get() ? *pick.Get() : nullptr;
++        if (camera && !camera->IsFirstPerson() && hit && hit->Collider)
++        {
++            const auto delta = hit->Point - arData.Origin;
++            CrosshairAim::Angles(delta.x, delta.y, delta.z, arData.fXAngle, arData.fZAngle);
++        }
++    }
++
+     // sync concentration spells through spell cast sync, the rest through projectile sync
+     if (arData.pSpell)
+     {
 diff --git a/Code/client/Games/Skyrim/TESObjectREFR.cpp b/Code/client/Games/Skyrim/TESObjectREFR.cpp
 index 2cf6e6b0..3d4710c7 100644
 --- a/Code/client/Games/Skyrim/TESObjectREFR.cpp
@@ -346,6 +383,82 @@ index cab85f22..025c2134 100644
      World& m_world;
      entt::dispatcher& m_dispatcher;
      TransportService& m_transport;
+diff --git a/Code/client/Services/CalendarService.h b/Code/client/Services/CalendarService.h
+index 7e86c133..5c9bc2a1 100644
+--- a/Code/client/Services/CalendarService.h
++++ b/Code/client/Services/CalendarService.h
+@@ -57,6 +57,7 @@ private:
+     float m_accountedSkipDays{};
+     float m_deferredSkipDays{};
+ 
++    uint64_t m_restClockUntil = 0;
+     uint64_t m_lastTick = 0;
+     uint64_t m_lastLogTick = 0;
+     float m_pendingSkipHours = 0.f;
+diff --git a/Code/client/Services/CompanionAliases.h b/Code/client/Services/CompanionAliases.h
+new file mode 100644
+index 00000000..09097f00
+--- /dev/null
++++ b/Code/client/Services/CompanionAliases.h
+@@ -0,0 +1,58 @@
++#pragma once
++#include <Services/ScriptStateAccess.h>
++#include <Services/PapyrusService.h>
++#include <World.h>
++#include <Actor.h>
++#include <PlayerCharacter.h>
++#include <Forms/TESFaction.h>
++#include <Forms/TESGlobal.h>
++namespace CompanionAliases
++{
++inline void* Alias(TESForm* form, const char* script, const char* property)
++{
++    ScriptStateAccess::Object object(form, script); auto* value = object.At(property);
++    auto* bound = value ? value->GetObject() : nullptr; auto* policy = BSScript::IObjectHandlePolicy::Get();
++    return bound && policy ? policy->GetObjectForHandle(0, bound->GetHandle()) : nullptr;
++}
++inline Actor* Get(void* alias)
++{
++    const auto* fn = World::Get().ctx().at<PapyrusService>().Get("ReferenceAlias", "GetReference");
++    if (!alias || !fn) return nullptr;
++    PapyrusFunction<TESObjectREFR*, void> get(fn); return Cast<Actor>(get(alias));
++}
++inline bool Set(void* alias, Actor* actor)
++{
++    auto& papyrus = World::Get().ctx().at<PapyrusService>();
++    const auto* fn = papyrus.Get("ReferenceAlias", actor ? "ForceRefTo" : "Clear");
++    if (!alias || !fn) return false;
++    if (actor) { PapyrusFunction<void, void, TESObjectREFR*> set(fn); set(alias, actor); }
++    else { PapyrusFunction<void, void> clear(fn); clear(alias); }
++    return true;
++}
++inline void Evaluate(Actor* actor)
++{
++    const auto* fn = World::Get().ctx().at<PapyrusService>().Get("Actor", "EvaluatePackage");
++    if (actor && fn) { PapyrusFunction<void, Actor> evaluate(fn); evaluate(actor); }
++}
++inline void Detach(Actor* actor)
++{
++    if (!actor || actor == PlayerCharacter::Get()) return;
++    auto* quest = TESForm::GetById(0x750BA); bool changed = false;
++    for (const auto* property : {"pFollowerAlias", "pAnimalAlias"})
++    {
++        auto* alias = Alias(quest, "DialogueFollowerScript", property);
++        if (Get(alias) != actor) continue;
++        if (!Set(alias, nullptr)) continue;
++        auto* count = Cast<TESGlobal>(ScriptStateAccess::Form(quest, "DialogueFollowerScript",
++            property == std::string("pFollowerAlias") ? "pPlayerFollowerCount" : "pPlayerAnimalCount"));
++        if (count) count->f = 0;
++        changed = true;
++    }
++    if (changed)
++    {
++        actor->SetPlayerTeammate(false);
++        if (auto* faction = Cast<TESFaction>(TESForm::GetById(0x5C84E))) actor->SetFactionRank(faction, -1);
++        actor->SetActorValue(95, 0); Evaluate(actor);
++    }
++}
++}
 diff --git a/Code/client/Services/CoopChestService.h b/Code/client/Services/CoopChestService.h
 index 1c1cc217..33004fe5 100644
 --- a/Code/client/Services/CoopChestService.h
@@ -520,10 +633,18 @@ index 6df327cd..f3e5f6a7 100644
 +    }
 +}
 diff --git a/Code/client/Services/Generic/CalendarService.cpp b/Code/client/Services/Generic/CalendarService.cpp
-index ac24ad06..196783f0 100644
+index ac24ad06..b06eb220 100644
 --- a/Code/client/Services/Generic/CalendarService.cpp
 +++ b/Code/client/Services/Generic/CalendarService.cpp
-@@ -79,7 +79,7 @@ void CalendarService::BeginTimeSkip(float aStartTimeInDays, float aDesiredEndTim
+@@ -7,6 +7,7 @@
+ #include <Services/TransportService.h>
+ #include <World.h>
+ #include <SurvivalTimePolicy.h>
++#include <RestClockPolicy.h>
+ #include <cmath>
+ 
+ #include <Forms/TESObjectCELL.h>
+@@ -79,7 +80,7 @@ void CalendarService::BeginTimeSkip(float aStartTimeInDays, float aDesiredEndTim
      if (!s_gameClockLocked || !m_transport.IsOnline() || !m_hasServerTime)
          return;
      const float hours = (aDesiredEndTimeInDays - aStartTimeInDays) * 24.f;
@@ -532,7 +653,7 @@ index ac24ad06..196783f0 100644
          return;
      s_localTimeSkip = true;
      m_deferredSkipDays = 0;
-@@ -114,7 +114,7 @@ void CalendarService::EndTimeSkip(bool aInterrupted, const char* apKind) noexcep
+@@ -114,12 +115,23 @@ void CalendarService::EndTimeSkip(bool aInterrupted, const char* apKind) noexcep
      if (!s_gameClockLocked || !m_transport.IsOnline())
          return;
  
@@ -541,7 +662,23 @@ index ac24ad06..196783f0 100644
      {
          spdlog::info("{} ended without a time skip: interrupted {}, hours {}", apKind, aInterrupted, hours);
          return;
-@@ -137,7 +137,7 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
+     }
+ 
++    // Papyrus OnSleepStop runs asynchronously. Do not rewind its clock to the
++    // pre-sleep server hour before it has measured the hours actually rested.
++    const auto* time = TimeData::Get();
++    m_onlineTime.m_timeModel.Time = time->GameHour->f;
++    m_onlineTime.m_timeModel.Day = time->GameDay->f;
++    m_onlineTime.m_timeModel.Month = time->GameMonth->f;
++    m_onlineTime.m_timeModel.Year = time->GameYear->f;
++    m_fadeTimer = kTransitionSpeed;
++    m_lastTick = m_world.GetTick();
++    m_restClockUntil = m_lastTick + 3000;
++
+     RequestTimeSkip request{};
+     request.TargetTime = m_pendingSkipTarget.m_timeModel;
+     m_transport.Send(request);
+@@ -137,7 +149,7 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
      if (s_gameClockLocked && m_hasServerTime)
      {
          const double skippedDays = SurvivalTime::InDays(newServerTime.m_timeModel) - SurvivalTime::InDays(m_serverTime.m_timeModel);
@@ -550,7 +687,28 @@ index ac24ad06..196783f0 100644
          {
              if (s_localTimeSkip)
                  m_deferredSkipDays += static_cast<float>(skippedDays);
-@@ -217,6 +217,8 @@ void CalendarService::ToggleGameClock(bool aEnable)
+@@ -159,8 +171,11 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
+     if (!s_gameClockLocked)
+         ToggleGameClock(false);
+     m_onlineTime.m_timeModel.TimeScale = acMessage.timeModel.TimeScale;
+-    m_onlineTime.m_timeModel.Time = acMessage.timeModel.Time;
++    if (!RestClock::Hold(m_world.GetTick(), m_restClockUntil,
++        SurvivalTime::InDays(newServerTime.m_timeModel), SurvivalTime::InDays(m_pendingSkipTarget.m_timeModel)))
++    { m_onlineTime.m_timeModel.Time = acMessage.timeModel.Time; m_restClockUntil = 0; }
+ 
++    if (m_restClockUntil) return;
+     if (m_world.GetServerSettings().SyncPlayerCalendar)
+     {
+         m_onlineTime.m_timeModel.Day = acMessage.timeModel.Day;
+@@ -183,6 +198,7 @@ void CalendarService::OnDisconnected(const DisconnectedEvent&) noexcept
+     m_hasServerTime = false;
+     m_lastTick = 0;
+     m_pendingSkipHours = 0.f;
++    m_restClockUntil = 0;
+     // signal a time transition
+     m_fadeTimer = 0.f;
+     ToggleGameClock(true);
+@@ -217,6 +233,8 @@ void CalendarService::ToggleGameClock(bool aEnable)
  
  void CalendarService::HandleUpdate(const UpdateEvent& aEvent) noexcept
  {
@@ -560,18 +718,32 @@ index ac24ad06..196783f0 100644
      {
          const auto updateDelta = static_cast<float>(aEvent.Delta);
 diff --git a/Code/client/Services/Generic/CharacterService.cpp b/Code/client/Services/Generic/CharacterService.cpp
-index 57a9247a..a2bc5957 100644
+index 57a9247a..275e08f9 100644
 --- a/Code/client/Services/Generic/CharacterService.cpp
 +++ b/Code/client/Services/Generic/CharacterService.cpp
-@@ -4,6 +4,7 @@
+@@ -4,8 +4,10 @@
  #include <Services/PartyService.h>
  
  #include <Services/CharacterService.h>
 +#include <Services/ActorValueService.h>
  #include <Services/QuestService.h>
  #include <Services/TransportService.h>
++#include <Services/PersonalCompanions.h>
  
-@@ -631,9 +632,8 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage)
+ #include <Games/References.h>
+ #include <Games/Misc/SubtitleManager.h>
+@@ -321,7 +323,9 @@ void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) const
+         if (formIdComponent.Id > 0xFF000000)
+         {
+             Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
+-            if (pActor)
++            if (IsLocalCompanion(pActor))
++                ProcessNewEntity(entity);
++            else if (pActor)
+                 pActor->Delete();
+ 
+             continue;
+@@ -631,9 +635,8 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage)
      pActor->rotation.x = acMessage.Rotation.x;
      pActor->rotation.z = acMessage.Rotation.y;
      pActor->MoveTo(PlayerCharacter::Get()->parentCell, acMessage.Position);
@@ -582,7 +754,7 @@ index 57a9247a..a2bc5957 100644
      if (acMessage.IsPlayer)
      {
          pActor->SetIgnoreFriendlyHit(true);
-@@ -1597,9 +1597,8 @@ Actor* CharacterService::CreateCharacterForEntity(entt::entity aEntity) const no
+@@ -1597,9 +1600,8 @@ Actor* CharacterService::CreateCharacterForEntity(entt::entity aEntity) const no
      pActor->rotation.x = acMessage.Rotation.x;
      pActor->rotation.z = acMessage.Rotation.y;
      pActor->MoveTo(PlayerCharacter::Get()->parentCell, pInterpolationComponent->Position);
@@ -593,7 +765,7 @@ index 57a9247a..a2bc5957 100644
      if (acMessage.IsPlayer)
      {
          pActor->SetIgnoreFriendlyHit(true);
-@@ -1725,6 +1724,7 @@ void CharacterService::ProcessLeveledConforms() noexcept
+@@ -1725,6 +1727,7 @@ void CharacterService::ProcessLeveledConforms() noexcept
              {
                  spdlog::info("Completed leveled NPC reconciliation for actor {:X}, base: {:X}, pick: {:X}", it->first, pActor->baseForm->formID, cPickFormId);
                  stage = ReconciliationStage::None;
@@ -601,7 +773,7 @@ index 57a9247a..a2bc5957 100644
                  it = m_pendingLeveledConforms.erase(it);
                  continue;
              }
-@@ -1911,6 +1911,9 @@ void CharacterService::RunRemoteUpdates() noexcept
+@@ -1911,6 +1914,9 @@ void CharacterService::RunRemoteUpdates() noexcept
          if (!pActor || !pActor->GetNiNode())
              continue;
  
@@ -611,7 +783,7 @@ index 57a9247a..a2bc5957 100644
          // By now, the actor has materialized in the world and is ready for further setup
  
          pActor->SetActorInventory(waitingFor3D.SpawnRequest.InventoryContent);
-@@ -1925,6 +1928,7 @@ void CharacterService::RunRemoteUpdates() noexcept
+@@ -1925,6 +1931,7 @@ void CharacterService::RunRemoteUpdates() noexcept
  
          if (pActor->IsDead() != waitingFor3D.SpawnRequest.IsDead)
              waitingFor3D.SpawnRequest.IsDead ? pActor->Kill() : pActor->Respawn();
@@ -748,10 +920,10 @@ index c6232fc4..1af8666f 100644
              if (glm::distance(glm::vec3(player->position), position) > 2200.f) continue;
 diff --git a/Code/client/Services/Generic/CoopHud.cpp b/Code/client/Services/Generic/CoopHud.cpp
 new file mode 100644
-index 00000000..a9419ed5
+index 00000000..604f024a
 --- /dev/null
 +++ b/Code/client/Services/Generic/CoopHud.cpp
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,130 @@
 +#include <TiltedOnlinePCH.h>
 +#include <World.h>
 +#include <Components.h>
@@ -759,6 +931,7 @@ index 00000000..a9419ed5
 +#include <Services/TransportService.h>
 +#include <Services/PapyrusService.h>
 +#include <Services/ScriptStateAccess.h>
++#include <Services/SurvivalTravel.h>
 +#include <OverlayApp.hpp>
 +#include <PlayerCharacter.h>
 +#include <Camera/PlayerCamera.h>
@@ -808,23 +981,7 @@ index 00000000..a9419ed5
 +        auto* maximum = Cast<TESGlobal>(SurvivalForm(0x80C));
 +        if (enabled && enabled->f != 0 && value && maximum && maximum->f > 0 && std::isfinite(value->f))
 +            hunger = std::clamp(double(value->f / maximum->f), 0.0, 1.0);
-+        // Survival's own condition records when its watcher disabled fast travel.
-+        // Restore that control without stopping hunger/cold/exhaustion quests.
-+        if (hunger >= 0)
-+        {
-+            auto* conditions = ScriptStateAccess::Form(SurvivalForm(0x897), "Survival_PlayerInfo", "conditions");
-+            std::vector<float> state;
-+            if (conditions && ScriptStateAccess::Numbers(conditions, "Survival_ConditionsScript", "isFastTravelControlsEnabled", 0, state) && !state.empty() && state[0] == 0)
-+            {
-+                const auto* fn = world.ctx().at<PapyrusService>().Get("Game", "EnableFastTravel");
-+                if (fn)
-+                {
-+                    GlobalPapyrusFunction<void, bool> enable(fn); enable(true);
-+                    state[0] = 1;
-+                    ScriptStateAccess::Numbers(conditions, "Survival_ConditionsScript", "isFastTravelControlsEnabled", 0, state, true);
-+                }
-+            }
-+        }
++        RestoreSurvivalFastTravel();
 +        auto entries = CefListValue::Create(); size_t index = 0;
 +        const auto& party = world.GetPartyService();
 +        // Party locations feed the overlay only. Do not spawn native map
@@ -873,8 +1030,25 @@ index 00000000..a9419ed5
 +    }
 +};
 +}
++bool RestoreSurvivalFastTravel()
++{
++    auto* enabled = Cast<TESGlobal>(SurvivalForm(0x826));
++    if (!enabled || enabled->f == 0 || !GameVM::Get() || !GameVM::Get()->virtualMachine) return false;
++    auto& papyrus = World::Get().ctx().at<PapyrusService>();
++    const auto* query = papyrus.Get("Game", "IsFastTravelControlsEnabled");
++    const auto* enable = papyrus.Get("Game", "EnableFastTravel");
++    if (!query || !enable) return false;
++    GlobalPapyrusFunction<bool> isEnabled(query);
++    if (!isEnabled())
++    {
++        GlobalPapyrusFunction<void, bool> set(enable); set(true);
++    }
++    return isEnabled();
++}
 +void InstallCoopHud(entt::dispatcher& dispatcher)
 +{
++    extern void InstallPersonalCompanions(entt::dispatcher&);
++    InstallPersonalCompanions(dispatcher);
 +    static CoopHud hud;
 +    hud.update = dispatcher.sink<UpdateEvent>().connect<&CoopHud::OnUpdate>(&hud);
 +    hud.notify = dispatcher.sink<NotifyPlayerCellChanged>().connect<&CoopHud::OnLocation>(&hud);
@@ -951,10 +1125,18 @@ index cfc9d925..8f1b342f 100644
          {
              const int seconds = eventArgs->GetInt(0);
 diff --git a/Code/client/Services/Generic/OverlayService.cpp b/Code/client/Services/Generic/OverlayService.cpp
-index 060a5836..032225c1 100644
+index 060a5836..c504aa2c 100644
 --- a/Code/client/Services/Generic/OverlayService.cpp
 +++ b/Code/client/Services/Generic/OverlayService.cpp
-@@ -112,6 +112,8 @@ OverlayService::OverlayService(World& aWorld, TransportService& transport, entt:
+@@ -12,6 +12,7 @@
+ #include <World.h>
+ 
+ #include <Services/OverlayClient.h>
++#include <Services/SurvivalTravel.h>
+ #include <Services/TransportService.h>
+ #include <Services/WorldItemService.h>
+ 
+@@ -112,6 +113,8 @@ OverlayService::OverlayService(World& aWorld, TransportService& transport, entt:
      : m_world(aWorld)
      , m_transport(transport)
  {
@@ -963,6 +1145,100 @@ index 060a5836..032225c1 100644
      m_updateConnection = aDispatcher.sink<UpdateEvent>().connect<&OverlayService::OnUpdate>(this);
      m_connectedConnection = aDispatcher.sink<ConnectedEvent>().connect<&OverlayService::OnConnectedEvent>(this);
      m_disconnectedConnection = aDispatcher.sink<DisconnectedEvent>().connect<&OverlayService::OnDisconnectedEvent>(this);
+@@ -442,7 +445,8 @@ void OverlayService::OnNotifyTeleport(const NotifyTeleport& acMessage) noexcept
+         }
+     }
+ 
+-    PlayerCharacter::Get()->MoveTo(pCell, acMessage.Position);
++    RestoreSurvivalFastTravel();
++    if (auto* player = PlayerCharacter::Get()) player->MoveTo(pCell, acMessage.Position);
+ }
+ 
+ void OverlayService::OnNotifyPlayerHealthUpdate(const NotifyPlayerHealthUpdate& acMessage) noexcept
+diff --git a/Code/client/Services/Generic/PersonalCompanions.cpp b/Code/client/Services/Generic/PersonalCompanions.cpp
+new file mode 100644
+index 00000000..75321f56
+--- /dev/null
++++ b/Code/client/Services/Generic/PersonalCompanions.cpp
+@@ -0,0 +1,78 @@
++#include <TiltedOnlinePCH.h>
++#include <Services/PersonalCompanions.h>
++#include <Services/CompanionAliases.h>
++#include <Services/TransportService.h>
++#include <Services/OverlayService.h>
++#include <Games/ActorExtension.h>
++#include <Games/Overrides.h>
++#include <Games/TES.h>
++#include <Forms/TESObjectCELL.h>
++#include <Events/UpdateEvent.h>
++#include <Interface/UI.h>
++#include <WorldProgressBindings.h>
++#include <algorithm>
++namespace
++{
++TESForm* ResolveCompanionForm(WorldProgress::Form f)
++{
++    auto* mods = ModManager::Get(); auto* mod = mods ? mods->GetByName(f.Plugin) : nullptr;
++    return mod && mod->IsLoaded() && f.Base ? TESForm::GetById(mod->GetFormId(f.Base)) : nullptr;
++}
++struct PersonalCompanions
++{
++    entt::scoped_connection update;
++    uint64_t next{}, settled{}, ready{}; uint32_t candidate{};
++    void OnUpdate(const UpdateEvent&)
++    {
++        auto& world = World::Get(); const auto now = world.GetTick(); if (now < next) return; next = now + 500;
++        auto* player = PlayerCharacter::Get();
++        if (!world.GetTransport().IsOnline() || !world.GetPartyService().IsInParty() || !player ||
++            !player->GetNiNode() || !player->parentCell || !player->parentCell->IsAttached()) { ready = 0; return; }
++        if (!ready) { ready = now + 10000; return; }
++        if (now < ready) return;
++        if (auto* ui = UI::Get(); ui && ui->GetMenuOpen(BSFixedString("Loading Menu"))) return;
++        auto* alias = CompanionAliases::Alias(TESForm::GetById(0x750BA), "DialogueFollowerScript", "pFollowerAlias");
++        auto* follower = CompanionAliases::Get(alias);
++        if (!follower || follower->IsTemporary() || follower->IsDead() || !follower->GetNiNode()) { candidate = 0; return; }
++        for (const auto& b : WorldProgress::Bindings)
++            if (b.Kind == 8 && CompanionAliases::Get(CompanionAliases::Alias(ResolveCompanionForm(b.Target), b.Script, b.Variable)) == follower)
++            { CompanionAliases::Detach(follower); candidate = 0; return; }
++        if (candidate != follower->formID) { candidate = follower->formID; settled = now + 2000; return; }
++        if (now < settled) return;
++        const auto* fn = world.ctx().at<PapyrusService>().Get("ObjectReference", "PlaceAtMe"); if (!fn) return;
++        auto inventory = follower->GetActorInventory();
++        // Quest-bound inventory belongs to the original quest reference.
++        std::erase_if(inventory.Entries, [](const auto& e) { return e.IsQuestItem; });
++        const auto values = follower->GetEssentialActorValues(); const auto factions = follower->GetFactions();
++        PapyrusFunction<TESObjectREFR*, TESObjectREFR, TESForm*, int32_t, bool, bool> place(fn);
++        auto* personal = Cast<Actor>(place(player, follower->baseForm, 1, true, true)); if (!personal) return;
++        personal->GetExtension()->SetRemote(false); personal->SetSkipSaveFlag(false);
++        { ScopedInventoryOverride guard; personal->SetActorInventory(inventory); }
++        personal->SetActorValues(values); personal->SetFactions(factions);
++        personal->SetPlayerTeammate(true); personal->SetActorValue(95, 0);
++        if (auto* faction = Cast<TESFaction>(TESForm::GetById(0x5C84E))) personal->SetFactionRank(faction, 0);
++        if (!CompanionAliases::Set(alias, personal)) { personal->Delete(); return; }
++        follower->SetPlayerTeammate(false);
++        if (auto* faction = Cast<TESFaction>(TESForm::GetById(0x5C84E))) follower->SetFactionRank(faction, -1);
++        personal->EnableImpl(); CompanionAliases::Evaluate(personal); CompanionAliases::Evaluate(follower);
++        candidate = 0;
++        world.GetOverlayService().SendSystemMessage("Your follower now has a personal co-op copy.");
++        spdlog::info("Personal follower reference {:X} created from {:X}", personal->formID, follower->formID);
++    }
++};
++}
++bool IsLocalCompanion(Actor* actor)
++{
++    if (!actor) return false;
++    auto* quest = TESForm::GetById(0x750BA);
++    for (const auto* name : {"pFollowerAlias", "pAnimalAlias"})
++        if (CompanionAliases::Get(CompanionAliases::Alias(quest, "DialogueFollowerScript", name)) == actor) return true;
++    for (const auto& b : WorldProgress::Bindings)
++        if (b.Kind == 8 && CompanionAliases::Get(CompanionAliases::Alias(ResolveCompanionForm(b.Target), b.Script, b.Variable)) == actor) return true;
++    return false;
++}
++void InstallPersonalCompanions(entt::dispatcher& dispatcher)
++{
++    static PersonalCompanions service;
++    service.update = dispatcher.sink<UpdateEvent>().connect<&PersonalCompanions::OnUpdate>(&service);
++}
 diff --git a/Code/client/Services/Generic/QuestRewardSync.cpp b/Code/client/Services/Generic/QuestRewardSync.cpp
 new file mode 100644
 index 00000000..40759d9d
@@ -1082,7 +1358,7 @@ index 00000000..40759d9d
 +    rewards.notify = dispatcher.sink<NotifyHomestead>().connect<&Rewards::OnNotify>(&rewards);
 +}
 diff --git a/Code/client/Services/Generic/QuestService.cpp b/Code/client/Services/Generic/QuestService.cpp
-index c1c68f2c..96932edf 100644
+index c1c68f2c..64cc443e 100644
 --- a/Code/client/Services/Generic/QuestService.cpp
 +++ b/Code/client/Services/Generic/QuestService.cpp
 @@ -23,6 +23,7 @@
@@ -1093,7 +1369,121 @@ index c1c68f2c..96932edf 100644
  
  namespace
  {
-@@ -204,6 +205,7 @@ static TESQuest* FindQuestByNameId(const String& name)
+@@ -59,12 +60,13 @@ void QuestService::SyncWithHost() noexcept
+ 
+ void QuestService::Publish(bool force) noexcept
+ {
+-    if (!QuestSyncReady() || !m_world.GetPartyService().IsLeader()) return;
++    if (!QuestSyncReady()) return;
++    const bool leader = m_world.GetPartyService().IsLeader();
+     for (TESQuest* quest : ModManager::Get()->quests)
+     {
+-        if (!quest || IsNonSyncableQuest(quest)) continue;
++        if (!quest || IsNonSyncableQuest(quest) || (!leader && !QuestSyncPolicy::GuestQuestType(uint8_t(quest->type)))) continue;
+         // Never publish unstarted background/initialization quests.
+-        if (!quest->currentStage) continue;
++        if (!quest->currentStage && (quest->IsStopped() || quest->objectives.Empty())) continue;
+         QuestState state;
+         if (!m_world.GetModSystem().GetServerModId(quest->formID, state.Id)) continue;
+         state.Action = QuestSyncAction::State;
+@@ -80,6 +82,24 @@ void QuestService::Publish(bool force) noexcept
+             state.Objectives.push_back({objective->stageId, objective->state});
+         }
+         auto old = m_published.find(state.Id);
++        if (!leader)
++        {
++            const auto desired = m_desired.find(state.Id);
++            bool newProgress = desired == m_desired.end() || state.Stage > desired->second.Stage;
++            if (desired != m_desired.end() && state.Stage == desired->second.Stage)
++                for (const auto& objective : state.Objectives)
++                {
++                    const auto prior = std::find_if(desired->second.Objectives.begin(), desired->second.Objectives.end(),
++                        [&](const auto& o) { return o.Id == objective.Id; });
++                    newProgress |= prior == desired->second.Objectives.end() ? objective.State != 0 : (objective.State & ~prior->State) != 0;
++                }
++            if (m_guestBaselineReady && newProgress && (old == m_published.end() || old->second != state))
++            {
++                RequestQuestSync proposal; proposal.Data = state; proposal.Data.Action = QuestSyncAction::Proposal;
++                m_world.GetTransport().Send(proposal);
++            }
++            m_published[state.Id] = std::move(state); continue;
++        }
+         if (force || old == m_published.end() || old->second != state)
+         {
+             RequestQuestSync message; message.Data = state;
+@@ -87,7 +107,8 @@ void QuestService::Publish(bool force) noexcept
+             m_published[state.Id] = std::move(state);
+         }
+     }
+-    if (force)
++    m_guestBaselineReady = true;
++    if (force && leader)
+     {
+         RequestQuestSync end; end.Data.Action = QuestSyncAction::Complete;
+         m_world.GetTransport().Send(end);
+@@ -109,8 +130,10 @@ void QuestService::OnSync(const NotifyQuestSync& message) noexcept
+         }
+         return;
+     }
++    if (state.Action == QuestSyncAction::Proposal && party.IsLeader() && state.Id && QuestSyncPolicy::GuestQuestType(state.Type))
++    { m_proposals[state.Id] = state; return; }
+     if (party.IsLeader()) return;
+-    if (state.Action == QuestSyncAction::State && state.Id && state.Stage)
++    if (state.Action == QuestSyncAction::State && state.Id)
+         m_desired[state.Id] = state;
+     else if (state.Action == QuestSyncAction::Complete && m_pending)
+     {
+@@ -166,7 +189,7 @@ void QuestService::OnUpdate(const UpdateEvent&) noexcept
+     const auto& party = m_world.GetPartyService();
+     if (!m_world.GetTransport().IsOnline() || !party.IsInParty())
+     {
+-        m_published.clear(); m_desired.clear(); m_stageRequests.clear();
++        m_published.clear(); m_desired.clear(); m_stageRequests.clear(); m_proposals.clear(); m_guestBaselineReady = false;
+         m_lastLeader = 0; m_lastMembers = 0; m_pending = false; m_nextScan = 0;
+         return;
+     }
+@@ -176,7 +199,7 @@ void QuestService::OnUpdate(const UpdateEvent&) noexcept
+     const bool contextChanged = leader != m_lastLeader || members != m_lastMembers;
+     if (leader != m_lastLeader)
+     {
+-        m_stageRequests.clear();
++        m_stageRequests.clear(); m_published.clear(); m_proposals.clear(); m_guestBaselineReady = false;
+         for (auto it = m_desired.begin(); it != m_desired.end();)
+             if (it->second.Authority != leader) it = m_desired.erase(it); else ++it;
+     }
+@@ -185,11 +208,30 @@ void QuestService::OnUpdate(const UpdateEvent&) noexcept
+     { m_pending = false; SyncStatus("Host did not respond. Check that both players use this build and try again."); }
+     if (!QuestSyncReady() || (!contextChanged && now < m_nextScan)) return;
+     m_nextScan = now + 2000;
+-    if (party.IsLeader()) Publish(contextChanged || m_published.empty());
++    if (party.IsLeader())
++    {
++        for (auto it = m_proposals.begin(); it != m_proposals.end();)
++        {
++            auto proposal = it->second;
++            auto* quest = Cast<TESQuest>(TESForm::GetById(m_world.GetModSystem().GetGameId(proposal.Id)));
++            if (!quest || IsNonSyncableQuest(quest) || !QuestSyncPolicy::GuestQuestType(uint8_t(quest->type)) || QuestSyncPolicy::ShouldSkip(quest->currentStage, quest->flags,
++                proposal.Stage, proposal.Flags, proposal.Stopped, quest->IsStageDone(proposal.Stage)))
++            { it = m_proposals.erase(it); continue; }
++            for (const auto* objective : quest->objectives)
++            {
++                if (!objective) continue;
++                for (auto& remote : proposal.Objectives) if (remote.Id == objective->stageId) remote.State |= objective->state;
++            }
++            Apply(proposal);
++            if (quest->currentStage == proposal.Stage) it = m_proposals.erase(it); else ++it;
++        }
++        Publish(contextChanged || m_published.empty());
++    }
+     else
+     {
+         if (contextChanged) SyncWithHost();
+         for (const auto& [id, state] : m_desired) Apply(state);
++        Publish(false);
+     }
+ }
+ 
+@@ -204,6 +246,7 @@ static TESQuest* FindQuestByNameId(const String& name)
  QuestService::QuestService(World& aWorld, entt::dispatcher& aDispatcher)
      : m_world(aWorld)
  {
@@ -1101,6 +1491,16 @@ index c1c68f2c..96932edf 100644
      m_syncConnection = aDispatcher.sink<NotifyQuestSync>().connect<&QuestService::OnSync>(this);
      m_tickConnection = aDispatcher.sink<UpdateEvent>().connect<&QuestService::OnUpdate>(this);
      m_joinedConnection = aDispatcher.sink<ConnectedEvent>().connect<&QuestService::OnConnected>(this);
+@@ -443,7 +486,8 @@ bool QuestService::IsNonSyncableQuest(TESQuest* apQuest)
+     // Quests with no quest stages are never synced. Most TESQues::Type:: quests should
+     // be synced, including Type::None and Type::Miscellaneous, but there are a few
+     // known exceptions that should be excluded that are in the table.
+-    return    apQuest->stages.Empty() 
++    return    (apQuest->type == TESQuest::Type::None && apQuest->objectives.Empty())
++           || (apQuest->stages.Empty() && apQuest->objectives.Empty())
+            || std::find(kNonSyncableQuestIds.begin(), kNonSyncableQuestIds.end(), apQuest->formID) != kNonSyncableQuestIds.end();
+ }
+ 
 diff --git a/Code/client/Services/Generic/SurvivalWaitMenu.cpp b/Code/client/Services/Generic/SurvivalWaitMenu.cpp
 new file mode 100644
 index 00000000..a77cafa9
@@ -1157,12 +1557,16 @@ index 00000000..a77cafa9
 +});
 diff --git a/Code/client/Services/Generic/WorldProgressService.cpp b/Code/client/Services/Generic/WorldProgressService.cpp
 new file mode 100644
-index 00000000..8fcaea61
+index 00000000..2e5cf977
 --- /dev/null
 +++ b/Code/client/Services/Generic/WorldProgressService.cpp
-@@ -0,0 +1,403 @@
+@@ -0,0 +1,462 @@
 +#include <Services/WorldProgressService.h>
 +#include <Services/ScriptStateAccess.h>
++#include <Services/CompanionAliases.h>
++#include <Components.h>
++#include <CompanionRolePolicy.h>
++#include <Utils.h>
 +#include <Services/TransportService.h>
 +#include <Services/PapyrusService.h>
 +#include <Services/OverlayService.h>
@@ -1278,6 +1682,28 @@ index 00000000..8fcaea61
 +        }
 +        out = {disabled ? 1.f : 0.f}; return true;
 +    }
++    if (b.Kind == 8)
++    {
++        auto* alias = CompanionAliases::Alias(form, b.Script, b.Variable); if (!alias) return false;
++        auto* actor = CompanionAliases::Get(alias);
++        if (!actor)
++        {
++            if (Number(form, b.Script, "HasOverseer", 0) || Number(form, b.Script, "bHaveSteward", 0)) return false;
++            out = {0, 0, 0}; return true;
++        }
++        if (actor->IsTemporary())
++        {
++            for (auto entity : m_world.view<FormIdComponent, LocalComponent>())
++                if (m_world.get<FormIdComponent>(entity).Id == actor->formID)
++                { out = {1, float(m_world.get<LocalComponent>(entity).Id), 0}; return true; }
++            for (auto entity : m_world.view<FormIdComponent, RemoteComponent>())
++                if (m_world.get<FormIdComponent>(entity).Id == actor->formID)
++                { out = {1, float(m_world.get<RemoteComponent>(entity).Id), 0}; return true; }
++            return false;
++        }
++        GameId id{}; if (!m_world.GetModSystem().GetServerModId(actor->formID, id)) return false;
++        out = {0, float(id.ModId), float(id.BaseId)}; return true;
++    }
 +    if (b.Kind == 1) { out = {static_cast<TESGlobal*>(form)->f}; return std::isfinite(out[0]); }
 +    if (b.Kind == 2 || b.Kind == 6) return ScriptStateAccess::Numbers(form, b.Script, b.Variable, b.Type, out);
 +    if (b.Kind == 3 || b.Kind == 5)
@@ -1353,6 +1779,37 @@ index 00000000..8fcaea61
 +            auto* ref = Cast<TESObjectREFR>(form); if (!ref || ref->IsDeleted()) return;
 +            SetLayoutDisabled(ref, v[0] != 0.f);
 +        }
++        else if (b.Kind == 8 && CompanionRole::Valid(v))
++        {
++            auto* alias = CompanionAliases::Alias(form, b.Script, b.Variable); if (!alias) return;
++            Actor* actor = v[0] == 1 ? Utils::GetByServerId<Actor>(uint32_t(v[1])) :
++                Cast<Actor>(TESForm::GetById(m_world.GetModSystem().GetGameId(GameId(uint32_t(v[1]), uint32_t(v[2])))));
++            if (!actor && found->second.Revision == 1 &&
++                (m_pendingRoleSeeds.contains(key) || (!m_seen.contains(key) && CompanionAliases::Get(alias))))
++            {
++                std::vector<float> existing;
++                if (Capture(key, existing) && CompanionRole::Valid(existing) && existing != std::vector<float>({0, 0, 0}))
++                {
++                    m_pendingRoleSeeds.insert(key);
++                    HomesteadData seed; seed.Action = HomesteadAction::WorldPublish; seed.Deposit = true;
++                    seed.Progress.push_back({key, 0, existing}); Send(std::move(seed));
++                }
++                return;
++            }
++            m_pendingRoleSeeds.erase(key);
++            if ((v[0] == 1 || v[2] != 0) && !actor) return; // Retry after remote replica/actor loads.
++            if (CompanionAliases::Get(alias) != actor)
++            {
++                if (!CompanionAliases::Set(alias, actor)) return;
++                CompanionAliases::Evaluate(actor);
++            }
++            if (actor)
++            {
++                if (std::string(b.Variable) == "Alias_Overseer") SetNumber(form, b.Script, "HasOverseer", 1);
++                if (std::string(b.Variable) == "Alias_Steward") SetNumber(form, b.Script, "bHaveSteward", 1);
++            }
++            CompanionAliases::Detach(actor);
++        }
 +        else if (b.Kind == 1)
 +        {
 +            const auto* fn = m_world.ctx().at<PapyrusService>().Get("GlobalVariable", "SetValue");
@@ -1424,7 +1881,9 @@ index 00000000..8fcaea61
 +        auto remote = m_state.find(key); auto seen = m_seen.find(key);
 +        const bool plot = key >= WorldProgress::PlotKeyBase;
 +        bool changed = seen != m_seen.end() && (plot ? seen->second[0] != current[0] : seen->second != current);
-+        const bool seed = remote == m_state.end() && m_authority == m_transport.GetLocalPlayerId();
++        const bool aliasSeed = index < WorldProgress::Bindings.size() && WorldProgress::Bindings[index].Kind == 8 && current.size() == 3 && (current[0] == 1 || current[2] != 0);
++        const bool seed = remote == m_state.end() && (m_authority == m_transport.GetLocalPlayerId() || aliasSeed);
++        if (seed && aliasSeed) q.Deposit = true;
 +        if (plot)
 +        {
 +            if (m_pendingCrops.contains(key)) continue;
@@ -1500,7 +1959,7 @@ index 00000000..8fcaea61
 +{
 +    const auto& data = notify.Data;
 +    if (!m_transport.IsOnline() || (data.Action != HomesteadAction::WorldState && data.Action != HomesteadAction::WorldHarvestResult)) return;
-+    if (m_authority != data.Authority) { m_state.clear(); m_seen.clear(); m_pendingHarvests.clear(); m_pendingCrops.clear(); m_authority = data.Authority; }
++    if (m_authority != data.Authority) { m_state.clear(); m_seen.clear(); m_pendingRoleSeeds.clear(); m_pendingHarvests.clear(); m_pendingCrops.clear(); m_authority = data.Authority; }
 +    m_serverDay = data.Day; m_localDay = Day();
 +    if (data.Action == HomesteadAction::WorldHarvestResult && data.Reference.BaseId == m_transport.GetLocalPlayerId())
 +    {
@@ -1561,9 +2020,39 @@ index 00000000..8fcaea61
 +            SetCount(Cast<TESObjectREFR>(container), seed, 1);
 +        }
 +    }
-+    m_state.clear(); m_seen.clear(); m_grownPlots.clear(); m_pendingHarvests.clear(); m_pendingCrops.clear();
++    m_state.clear(); m_seen.clear(); m_pendingRoleSeeds.clear(); m_grownPlots.clear(); m_pendingHarvests.clear(); m_pendingCrops.clear();
 +    m_authority = m_cursor = 0; m_scan = m_poll = 0; HarvestCommit = false;
 +}
+diff --git a/Code/client/Services/PapyrusService.h b/Code/client/Services/PapyrusService.h
+index 13737da5..91122112 100644
+--- a/Code/client/Services/PapyrusService.h
++++ b/Code/client/Services/PapyrusService.h
+@@ -43,14 +43,14 @@ private:
+ 
+ template <class Return, class... Args> struct GlobalPapyrusFunction
+ {
+-    using TFunction = Return(__fastcall*)(BSScript::IVirtualMachine*, Args...);
++    using TFunction = Return(__fastcall*)(BSScript::IVirtualMachine*, uint32_t, const void*, Args...);
+ 
+     GlobalPapyrusFunction(const void* apAddress)
+         : m_pFunction(reinterpret_cast<TFunction>(apAddress))
+     {
+     }
+ 
+-    Return operator()(Args... args) const noexcept { return m_pFunction(GameVM::Get()->virtualMachine, std::forward<Args>(args)...); }
++    Return operator()(Args... args) const noexcept { return m_pFunction(GameVM::Get()->virtualMachine, 0, nullptr, std::forward<Args>(args)...); }
+ 
+ private:
+     TFunction m_pFunction;
+diff --git a/Code/client/Services/PersonalCompanions.h b/Code/client/Services/PersonalCompanions.h
+new file mode 100644
+index 00000000..98f957e3
+--- /dev/null
++++ b/Code/client/Services/PersonalCompanions.h
+@@ -0,0 +1,3 @@
++#pragma once
++struct Actor;
++bool IsLocalCompanion(Actor* actor);
 diff --git a/Code/client/Services/QuestRewardSync.h b/Code/client/Services/QuestRewardSync.h
 new file mode 100644
 index 00000000..7b8814f5
@@ -1576,6 +2065,19 @@ index 00000000..7b8814f5
 +// Called only for the Papyrus AddItem native wrapper, before inventory mutation.
 +void InstallQuestRewardCapture(NativeFunction*);
 +void InstallQuestRewardSync(entt::dispatcher&);
+diff --git a/Code/client/Services/QuestService.h b/Code/client/Services/QuestService.h
+index 6835d4c4..b839e24d 100644
+--- a/Code/client/Services/QuestService.h
++++ b/Code/client/Services/QuestService.h
+@@ -45,6 +45,8 @@ private:
+     void SyncStatus(const String&) noexcept;
+     Map<GameId, QuestState> m_published;
+     Map<GameId, QuestState> m_desired;
++    Map<GameId, QuestState> m_proposals;
++    bool m_guestBaselineReady{};
+     Map<GameId, uint16_t> m_stageRequests;
+     uint64_t m_nextScan{};
+     uint64_t m_requestDeadline{};
 diff --git a/Code/client/Services/ScriptStateAccess.h b/Code/client/Services/ScriptStateAccess.h
 new file mode 100644
 index 00000000..94d8dde2
@@ -1716,15 +2218,25 @@ index 00000000..94d8dde2
 +    if (object.Pointer) reinterpret_cast<BSFixedString*>(reinterpret_cast<uint8_t*>(object.Pointer) + 0x10)->Set(state);
 +}
 +}
+diff --git a/Code/client/Services/SurvivalTravel.h b/Code/client/Services/SurvivalTravel.h
+new file mode 100644
+index 00000000..74a22ff6
+--- /dev/null
++++ b/Code/client/Services/SurvivalTravel.h
+@@ -0,0 +1,3 @@
++#pragma once
++// Restores only Survival Mode's engine control; other travel rules stay native.
++bool RestoreSurvivalFastTravel();
 diff --git a/Code/client/Services/WorldProgressService.h b/Code/client/Services/WorldProgressService.h
 new file mode 100644
-index 00000000..6fc7c5a6
+index 00000000..6c0248e8
 --- /dev/null
 +++ b/Code/client/Services/WorldProgressService.h
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,33 @@
 +#pragma once
 +#include <Structs/HomesteadData.h>
 +#include <unordered_map>
++#include <unordered_set>
 +struct World; struct TransportService; struct UpdateEvent; struct NotifyHomestead; struct DisconnectedEvent; struct TESObjectREFR;
 +struct WorldProgressService
 +{
@@ -1744,6 +2256,7 @@ index 00000000..6fc7c5a6
 +    TransportService& m_transport;
 +    std::unordered_map<uint32_t, WorldProgress::Value> m_state;
 +    std::unordered_map<uint32_t, std::vector<float>> m_seen;
++    std::unordered_set<uint32_t> m_pendingRoleSeeds;
 +    std::unordered_map<uint32_t, uint32_t> m_grownPlots;
 +    std::unordered_map<uint32_t, uint32_t> m_pendingHarvests;
 +    struct PendingCrop { uint64_t Revision; uint32_t Crop, Token; };
@@ -1811,7 +2324,7 @@ index 6d60709b..34e1d91f 100644
      ctx().emplace<CalendarService>(*this, m_dispatcher, m_transport);
      ctx().emplace<QuestService>(*this, m_dispatcher);
 diff --git a/Code/common/BuildInfo.h.in b/Code/common/BuildInfo.h.in
-index 33cc05f3..23ab1e67 100644
+index 33cc05f3..e0be9d6b 100644
 --- a/Code/common/BuildInfo.h.in
 +++ b/Code/common/BuildInfo.h.in
 @@ -1,4 +1,4 @@
@@ -1819,7 +2332,27 @@ index 33cc05f3..23ab1e67 100644
  // This file was autogenerated by xmake
  #define BUILD_BRANCH "survival-worlditems"
 -#define BUILD_COMMIT "survival-sync-v07-quest-sync-draft"
-+#define BUILD_COMMIT "survival-sync-v083-party-hotfix-draft"
++#define BUILD_COMMIT "survival-sync-v084-survival-companions-draft"
+diff --git a/Code/common/CompanionRolePolicy.h b/Code/common/CompanionRolePolicy.h
+new file mode 100644
+index 00000000..c026d63c
+--- /dev/null
++++ b/Code/common/CompanionRolePolicy.h
+@@ -0,0 +1,14 @@
++#pragma once
++#include <vector>
++#include <cstdint>
++#include <cmath>
++namespace CompanionRole
++{
++inline bool Valid(const std::vector<float>& v)
++{
++    if (v.size() != 3 || (v[0] != 0 && v[0] != 1)) return false;
++    for (const auto f : v) if (!std::isfinite(f) || f < 0 || f > 16777215.f || std::floor(f) != f) return false;
++    return v[0] == 0 || (v[1] > 0 && v[2] == 0);
++}
++inline bool CanReplace(uint64_t current, uint64_t proposed) { return current == proposed; }
++}
 diff --git a/Code/common/CoopChestLocations.h b/Code/common/CoopChestLocations.h
 index ae1a97d0..6be124e8 100644
 --- a/Code/common/CoopChestLocations.h
@@ -1844,6 +2377,23 @@ index ae1a97d0..6be124e8 100644
 +    {"Tundra Homestead", 39062.210f, 145.170f, -4172.343f, 5.912394f, false, "cceejsse001-hstead.esm"},
  }};
  }
+diff --git a/Code/common/CrosshairAimPolicy.h b/Code/common/CrosshairAimPolicy.h
+new file mode 100644
+index 00000000..8f615734
+--- /dev/null
++++ b/Code/common/CrosshairAimPolicy.h
+@@ -0,0 +1,11 @@
++#pragma once
++#include <cmath>
++namespace CrosshairAim
++{
++inline bool Angles(float x, float y, float z, float& pitch, float& yaw)
++{
++    const float horizontal = std::hypot(x, y), distance = std::hypot(horizontal, z);
++    if (!std::isfinite(distance) || distance < 32.f || distance > 20000.f) return false;
++    pitch = -std::atan2(z, horizontal); yaw = std::atan2(x, y); return true;
++}
++}
 diff --git a/Code/common/HousingLayoutPolicy.h b/Code/common/HousingLayoutPolicy.h
 new file mode 100644
 index 00000000..4013ad70
@@ -1964,6 +2514,33 @@ index 00000000..8accb818
 +        return Granted.insert(key).second && !Native.contains(key);
 +    }
 +};
++}
+diff --git a/Code/common/QuestSyncPolicy.h b/Code/common/QuestSyncPolicy.h
+index bb730e7d..d219e09d 100644
+--- a/Code/common/QuestSyncPolicy.h
++++ b/Code/common/QuestSyncPolicy.h
+@@ -3,6 +3,7 @@
+ 
+ namespace QuestSyncPolicy
+ {
++constexpr bool GuestQuestType(uint8_t type) { return type == 6 || type == 8; }
+ constexpr uint16_t TerminalFlags = (1 << 1) | (1 << 6);
+ constexpr bool ShouldSkip(uint16_t localStage, uint16_t localFlags, uint16_t hostStage,
+                           uint16_t hostFlags, bool hostStopped, bool hostStageDone)
+diff --git a/Code/common/RestClockPolicy.h b/Code/common/RestClockPolicy.h
+new file mode 100644
+index 00000000..8545b948
+--- /dev/null
++++ b/Code/common/RestClockPolicy.h
+@@ -0,0 +1,9 @@
++#pragma once
++#include <cstdint>
++namespace RestClock
++{
++inline bool Hold(uint64_t now, uint64_t deadline, double incomingDays, double completedTargetDays)
++{
++    return now < deadline && incomingDays < completedTargetDays;
++}
 +}
 diff --git a/Code/common/SurvivalTimePolicy.h b/Code/common/SurvivalTimePolicy.h
 index 824b2508..427d63c3 100644
@@ -2251,6 +2828,19 @@ index abd6d0e8..56ae6922 100644
      void Serialize(Buffer::Writer& w) const noexcept;
      void Deserialize(Buffer::Reader& r) noexcept;
  };
+diff --git a/Code/encoding/Structs/QuestState.h b/Code/encoding/Structs/QuestState.h
+index 23005daf..e5fe911f 100644
+--- a/Code/encoding/Structs/QuestState.h
++++ b/Code/encoding/Structs/QuestState.h
+@@ -2,7 +2,7 @@
+ #include <Structs/GameId.h>
+ 
+ // One quest per packet keeps even large journals below the transport limit.
+-enum class QuestSyncAction : uint8_t { Request, State, Complete };
++enum class QuestSyncAction : uint8_t { Request, State, Complete, Proposal };
+ struct QuestState
+ {
+     struct Objective
 diff --git a/Code/server/Components/ActorValuesComponent.h b/Code/server/Components/ActorValuesComponent.h
 index fb69dfb0..5348304d 100644
 --- a/Code/server/Components/ActorValuesComponent.h
@@ -2574,10 +3164,21 @@ index 00000000..6976c67c
 +    rewards.request = dispatcher.sink<PacketEvent<RequestHomestead>>().connect<&Rewards::OnRequest>(&rewards);
 +}
 diff --git a/Code/server/Services/QuestService.cpp b/Code/server/Services/QuestService.cpp
-index 7406432c..24ae3893 100644
+index 7406432c..96dc8bfd 100644
 --- a/Code/server/Services/QuestService.cpp
 +++ b/Code/server/Services/QuestService.cpp
-@@ -19,6 +19,8 @@ Console::Setting bEnableMiscQuestSync{"Gameplay:bEnableMiscQuestSync", "(Experim
+@@ -10,15 +10,18 @@
+ #include <Messages/NotifyQuestUpdate.h>
+ 
+ #include <Setting.h>
++#include <QuestSyncPolicy.h>
+ namespace
+ {
+-Console::Setting bEnableMiscQuestSync{"Gameplay:bEnableMiscQuestSync", "(Experimental) Syncs miscellaneous quests when possible", false};
++Console::Setting bEnableMiscQuestSync{"Gameplay:bEnableMiscQuestSync", "Syncs miscellaneous quests with the party leader", true};
+ 
+ }
+ 
  QuestService::QuestService(World& aWorld, entt::dispatcher& aDispatcher)
      : m_world(aWorld)
  {
@@ -2586,12 +3187,32 @@ index 7406432c..24ae3893 100644
      m_syncConnection = aDispatcher.sink<PacketEvent<RequestQuestSync>>().connect<&QuestService::OnSync>(this);
      m_questUpdateConnection = aDispatcher.sink<PacketEvent<RequestQuestUpdate>>().connect<&QuestService::OnQuestChanges>(this);
  }
+@@ -124,11 +127,18 @@ void QuestService::OnSync(const PacketEvent<RequestQuestSync>& event) noexcept
+         if (auto* host = m_world.GetPlayerManager().GetById(party->LeaderPlayerId)) host->Send(notify);
+         return;
+     }
++    if (state.Action == QuestSyncAction::Proposal)
++    {
++        if (player->GetId() == party->LeaderPlayerId || !state.Id || !QuestSyncPolicy::GuestQuestType(state.Type)) return;
++        if (state.Type == 6 && !bEnableMiscQuestSync) return;
++        if (auto* host = m_world.GetPlayerManager().GetById(party->LeaderPlayerId)) host->Send(notify);
++        return;
++    }
+     if (player->GetId() != party->LeaderPlayerId) return;
+     if (state.Action != QuestSyncAction::State && state.Action != QuestSyncAction::Complete) return;
+     if (state.Action == QuestSyncAction::State)
+     {
+-        if (!state.Id || !state.Stage || state.Type > 11) return;
++        if (!state.Id || state.Type > 11) return;
+         if ((state.Type == 0 || state.Type == 6) && !bEnableMiscQuestSync) return;
+     }
+     GameServer::Get()->SendToParty(notify, player->GetParty(), event.GetSender());
 diff --git a/Code/server/Services/WorldProgressService.cpp b/Code/server/Services/WorldProgressService.cpp
 new file mode 100644
-index 00000000..f8901956
+index 00000000..6015bb26
 --- /dev/null
 +++ b/Code/server/Services/WorldProgressService.cpp
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,142 @@
 +#include <Services/WorldProgressService.h>
 +#include <Services/CalendarService.h>
 +#include <World.h>
@@ -2599,6 +3220,7 @@ index 00000000..f8901956
 +#include <Messages/RequestHomestead.h>
 +#include <Messages/NotifyHomestead.h>
 +#include <WorldProgressBindings.h>
++#include <CompanionRolePolicy.h>
 +namespace
 +{
 +GameId Resolve(World& w, WorldProgress::Form form)
@@ -2661,6 +3283,17 @@ index 00000000..f8901956
 +        const auto target = plot ? WorldProgress::Plots[proposed.Key - WorldProgress::PlotKeyBase].Soil : WorldProgress::Bindings[proposed.Key].Target;
 +        if (!Resolve(m_world, target)) continue;
 +        auto found = m_state.find(proposed.Key);
++        if (!plot && WorldProgress::Bindings[proposed.Key].Kind == 8)
++        {
++            if (!CompanionRole::Valid(proposed.Numbers)) continue;
++            if (found != m_state.end() && found->second.Revision == 1 && proposed.Revision == 0 && q.Deposit &&
++                found->second.Numbers == std::vector<float>({0, 0, 0}) && proposed.Numbers != found->second.Numbers)
++                proposed.Revision = found->second.Revision;
++            // A role reference is one identity, never merge its ID fields separately.
++            if (found != m_state.end() && !CompanionRole::CanReplace(found->second.Revision, proposed.Revision))
++            { reply.Progress.push_back(found->second); continue; }
++            if (proposed.Numbers[0] == 1 && !m_world.all_of<CharacterComponent>(static_cast<entt::entity>(uint32_t(proposed.Numbers[1])))) continue;
++        }
 +        if (q.Action == HomesteadAction::WorldHarvest)
 +        {
 +            if (!plot || found == m_state.end() || found->second.Numbers.size() != 4) continue;
@@ -2938,10 +3571,10 @@ index 52eb4999..9ad554bf 100644
    autoResyncOff(): void;
 diff --git a/Code/tests/coop_fixes.cpp b/Code/tests/coop_fixes.cpp
 new file mode 100644
-index 00000000..ccbaf660
+index 00000000..6d027019
 --- /dev/null
 +++ b/Code/tests/coop_fixes.cpp
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,90 @@
 +#include <TiltedCore/Stl.hpp>
 +#include <TiltedCore/Allocator.hpp>
 +#include <TiltedCore/Buffer.hpp>
@@ -2989,8 +3622,51 @@ index 00000000..ccbaf660
 +    for (const auto& p : WorldProgress::Plots)
 +    { REQUIRE(std::isfinite(p.X)); REQUIRE(std::isfinite(p.Y)); REQUIRE(std::isfinite(p.Z)); REQUIRE(p.Soil.Base != 0); }
 +}
++
++#include <CrosshairAimPolicy.h>
++#include <CompanionRolePolicy.h>
++TEST_CASE("Third-person launch angles converge on the crosshair hit", "[coop-fixes]")
++{
++    float pitch = 0, yaw = 0;
++    REQUIRE(CrosshairAim::Angles(0, 100, 0, pitch, yaw)); REQUIRE(pitch == Approx(0)); REQUIRE(yaw == Approx(0));
++    REQUIRE(CrosshairAim::Angles(100, 100, 100, pitch, yaw));
++    const float length = std::sqrt(30000.f);
++    REQUIRE(std::sin(yaw) * std::cos(pitch) == Approx(100 / length));
++    REQUIRE(std::cos(yaw) * std::cos(pitch) == Approx(100 / length));
++    REQUIRE(-std::sin(pitch) == Approx(100 / length));
++    REQUIRE_FALSE(CrosshairAim::Angles(0, 0, 0, pitch, yaw));
++    REQUIRE_FALSE(CrosshairAim::Angles(INFINITY, 0, 0, pitch, yaw));
++    REQUIRE_FALSE(CrosshairAim::Angles(0, 30000, 0, pitch, yaw));
++}
++TEST_CASE("Steward references keep their complete identity across competing edits", "[coop-fixes]")
++{
++    REQUIRE(CompanionRole::Valid({0, 0, 0})); REQUIRE(CompanionRole::Valid({0, 2, 0x1348C}));
++    REQUIRE(CompanionRole::Valid({1, 0x100022, 0}));
++    REQUIRE_FALSE(CompanionRole::Valid({1, 0, 0})); REQUIRE_FALSE(CompanionRole::Valid({1, 4, 5}));
++    REQUIRE_FALSE(CompanionRole::Valid({0, 1.5f, 0})); REQUIRE_FALSE(CompanionRole::Valid({0, INFINITY, 0}));
++    REQUIRE(CompanionRole::CanReplace(7, 7)); REQUIRE_FALSE(CompanionRole::CanReplace(8, 7));
++}
++
++#include <QuestSyncPolicy.h>
++TEST_CASE("Guest side and misc quests can be proposed without authorizing background quests", "[coop-fixes]")
++{
++    REQUIRE(QuestSyncPolicy::GuestQuestType(6)); REQUIRE(QuestSyncPolicy::GuestQuestType(8));
++    REQUIRE_FALSE(QuestSyncPolicy::GuestQuestType(0)); REQUIRE_FALSE(QuestSyncPolicy::GuestQuestType(1));
++    REQUIRE_FALSE(QuestSyncPolicy::GuestQuestType(255));
++}
++
++#include <RestClockPolicy.h>
++TEST_CASE("Delayed clock packets do not rewind a completed indoor sleep", "[coop-fixes]")
++{
++    // Sleep crosses midnight; an in-flight pre-sleep snapshot arrives after waking.
++    REQUIRE(RestClock::Hold(1200, 4000, 10.95, 11.25));
++    REQUIRE(RestClock::Hold(1300, 4000, 11.0, 11.25));
++    REQUIRE_FALSE(RestClock::Hold(1400, 4000, 11.25, 11.25)); // Shared skip acknowledged.
++    REQUIRE_FALSE(RestClock::Hold(4000, 4000, 10.95, 11.25)); // Bounded recovery if server rejects the skip.
++    REQUIRE_FALSE(RestClock::Hold(1400, 4000, 11.1, 11.05)); // Interrupted sleep uses actual shorter target.
++}
 diff --git a/Code/tests/encoding.cpp b/Code/tests/encoding.cpp
-index 8c828c2a..25d66a2d 100644
+index 8c828c2a..feef9c23 100644
 --- a/Code/tests/encoding.cpp
 +++ b/Code/tests/encoding.cpp
 @@ -12,6 +12,8 @@
@@ -3002,6 +3678,15 @@ index 8c828c2a..25d66a2d 100644
  
  #include <Messages/ClientMessageFactory.h>
  #include <Messages/ServerMessageFactory.h>
+@@ -825,7 +827,7 @@ TEST_CASE("Jump and locomotion state stay on the displayed snapshot timeline", "
+ 
+ TEST_CASE("Quest catch-up packets preserve authority, lifecycle and objectives", "[encoding.questsync]")
+ {
+-    for (auto action : {QuestSyncAction::Request, QuestSyncAction::State, QuestSyncAction::Complete})
++    for (auto action : {QuestSyncAction::Request, QuestSyncAction::State, QuestSyncAction::Complete, QuestSyncAction::Proposal})
+     {
+         QuestState state;
+         state.Action = action; state.Authority = 42; state.Id = GameId(3, 0x12345);
 diff --git a/Code/tests/housing_layout.cpp b/Code/tests/housing_layout.cpp
 new file mode 100644
 index 00000000..bee9047b
