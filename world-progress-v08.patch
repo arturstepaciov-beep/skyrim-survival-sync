@@ -251,6 +251,33 @@ index 36e73c9a..d4734831 100644
      return TiltedPhoques::ThisCall(RealRegenAttributes, apThis, aId, aRegenValue);
  }
  
+diff --git a/Code/client/Games/Skyrim/Camera/TESCamera.cpp b/Code/client/Games/Skyrim/Camera/TESCamera.cpp
+index 08528f05..b189f517 100644
+--- a/Code/client/Games/Skyrim/Camera/TESCamera.cpp
++++ b/Code/client/Games/Skyrim/Camera/TESCamera.cpp
+@@ -6,6 +6,9 @@
+ NiCamera* TESCamera::GetNiCamera()
+ {
+     POINTER_SKYRIMSE(NiRTTI, NiCameraRTTI, 410506);
++    if (!cameraNode)
++        return nullptr;
++
+     // usually the first child should be the camera
+     for (auto* child : cameraNode->children)
+     {
+diff --git a/Code/client/Games/Skyrim/NetImmerse/NiCamera.cpp b/Code/client/Games/Skyrim/NetImmerse/NiCamera.cpp
+index e0edcf50..85e37f2e 100644
+--- a/Code/client/Games/Skyrim/NetImmerse/NiCamera.cpp
++++ b/Code/client/Games/Skyrim/NetImmerse/NiCamera.cpp
+@@ -9,7 +9,7 @@ bool NiCamera::WorldPtToScreenPt3(const NiPoint3& in, NiPoint3& out, float toler
+     TP_THIS_FUNCTION(TW2S, bool, NiCamera, const NiPoint3*, float*, float*, float*, float);
+     POINTER_SKYRIMSE(TW2S, s_w2s, 70639);
+ 
+-    return TiltedPhoques::ThisCall(s_w2s, this, &in, &out.x, &out.y, &out.y, tolerance);
++    return TiltedPhoques::ThisCall(s_w2s, this, &in, &out.x, &out.y, &out.z, tolerance);
+ }
+ 
+ bool NiCamera::WorldPtToScreenPt3(float* matrix, const NiRect<float>* port, const NiPoint3* p_in, float* x_out, float* y_out, float* z_out, float zeroTolerance)
 diff --git a/Code/client/Games/Skyrim/TESObjectREFR.cpp b/Code/client/Games/Skyrim/TESObjectREFR.cpp
 index 2cf6e6b0..3d4710c7 100644
 --- a/Code/client/Games/Skyrim/TESObjectREFR.cpp
@@ -721,10 +748,10 @@ index c6232fc4..1af8666f 100644
              if (glm::distance(glm::vec3(player->position), position) > 2200.f) continue;
 diff --git a/Code/client/Services/Generic/CoopHud.cpp b/Code/client/Services/Generic/CoopHud.cpp
 new file mode 100644
-index 00000000..d40a7244
+index 00000000..37fb7c44
 --- /dev/null
 +++ b/Code/client/Services/Generic/CoopHud.cpp
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,127 @@
 +#include <TiltedOnlinePCH.h>
 +#include <World.h>
 +#include <Components.h>
@@ -738,10 +765,7 @@ index 00000000..d40a7244
 +#include <Games/TES.h>
 +#include <Forms/TESGlobal.h>
 +#include <Forms/TESObjectCELL.h>
-+#include <Forms/TESWorldSpace.h>
 +#include <Interface/UI.h>
-+#include <Games/Memory.h>
-+#include <Structs/GridCellCoords.h>
 +#include <Events/UpdateEvent.h>
 +#include <Events/DisconnectedEvent.h>
 +#include <Messages/NotifyPlayerCellChanged.h>
@@ -759,74 +783,15 @@ index 00000000..d40a7244
 +struct CoopHud
 +{
 +    std::unordered_map<uint32_t, NotifyPlayerCellChanged> locations;
-+    struct Marker { uint32_t Reference{}; GameId World{}; glm::vec3 Position{}; };
-+    std::unordered_map<uint32_t, Marker> markers;
 +    entt::scoped_connection update, notify, disconnected;
 +    uint64_t next{};
 +    void OnLocation(const NotifyPlayerCellChanged& n)
 +    {
 +        if (n.HasPosition && std::isfinite(n.Position.x) && std::isfinite(n.Position.y) && std::isfinite(n.Position.z)) locations[n.PlayerId] = n;
 +    }
-+    void RemoveMarker(Marker& marker)
-+    {
-+        auto* ref = Cast<TESObjectREFR>(TESForm::GetById(marker.Reference));
-+        if (ref && !ref->IsDeleted()) { ref->Disable(); ref->Delete(); }
-+        marker.Reference = 0;
-+    }
 +    void OnDisconnect(const DisconnectedEvent&)
 +    {
-+        for (auto& [id, marker] : markers) RemoveMarker(marker);
-+        markers.clear(); locations.clear(); next = 0;
-+    }
-+    void UpdateMarker(uint32_t id, const char* name, const NotifyPlayerCellChanged& location)
-+    {
-+        auto& world = World::Get(); auto& marker = markers[id];
-+        // A world map marker has no meaningful position inside an interior.
-+        if (!location.WorldSpaceId) { RemoveMarker(marker); return; }
-+        auto* space = Cast<TESWorldSpace>(TESForm::GetById(world.GetModSystem().GetGameId(location.WorldSpaceId)));
-+        auto* player = PlayerCharacter::Get(); if (!space || !player) return;
-+        auto* ref = Cast<TESObjectREFR>(TESForm::GetById(marker.Reference));
-+        if (ref && ref->IsDeleted()) ref = nullptr;
-+        if (ref && marker.World == location.WorldSpaceId && glm::distance(marker.Position, location.Position) < 70.f) return;
-+        const auto grid = GridCellCoords::CalculateGridCellCoords(location.Position.x, location.Position.y);
-+        auto* cell = space->LoadCell(grid.X, grid.Y); if (!cell) return;
-+        if (!ref)
-+        {
-+            const auto* fn = world.ctx().at<PapyrusService>().Get("ObjectReference", "PlaceAtMe");
-+            if (!fn) return;
-+            PapyrusFunction<TESObjectREFR*, TESObjectREFR, TESForm*, int32_t, bool, bool> place(fn);
-+            ref = place(player, TESForm::GetById(0x10), 1, false, true); if (!ref) return;
-+            // Native SE/AE ExtraMapMarker/MapMarkerData layouts, with engine
-+            // vtables so saves and reference cleanup use the engine destructors.
-+            struct MapData { void* NameVtable; BSFixedString Name; uint8_t Flags; uint8_t Pad; uint16_t Type; uint32_t Padding; };
-+            struct MapExtra { void* Vtable; BSExtraData* Next; MapData* Data; };
-+            static_assert(sizeof(MapData) == 0x18 && sizeof(MapExtra) == 0x18);
-+            auto* extra = reinterpret_cast<MapExtra*>(ref->extraData.GetByType(static_cast<ExtraDataType>(0x2C)));
-+            if (!extra)
-+            {
-+                extra = static_cast<MapExtra*>(Memory::Allocate(sizeof(MapExtra))); memset(extra, 0, sizeof(MapExtra));
-+                VersionDbPtr<void> extraVtable(229884); extra->Vtable = extraVtable.Get();
-+                // Add/SetType expect a bitfield, but a newly placed reference
-+                // may have an empty native extra-data list.
-+                if (!ref->extraData.bitfield)
-+                {
-+                    ref->extraData.bitfield = Memory::Allocate<ExtraDataList::Bitfield>();
-+                    memset(ref->extraData.bitfield, 0, sizeof(ExtraDataList::Bitfield));
-+                }
-+                ref->extraData.Add(static_cast<ExtraDataType>(0x2C), reinterpret_cast<BSExtraData*>(extra));
-+            }
-+            if (!extra->Data)
-+            {
-+                extra->Data = static_cast<MapData*>(Memory::Allocate(sizeof(MapData))); memset(extra->Data, 0, sizeof(MapData));
-+                VersionDbPtr<void> nameVtable(228543); extra->Data->NameVtable = nameVtable.Get();
-+            }
-+            extra->Data->Name.Set((std::string("Co-op: ") + name).c_str()); extra->Data->Flags = 1; extra->Data->Type = 64;
-+            marker.Reference = ref->formID;
-+        }
-+        ref->MoveTo(cell, NiPoint3(location.Position)); ref->EnableImpl();
-+        const auto* add = world.ctx().at<PapyrusService>().Get("ObjectReference", "AddToMap");
-+        if (add) { PapyrusFunction<void, TESObjectREFR, bool> show(add); show(ref, false); }
-+        marker.World = location.WorldSpaceId; marker.Position = location.Position;
++        locations.clear(); next = 0;
 +    }
 +    void OnUpdate(const UpdateEvent&)
 +    {
@@ -861,13 +826,8 @@ index 00000000..d40a7244
 +        }
 +        auto entries = CefListValue::Create(); size_t index = 0;
 +        const auto& party = world.GetPartyService();
-+        for (auto it = markers.begin(); it != markers.end();)
-+        {
-+            const auto& members = party.GetPartyMembers();
-+            if (!party.IsInParty() || std::find(members.begin(), members.end(), it->first) == members.end())
-+            { RemoveMarker(it->second); it = markers.erase(it); }
-+            else ++it;
-+        }
++        // Party locations feed the overlay only. Do not spawn native map
++        // references, load remote cells, or construct engine extra-data here.
 +        if (world.GetTransport().IsOnline() && party.IsInParty())
 +        for (const auto id : party.GetPartyMembers())
 +        {
@@ -878,7 +838,6 @@ index 00000000..d40a7244
 +            if (const auto found = locations.find(id); found != locations.end())
 +            {
 +                const auto& location = found->second; position = location.Position;
-+                UpdateMarker(id, name->second.c_str(), location);
 +                auto* worldspace = player->GetWorldSpace();
 +                same = worldspace ? world.GetModSystem().GetGameId(location.WorldSpaceId) == worldspace->formID :
 +                    !location.WorldSpaceId && world.GetModSystem().GetGameId(location.CellId) == player->parentCell->formID;
@@ -1851,7 +1810,7 @@ index 6d60709b..34e1d91f 100644
      ctx().emplace<CalendarService>(*this, m_dispatcher, m_transport);
      ctx().emplace<QuestService>(*this, m_dispatcher);
 diff --git a/Code/common/BuildInfo.h.in b/Code/common/BuildInfo.h.in
-index 33cc05f3..55cfb1e6 100644
+index 33cc05f3..23ab1e67 100644
 --- a/Code/common/BuildInfo.h.in
 +++ b/Code/common/BuildInfo.h.in
 @@ -1,4 +1,4 @@
@@ -1859,7 +1818,7 @@ index 33cc05f3..55cfb1e6 100644
  // This file was autogenerated by xmake
  #define BUILD_BRANCH "survival-worlditems"
 -#define BUILD_COMMIT "survival-sync-v07-quest-sync-draft"
-+#define BUILD_COMMIT "survival-sync-v082-coop-fixes-draft"
++#define BUILD_COMMIT "survival-sync-v083-party-hotfix-draft"
 diff --git a/Code/common/CoopChestLocations.h b/Code/common/CoopChestLocations.h
 index ae1a97d0..6be124e8 100644
 --- a/Code/common/CoopChestLocations.h

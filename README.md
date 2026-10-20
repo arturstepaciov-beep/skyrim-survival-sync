@@ -1,11 +1,17 @@
-# SurvivalSync v0.8.2
+# SurvivalSync v0.8.3
 
-Custom Skyrim Together client and server based on upstream commit 9ce0338522277e0ff0a12e8d2aa09ce67ad41a59. Install matching v0.8.2 client files on both PCs and run the included v0.8.2 server. Keep SurvivalSyncCoop.esp enabled. Retains v0.8.1 housing repairs and earlier features. Preserve config/CoopChest.dat when updating.
+Custom Skyrim Together client and server based on upstream commit 9ce0338522277e0ff0a12e8d2aa09ce67ad41a59. Install matching v0.8.3 client files on both PCs and run the included v0.8.3 server. Keep SurvivalSyncCoop.esp enabled. Retains v0.8.1 housing repairs and earlier features. Preserve config/CoopChest.dat when updating.
+
+## Party crash hotfix
+
+- Removes dynamic native map-marker creation, remote-cell loading and handcrafted marker extra-data from the party HUD update. This is a suspected party-formation crash path, pending two-PC verification.
+- Guards a missing camera node before accessing camera children and corrects screen projection to write depth into z rather than overwriting y.
+- Retains compass markers, overhead names, current-location teleport and the other v0.8.2 features.
 
 ## Co-op fixes and HUD
 
 - Shares item/gold grants issued by Papyrus quest and dialogue fragments (QF_/TIF_) with the current party. Tracks source fragment, callsite, item and occurrence to avoid doubling a reward when the same script executes locally and remotely. This does not invent rewards from a completed journal flag or copy unrelated loot. Custom reward systems outside these script paths need separate adapters.
-- Party locations update every second, including distant players. Adds exterior native world-map markers, a compass overlay, and projected overhead names for loaded party actors. Interior destinations remain available through the teleport buttons; exterior map markers are hidden when a player enters an interior.
+- Party locations update every second, including distant players. Adds a compass overlay and projected overhead names for loaded party actors. Native world-map markers are temporarily disabled in v0.8.3 while investigating the crash when a party forms; current-location teleport buttons remain available.
 - Adds direct "Teleport to <name>" buttons in F2 using the player's current server location.
 - Adds a separate hunger bar driven by the installed official Survival Mode hunger globals, with percentage and stage label. It is hidden when Survival Mode is inactive.
 - Restores the fast-travel control disabled by Survival Mode's watcher while retaining hunger, cold and exhaustion updates. Other normal engine travel checks remain in effect.
@@ -14,7 +20,7 @@ Custom Skyrim Together client and server based on upstream commit 9ce0338522277e
 - Replicates SJG Dual Wield Parrying's blockStart/blockStop graph inputs when its plugin is loaded. Reconciles local block intent after the legacy script updates its conditional state, with bounded retries if the animation is cancelled. Both PCs need matching parry/animation mods.
 - F2 wait/sleep speed slider ranges from 1x to 10x, defaults to 3x, and retains the 168-hour/seven-day maximum.
 
-Native build, protocol and policy tests are automated. Two-PC gameplay, map-marker save/load behavior, mod compatibility, and physical chest clearance still need in-game testing.
+Native build, protocol and policy tests are automated. Two-PC gameplay, mod compatibility, and physical chest clearance still need in-game testing.
 
 ## Housing layout hotfix
 
