@@ -1162,10 +1162,10 @@ index 060a5836..c504aa2c 100644
  void OverlayService::OnNotifyPlayerHealthUpdate(const NotifyPlayerHealthUpdate& acMessage) noexcept
 diff --git a/Code/client/Services/Generic/PersonalCompanions.cpp b/Code/client/Services/Generic/PersonalCompanions.cpp
 new file mode 100644
-index 00000000..fb5db5ee
+index 00000000..b4690eb0
 --- /dev/null
 +++ b/Code/client/Services/Generic/PersonalCompanions.cpp
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,82 @@
 +#include <TiltedOnlinePCH.h>
 +#include <Services/PersonalCompanions.h>
 +#include <Services/CompanionAliases.h>
@@ -1233,7 +1233,8 @@ index 00000000..fb5db5ee
 +}
 +bool IsLocalCompanion(Actor* actor)
 +{
-+    if (!actor) return false;
++    // Remote replicas use the same no-save marker set by Actor::Create.
++    if (!actor || actor->IsDeleted() || (actor->IsTemporary() && actor->unk10 == 0xFFFF)) return false;
 +    auto* quest = TESForm::GetById(0x750BA);
 +    for (const auto* name : {"pFollowerAlias", "pAnimalAlias"})
 +        if (CompanionAliases::Get(CompanionAliases::Alias(quest, "DialogueFollowerScript", name)) == actor) return true;
