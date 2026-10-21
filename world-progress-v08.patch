@@ -996,10 +996,10 @@ index 6df327cd..f3e5f6a7 100644
 +    }
 +}
 diff --git a/Code/client/Services/Generic/CalendarService.cpp b/Code/client/Services/Generic/CalendarService.cpp
-index ac24ad06..aad774ac 100644
+index ac24ad06..355e89b6 100644
 --- a/Code/client/Services/Generic/CalendarService.cpp
 +++ b/Code/client/Services/Generic/CalendarService.cpp
-@@ -7,12 +7,52 @@
+@@ -7,12 +7,53 @@
  #include <Services/TransportService.h>
  #include <World.h>
  #include <SurvivalTimePolicy.h>
@@ -1009,6 +1009,7 @@ index ac24ad06..aad774ac 100644
 +#include <Services/ScriptStateAccess.h>
 +#include <Forms/TESGlobal.h>
 +#include <Interface/UI.h>
++#include <Games/TES.h>
  
  #include <Forms/TESObjectCELL.h>
  #include <PlayerCharacter.h>
@@ -1037,9 +1038,9 @@ index ac24ad06..aad774ac 100644
 +    if (!value) return false;
 +    value->f = 0.f;
 +    std::vector<float> clock{TimeData::Get()->GameDaysPassed->f * 24.f};
-+    ScriptStateAccess::Numeric(quest, "Survival_NeedExhaustion", "lastTimeInGameHours", clock, true);
++    ScriptStateAccess::Numbers(quest, "Survival_NeedExhaustion", "lastTimeInGameHours", 0, clock, true);
 +    std::vector<float> sleeping{0};
-+    ScriptStateAccess::Numeric(quest, "Survival_NeedExhaustion", "playerSleeping", sleeping, true);
++    ScriptStateAccess::Numbers(quest, "Survival_NeedExhaustion", "playerSleeping", 0, sleeping, true);
 +    // Run the native survival script path so fatigue spells and magicka penalties
 +    // agree with the zero-fatigue global. A second pass follows asynchronous OnSleepStop.
 +    auto* vm = GameVM::Get()->virtualMachine;
@@ -1052,7 +1053,7 @@ index ac24ad06..aad774ac 100644
  constexpr float kTransitionSpeed = 5.f;
  
  bool CalendarService::s_gameClockLocked = false;
-@@ -49,6 +89,8 @@ CalendarService::~CalendarService()
+@@ -49,6 +90,8 @@ CalendarService::~CalendarService()
  
  BSTEventResult CalendarService::OnEvent(const TESSleepStartEvent* apEvent, const EventDispatcher<TESSleepStartEvent>*)
  {
@@ -1061,7 +1062,7 @@ index ac24ad06..aad774ac 100644
      if (apEvent)
          BeginTimeSkip(apEvent->sleepStartTime, apEvent->desiredSleepEndTime, "sleep");
      return BSTEventResult::kOk;
-@@ -56,7 +98,13 @@ BSTEventResult CalendarService::OnEvent(const TESSleepStartEvent* apEvent, const
+@@ -56,7 +99,13 @@ BSTEventResult CalendarService::OnEvent(const TESSleepStartEvent* apEvent, const
  
  BSTEventResult CalendarService::OnEvent(const TESSleepStopEvent* apEvent, const EventDispatcher<TESSleepStopEvent>*)
  {
@@ -1075,7 +1076,7 @@ index ac24ad06..aad774ac 100644
      return BSTEventResult::kOk;
  }
  
-@@ -79,7 +127,7 @@ void CalendarService::BeginTimeSkip(float aStartTimeInDays, float aDesiredEndTim
+@@ -79,7 +128,7 @@ void CalendarService::BeginTimeSkip(float aStartTimeInDays, float aDesiredEndTim
      if (!s_gameClockLocked || !m_transport.IsOnline() || !m_hasServerTime)
          return;
      const float hours = (aDesiredEndTimeInDays - aStartTimeInDays) * 24.f;
@@ -1084,7 +1085,7 @@ index ac24ad06..aad774ac 100644
          return;
      s_localTimeSkip = true;
      m_deferredSkipDays = 0;
-@@ -114,12 +162,23 @@ void CalendarService::EndTimeSkip(bool aInterrupted, const char* apKind) noexcep
+@@ -114,12 +163,23 @@ void CalendarService::EndTimeSkip(bool aInterrupted, const char* apKind) noexcep
      if (!s_gameClockLocked || !m_transport.IsOnline())
          return;
  
@@ -1109,7 +1110,7 @@ index ac24ad06..aad774ac 100644
      RequestTimeSkip request{};
      request.TargetTime = m_pendingSkipTarget.m_timeModel;
      m_transport.Send(request);
-@@ -129,6 +188,12 @@ void CalendarService::EndTimeSkip(bool aInterrupted, const char* apKind) noexcep
+@@ -129,6 +189,12 @@ void CalendarService::EndTimeSkip(bool aInterrupted, const char* apKind) noexcep
  
  void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
  {
@@ -1122,7 +1123,7 @@ index ac24ad06..aad774ac 100644
      // A jump of the shared clock (sleep, wait, /settime) must also move GameDaysPassed, which drives script
      // timers, the way the game itself does when the player sleeps. Regular ticks are handled in HandleUpdate.
      // The comparison uses a mirror of the server clock, not m_onlineTime: with bSyncPlayerCalendar off the
-@@ -137,7 +202,7 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
+@@ -137,7 +203,7 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
      if (s_gameClockLocked && m_hasServerTime)
      {
          const double skippedDays = SurvivalTime::InDays(newServerTime.m_timeModel) - SurvivalTime::InDays(m_serverTime.m_timeModel);
@@ -1131,7 +1132,7 @@ index ac24ad06..aad774ac 100644
          {
              if (s_localTimeSkip)
                  m_deferredSkipDays += static_cast<float>(skippedDays);
-@@ -159,8 +224,11 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
+@@ -159,8 +225,11 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
      if (!s_gameClockLocked)
          ToggleGameClock(false);
      m_onlineTime.m_timeModel.TimeScale = acMessage.timeModel.TimeScale;
@@ -1144,7 +1145,7 @@ index ac24ad06..aad774ac 100644
      if (m_world.GetServerSettings().SyncPlayerCalendar)
      {
          m_onlineTime.m_timeModel.Day = acMessage.timeModel.Day;
-@@ -177,12 +245,14 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
+@@ -177,12 +246,14 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
  
  void CalendarService::OnDisconnected(const DisconnectedEvent&) noexcept
  {
@@ -1159,7 +1160,7 @@ index ac24ad06..aad774ac 100644
      // signal a time transition
      m_fadeTimer = 0.f;
      ToggleGameClock(true);
-@@ -217,6 +287,17 @@ void CalendarService::ToggleGameClock(bool aEnable)
+@@ -217,6 +288,17 @@ void CalendarService::ToggleGameClock(bool aEnable)
  
  void CalendarService::HandleUpdate(const UpdateEvent& aEvent) noexcept
  {
