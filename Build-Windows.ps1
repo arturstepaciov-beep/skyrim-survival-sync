@@ -9,8 +9,8 @@ $vilniusZone = [TimeZoneInfo]::FindSystemTimeZoneById('FLE Standard Time')
 $startedLocal = [TimeZoneInfo]::ConvertTimeFromUtc($startedUtc, $vilniusZone)
 if (-not $BuildStamp) { $BuildStamp = $startedLocal.ToString('yyyy-MM-dd_HH-mm-ss') + '-LT' }
 if ($BuildStamp -notmatch '^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-LT$') { throw 'Invalid build timestamp' }
-$packageName = "SurvivalSync-v0.8.6-$BuildStamp-Windows"
-$buildVersion = "survival-sync-v086-map-travel-$BuildStamp"
+$packageName = "SurvivalSync-v0.8.7-$BuildStamp-Windows"
+$buildVersion = "survival-sync-v087-hand-equipment-$BuildStamp"
 $sourceCommit = (& git -C $PSScriptRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot determine package source commit' }
 function Run([string]$Program, [string[]]$Arguments) {
@@ -49,7 +49,7 @@ try {
     try { $manifestGzip.CopyTo($manifestOutput) } finally { $manifestOutput.Dispose(); $manifestGzip.Dispose(); $manifestInput.Dispose() }
     $buildInfoPath = Join-Path $source 'Code/common/BuildInfo.h.in'
     $buildInfo = Get-Content $buildInfoPath -Raw
-    $buildInfo = $buildInfo.Replace('survival-sync-v086-map-travel-draft', $buildVersion)
+    $buildInfo = $buildInfo.Replace('survival-sync-v087-hand-equipment-draft', $buildVersion)
     [IO.File]::WriteAllText($buildInfoPath, $buildInfo, [Text.UTF8Encoding]::new($false))
     Run -Program 'git' -Arguments @('submodule','update','--init','--recursive','--depth=1')
     Run -Program 'xmake' -Arguments @('config','--plat=windows','--arch=x64','--mode=releasedbg','--yes')

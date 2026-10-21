@@ -1,6 +1,14 @@
-# SurvivalSync v0.8.6
+# SurvivalSync v0.8.7
 
-Custom Skyrim Together client and server based on upstream commit 9ce0338522277e0ff0a12e8d2aa09ce67ad41a59. Install matching v0.8.6 client files on both PCs and run the included v0.8.6 server. Keep SurvivalSyncCoop.esp enabled. Retains v0.8.1 housing repairs and earlier features. Preserve config/CoopChest.dat when updating.
+Custom Skyrim Together client and server based on upstream commit 9ce0338522277e0ff0a12e8d2aa09ce67ad41a59. Install matching v0.8.7 client files on both PCs and run the included v0.8.7 server. Keep SurvivalSyncCoop.esp enabled. Retains v0.8.1 housing repairs and earlier features. Preserve config/CoopChest.dat when updating.
+
+## Hand equipment HUD and enemy weapon repair
+
+- Separate Left hand and Right hand equipment names above the hunger bar. Reads native hand objects and spells, shows Empty when unequipped, updates ten times per second.
+- The current AI owner publishes authoritative hand IDs, equipment and ownership epoch on changes, plus a five-second heartbeat. Receivers retain the snapshot through unloaded 3D and retry only on remote, living, loaded actors. Stale ownership snapshots are ignored.
+- Missing physical hand items are restored from the owner's equipment data before native equip; existing counts are respected, including identical dual-wield copies and single two-handed weapons. Only hand items are repaired, without rebuilding the full inventory.
+- New 3D receives hand equipment again. Missing plugins are left unresolved rather than clearing local hands. Existing animation and weapon draw synchronization remain in place.
+- Matching v0.8.7 client/server required: equipment packets gained hand snapshots. Native gameplay, modded weapon meshes and both players' enemy visuals still need two-PC verification.
 
 ## Map fast-travel hotfix
 
@@ -39,7 +47,7 @@ Two-PC gameplay validation is still required, especially follower recruitment, r
 ## Co-op fixes and HUD
 
 - Shares item/gold grants issued by Papyrus quest and dialogue fragments (QF_/TIF_) with the current party. Tracks source fragment, callsite, item and occurrence to avoid doubling a reward when the same script executes locally and remotely. This does not invent rewards from a completed journal flag or copy unrelated loot. Custom reward systems outside these script paths need separate adapters.
-- Party locations update every second, including distant players. Adds a compass overlay and projected overhead names for loaded party actors. Native world-map markers are temporarily disabled in v0.8.6 while investigating the crash when a party forms; current-location teleport buttons remain available.
+- Party locations update every second, including distant players. Adds a compass overlay and projected overhead names for loaded party actors. Native world-map markers are temporarily disabled in v0.8.7 while investigating the crash when a party forms; current-location teleport buttons remain available.
 - Adds direct "Teleport to <name>" buttons in F2 using the player's current server location.
 - Adds a separate hunger bar driven by the installed official Survival Mode hunger globals, with percentage and stage label. It is hidden when Survival Mode is inactive.
 - Restores the fast-travel control disabled by Survival Mode's watcher while retaining hunger, cold and exhaustion updates. Other normal engine travel checks remain in effect.

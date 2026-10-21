@@ -1,3 +1,46 @@
+diff --git a/Code/client/Components/LocalComponent.h b/Code/client/Components/LocalComponent.h
+index 7a9db966..18f3cdbd 100644
+--- a/Code/client/Components/LocalComponent.h
++++ b/Code/client/Components/LocalComponent.h
+@@ -5,6 +5,7 @@
+ #endif
+ 
+ #include <Structs/ActionEvent.h>
++#include <Structs/Inventory.h>
+ 
+ struct LocalComponent
+ {
+@@ -17,6 +18,11 @@ struct LocalComponent
+     uint32_t Id;
+     uint32_t OwnershipEpoch;
+     ActionEvent CurrentAction;
++    Inventory LastHandEquipment{};
++    GameId LastLeftHand{}, LastRightHand{};
++    uint8_t LastHandMask = 0;
++    uint64_t NextHandScan = 0, NextHandHeartbeat = 0;
++    bool HasHandSnapshot = false;
+     bool IsDead = false;
+     bool IsWeaponDrawn = false;
+ };
+diff --git a/Code/client/Components/RemoteComponent.h b/Code/client/Components/RemoteComponent.h
+index 9704cca7..e4e868bb 100644
+--- a/Code/client/Components/RemoteComponent.h
++++ b/Code/client/Components/RemoteComponent.h
+@@ -15,6 +15,14 @@ struct RemoteComponent
+     {
+     }
+ 
++    Inventory HandEquipment{};
++    GameId LeftHand{}, RightHand{};
++    uint8_t HandMask = 0;
++    uint32_t HandSnapshotEpoch = 0;
++    uint64_t NextHandRepair = 0;
++    bool HasHandSnapshot = false;
++    void* HandEquipment3D = nullptr;
++
+     uint32_t Id;
+     uint32_t CachedRefId;
+     uint32_t OwnershipEpoch;
 diff --git a/Code/client/Events/HealthChangeEvent.h b/Code/client/Events/HealthChangeEvent.h
 index 64a90d1d..5cfe5b00 100644
 --- a/Code/client/Events/HealthChangeEvent.h
@@ -1112,10 +1155,10 @@ index c6232fc4..1af8666f 100644
              if (glm::distance(glm::vec3(player->position), position) > 2200.f) continue;
 diff --git a/Code/client/Services/Generic/CoopHud.cpp b/Code/client/Services/Generic/CoopHud.cpp
 new file mode 100644
-index 00000000..604f024a
+index 00000000..ac8c8903
 --- /dev/null
 +++ b/Code/client/Services/Generic/CoopHud.cpp
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,137 @@
 +#include <TiltedOnlinePCH.h>
 +#include <World.h>
 +#include <Components.h>
@@ -1124,6 +1167,7 @@ index 00000000..604f024a
 +#include <Services/PapyrusService.h>
 +#include <Services/ScriptStateAccess.h>
 +#include <Services/SurvivalTravel.h>
++#include <Services/HandEquipment.h>
 +#include <OverlayApp.hpp>
 +#include <PlayerCharacter.h>
 +#include <Camera/PlayerCamera.h>
@@ -1218,6 +1262,12 @@ index 00000000..604f024a
 +            entries->SetDictionary(index++, data);
 +        }
 +        auto args = CefListValue::Create(); args->SetDouble(0, hunger); args->SetList(1, entries);
++        for (uint32_t hand = 0; hand < 2; ++hand)
++        {
++            auto* item = GetHandEquipment(player, hand);
++            const char* name = item ? item->GetName() : nullptr;
++            args->SetString(2 + hand, item ? (name && *name ? name : "Unnamed equipment") : "Empty");
++        }
 +        overlay->ExecuteAsync("coopHud", args);
 +    }
 +};
@@ -1280,17 +1330,28 @@ index 1edb4dba..3cada7b5 100644
          {
              ScopedInventoryOverride guard;
 diff --git a/Code/client/Services/Generic/InventoryService.cpp b/Code/client/Services/Generic/InventoryService.cpp
-index 5b2f79e2..ed67ab95 100644
+index 5b2f79e2..6aa38e59 100644
 --- a/Code/client/Services/Generic/InventoryService.cpp
 +++ b/Code/client/Services/Generic/InventoryService.cpp
-@@ -1,5 +1,6 @@
+@@ -1,5 +1,9 @@
  #include <Services/InventoryService.h>
++#include <Services/HandEquipment.h>
++#include <Forms/SpellItem.h>
++#include <HandEquipmentPolicy.h>
  #include <Services/HomesteadService.h>
 +#include <Services/WorldProgressService.h>
  
  #include <Messages/RequestObjectInventoryChanges.h>
  #include <Messages/NotifyObjectInventoryChanges.h>
-@@ -50,7 +51,8 @@ void InventoryService::OnInventoryChangeEvent(const InventoryChangeEvent& acEven
+@@ -43,6 +47,7 @@ InventoryService::InventoryService(World& aWorld, entt::dispatcher& aDispatcher,
+ void InventoryService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
+ {
+     RunWeaponStateUpdates();
++    RunHandEquipmentUpdates();
+ }
+ 
+ void InventoryService::OnInventoryChangeEvent(const InventoryChangeEvent& acEvent) noexcept
+@@ -50,7 +55,8 @@ void InventoryService::OnInventoryChangeEvent(const InventoryChangeEvent& acEven
      if (!m_transport.IsConnected())
          return;
  
@@ -1300,6 +1361,128 @@ index 5b2f79e2..ed67ab95 100644
  
      auto view = m_world.view<FormIdComponent>();
  
+@@ -218,6 +224,18 @@ void InventoryService::OnNotifyEquipmentChanges(const NotifyEquipmentChanges& ac
+     if (!pActor)
+         return;
+ 
++    if (acMessage.HandSnapshot)
++    {
++        if (acMessage.HandMask > 3 || acMessage.CurrentInventory.Entries.size() > 256) return;
++        auto& remote = view.get<RemoteComponent>(*it);
++        remote.HandEquipment = acMessage.CurrentInventory;
++        remote.LeftHand = acMessage.LeftHand; remote.RightHand = acMessage.RightHand;
++        remote.HandMask = acMessage.HandMask;
++        remote.HandSnapshotEpoch = acMessage.OwnershipEpoch;
++        remote.HasHandSnapshot = true;
++        remote.NextHandRepair = 0;
++        return;
++    }
+     auto& modSystem = World::Get().GetModSystem();
+ 
+     uint32_t itemId = modSystem.GetGameId(acMessage.ItemId);
+@@ -312,6 +330,7 @@ void InventoryService::RunWeaponStateUpdates() noexcept
+         Actor* const pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
+         auto& localComponent = view.get<LocalComponent>(entity);
+ 
++        if (!pActor) continue;
+         bool isWeaponDrawn = pActor->actorState.IsWeaponDrawn();
+         if (isWeaponDrawn != localComponent.IsWeaponDrawn)
+         {
+@@ -325,3 +344,94 @@ void InventoryService::RunWeaponStateUpdates() noexcept
+         }
+     }
+ }
++
++void InventoryService::RunHandEquipmentUpdates() noexcept
++{
++    if (!m_transport.IsOnline()) return;
++    const auto now = m_world.GetTick();
++    auto& mods = m_world.GetModSystem();
++    auto localView = m_world.view<LocalComponent, FormIdComponent>();
++    for (auto entity : localView)
++    {
++        auto& local = localView.get<LocalComponent>(entity);
++        if (now < local.NextHandScan) continue;
++        local.NextHandScan = now + 1000;
++        auto* actor = Cast<Actor>(TESForm::GetById(localView.get<FormIdComponent>(entity).Id));
++        if (!actor || !actor->GetNiNode() || !actor->parentCell || !actor->parentCell->IsAttached() ||
++            actor->VirtIsDead(false) || m_world.all_of<WaitingFor3D>(entity) || !local.OwnershipEpoch) continue;
++        RequestEquipmentChanges request{};
++        request.HandSnapshot = true;
++        request.ServerId = local.Id; request.OwnershipEpoch = local.OwnershipEpoch;
++        request.CurrentInventory = actor->GetEquipment();
++        for (uint32_t hand = 0; hand < 2; ++hand)
++        {
++            auto* item = GetHandEquipment(actor, hand);
++            auto& id = hand ? request.RightHand : request.LeftHand;
++            if (!item || mods.GetServerModId(item->formID, id)) request.HandMask |= 1 << hand;
++            if (!item || Cast<SpellItem>(item) || !id) continue;
++            // Worn extra-data can lag behind a native AI equip. Include its actual hand item.
++            if (std::none_of(request.CurrentInventory.Entries.begin(), request.CurrentInventory.Entries.end(),
++                [&](const auto& e) { return e.BaseId == id; }))
++            {
++                auto inventory = actor->GetActorInventory();
++                const auto it = std::find_if(inventory.Entries.begin(), inventory.Entries.end(), [&](const auto& e) { return e.BaseId == id && e.Count > 0; });
++                if (it != inventory.Entries.end())
++                {
++                    auto entry = *it; entry.ExtraWorn = hand == 1; entry.ExtraWornLeft = hand == 0;
++                    request.CurrentInventory.Entries.push_back(entry);
++                }
++            }
++        }
++        const bool changed = !local.HasHandSnapshot || local.LastLeftHand != request.LeftHand ||
++            local.LastRightHand != request.RightHand || local.LastHandMask != request.HandMask || local.LastHandEquipment != request.CurrentInventory;
++        if (!changed && now < local.NextHandHeartbeat) continue;
++        local.LastLeftHand = request.LeftHand; local.LastRightHand = request.RightHand;
++        local.LastHandMask = request.HandMask; local.LastHandEquipment = request.CurrentInventory;
++        local.HasHandSnapshot = true; local.NextHandHeartbeat = now + 5000;
++        m_transport.Send(request);
++    }
++    auto remoteView = m_world.view<RemoteComponent, FormIdComponent>(entt::exclude<LocalComponent>);
++    for (auto entity : remoteView)
++    {
++        auto& remote = remoteView.get<RemoteComponent>(entity);
++        if (!remote.HasHandSnapshot || remote.HandSnapshotEpoch != remote.OwnershipEpoch || now < remote.NextHandRepair) continue;
++        remote.NextHandRepair = now + 1000;
++        auto* actor = Cast<Actor>(TESForm::GetById(remoteView.get<FormIdComponent>(entity).Id));
++        if (!actor || !actor->GetNiNode() || !actor->parentCell || !actor->parentCell->IsAttached() ||
++            actor->VirtIsDead(false) || m_world.all_of<WaitingFor3D>(entity)) continue;
++        const bool rebuilt = remote.HandEquipment3D != actor->GetNiNode();
++        remote.HandEquipment3D = actor->GetNiNode();
++        ScopedInventoryOverride inventoryGuard;
++        for (uint32_t hand = 0; hand < 2; ++hand)
++        {
++            if (!(remote.HandMask & (1 << hand))) continue;
++            const auto id = hand ? remote.RightHand : remote.LeftHand;
++            auto* desired = id ? TESForm::GetById(mods.GetGameId(id)) : nullptr;
++            if (id && !desired) continue; // Missing plugin: retry without clearing a valid local item.
++            auto* current = GetHandEquipment(actor, hand);
++            if (current == desired && !rebuilt) continue;
++            auto* slot = hand ? DefaultObjectManager::Get().rightEquipSlot : DefaultObjectManager::Get().leftEquipSlot;
++            auto* manager = EquipManager::Get();
++            if (!desired)
++            {
++                if (current && Cast<SpellItem>(current)) manager->UnEquipSpell(actor, current, hand);
++                else if (current) manager->UnEquip(actor, current, nullptr, 1, slot, false, true, false, true, nullptr);
++                continue;
++            }
++            if (Cast<SpellItem>(desired)) { manager->EquipSpell(actor, desired, hand); continue; }
++            int64_t ownerCount = 0;
++            for (const auto& entry : remote.HandEquipment.Entries) if (entry.BaseId == id && entry.Count > 0) ownerCount += entry.Count;
++            const int required = HandEquipmentPolicy::Required(remote.LeftHand == id && remote.RightHand == id, ownerCount);
++            const int missing = HandEquipmentPolicy::Missing(required, actor->GetItemCountInInventory(desired->formID));
++            if (missing)
++            {
++                const auto it = std::find_if(remote.HandEquipment.Entries.begin(), remote.HandEquipment.Entries.end(),
++                    [&](const auto& e) { return e.BaseId == id && e.Count > 0; });
++                if (it == remote.HandEquipment.Entries.end()) continue;
++                auto entry = *it; entry.Count = missing; entry.ExtraWorn = entry.ExtraWornLeft = false;
++                actor->AddOrRemoveItem(entry, true);
++            }
++            manager->Equip(actor, desired, nullptr, 1, slot, false, true, false, true);
++        }
++    }
++}
 diff --git a/Code/client/Services/Generic/OverlayClient.cpp b/Code/client/Services/Generic/OverlayClient.cpp
 index cfc9d925..8f1b342f 100644
 --- a/Code/client/Services/Generic/OverlayClient.cpp
@@ -2327,6 +2510,32 @@ index 00000000..42aeb548
 +    m_state.clear(); m_seen.clear(); m_pendingRoleSeeds.clear(); m_grownPlots.clear(); m_pendingHarvests.clear(); m_pendingCrops.clear();
 +    m_authority = m_cursor = 0; m_scan = m_poll = 0; HarvestCommit = false;
 +}
+diff --git a/Code/client/Services/HandEquipment.h b/Code/client/Services/HandEquipment.h
+new file mode 100644
+index 00000000..4a35cb5a
+--- /dev/null
++++ b/Code/client/Services/HandEquipment.h
+@@ -0,0 +1,8 @@
++#pragma once
++#include <Actor.h>
++#include <Forms/MagicItem.h>
++inline TESForm* GetHandEquipment(Actor* actor, uint32_t slot)
++{
++    if (auto* object = actor->GetEquippedWeapon(slot)) return object;
++    return actor->magicItems[slot];
++}
+diff --git a/Code/client/Services/InventoryService.h b/Code/client/Services/InventoryService.h
+index cff53bb5..6864f303 100644
+--- a/Code/client/Services/InventoryService.h
++++ b/Code/client/Services/InventoryService.h
+@@ -56,6 +56,7 @@ private:
+      * and if so, send the new states to the server.
+      */
+     void RunWeaponStateUpdates() noexcept;
++    void RunHandEquipmentUpdates() noexcept;
+ 
+     World& m_world;
+     entt::dispatcher& m_dispatcher;
 diff --git a/Code/client/Services/OverlayService.h b/Code/client/Services/OverlayService.h
 index 26736b70..2704a103 100644
 --- a/Code/client/Services/OverlayService.h
@@ -2660,7 +2869,7 @@ index 6d60709b..34e1d91f 100644
      ctx().emplace<CalendarService>(*this, m_dispatcher, m_transport);
      ctx().emplace<QuestService>(*this, m_dispatcher);
 diff --git a/Code/common/BuildInfo.h.in b/Code/common/BuildInfo.h.in
-index 33cc05f3..42de4c8d 100644
+index 33cc05f3..31628fa6 100644
 --- a/Code/common/BuildInfo.h.in
 +++ b/Code/common/BuildInfo.h.in
 @@ -1,4 +1,4 @@
@@ -2668,7 +2877,7 @@ index 33cc05f3..42de4c8d 100644
  // This file was autogenerated by xmake
  #define BUILD_BRANCH "survival-worlditems"
 -#define BUILD_COMMIT "survival-sync-v07-quest-sync-draft"
-+#define BUILD_COMMIT "survival-sync-v086-map-travel-draft"
++#define BUILD_COMMIT "survival-sync-v087-hand-equipment-draft"
 diff --git a/Code/common/CompanionRolePolicy.h b/Code/common/CompanionRolePolicy.h
 new file mode 100644
 index 00000000..c026d63c
@@ -2728,6 +2937,26 @@ index 00000000..8f615734
 +    const float horizontal = std::hypot(x, y), distance = std::hypot(horizontal, z);
 +    if (!std::isfinite(distance) || distance < 32.f || distance > 20000.f) return false;
 +    pitch = -std::atan2(z, horizontal); yaw = std::atan2(x, y); return true;
++}
++}
+diff --git a/Code/common/HandEquipmentPolicy.h b/Code/common/HandEquipmentPolicy.h
+new file mode 100644
+index 00000000..0d9d6e63
+--- /dev/null
++++ b/Code/common/HandEquipmentPolicy.h
+@@ -0,0 +1,14 @@
++#pragma once
++#include <cstdint>
++namespace HandEquipmentPolicy
++{
++inline int Required(bool sameInBothHands, int64_t ownerCount)
++{
++    return sameInBothHands && ownerCount >= 2 ? 2 : 1;
++}
++inline int Missing(int required, int64_t current)
++{
++    if (required < 1 || required > 2) return 0;
++    return current >= required ? 0 : required - int(current > 0 ? current : 0);
 +}
 +}
 diff --git a/Code/common/HousingLayoutPolicy.h b/Code/common/HousingLayoutPolicy.h
@@ -2974,6 +3203,63 @@ index 00000000..78f399b3
 +    v[2] = 1.f; v[3] = day; ++plot.Revision; return true;
 +}
 +}
+diff --git a/Code/encoding/Messages/NotifyEquipmentChanges.cpp b/Code/encoding/Messages/NotifyEquipmentChanges.cpp
+index 2f4a4bba..d2f3f947 100644
+--- a/Code/encoding/Messages/NotifyEquipmentChanges.cpp
++++ b/Code/encoding/Messages/NotifyEquipmentChanges.cpp
+@@ -11,6 +11,10 @@ void NotifyEquipmentChanges::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter
+     Serialization::WriteBool(aWriter, Unequip);
+     Serialization::WriteBool(aWriter, IsSpell);
+     Serialization::WriteBool(aWriter, IsShout);
++    Serialization::WriteBool(aWriter, HandSnapshot);
++    Serialization::WriteVarInt(aWriter, HandMask);
++    LeftHand.Serialize(aWriter); RightHand.Serialize(aWriter);
++    if (HandSnapshot) CurrentInventory.Serialize(aWriter);
+ }
+ 
+ void NotifyEquipmentChanges::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
+@@ -25,4 +29,8 @@ void NotifyEquipmentChanges::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRead
+     Unequip = Serialization::ReadBool(aReader);
+     IsSpell = Serialization::ReadBool(aReader);
+     IsShout = Serialization::ReadBool(aReader);
++    HandSnapshot = Serialization::ReadBool(aReader);
++    HandMask = Serialization::ReadVarInt(aReader) & 0xFF;
++    LeftHand.Deserialize(aReader); RightHand.Deserialize(aReader);
++    if (HandSnapshot) CurrentInventory.Deserialize(aReader);
+ }
+diff --git a/Code/encoding/Messages/NotifyEquipmentChanges.h b/Code/encoding/Messages/NotifyEquipmentChanges.h
+index 92faf9b9..8ab0ee14 100644
+--- a/Code/encoding/Messages/NotifyEquipmentChanges.h
++++ b/Code/encoding/Messages/NotifyEquipmentChanges.h
+@@ -3,6 +3,7 @@
+ #include "Message.h"
+ 
+ #include <Structs/GameId.h>
++#include <Structs/Inventory.h>
+ 
+ struct NotifyEquipmentChanges final : ServerMessage
+ {
+@@ -18,9 +19,13 @@ struct NotifyEquipmentChanges final : ServerMessage
+ 
+     bool operator==(const NotifyEquipmentChanges& acRhs) const noexcept
+     {
+-        return GetOpcode() == acRhs.GetOpcode() && ServerId == acRhs.ServerId && OwnershipEpoch == acRhs.OwnershipEpoch && ItemId == acRhs.ItemId && EquipSlotId == acRhs.EquipSlotId && Count == acRhs.Count && Unequip == acRhs.Unequip && IsSpell == acRhs.IsSpell && IsShout == acRhs.IsShout;
++        return HandSnapshot == acRhs.HandSnapshot && HandMask == acRhs.HandMask && LeftHand == acRhs.LeftHand && RightHand == acRhs.RightHand && CurrentInventory == acRhs.CurrentInventory && GetOpcode() == acRhs.GetOpcode() && ServerId == acRhs.ServerId && OwnershipEpoch == acRhs.OwnershipEpoch && ItemId == acRhs.ItemId && EquipSlotId == acRhs.EquipSlotId && Count == acRhs.Count && Unequip == acRhs.Unequip && IsSpell == acRhs.IsSpell && IsShout == acRhs.IsShout;
+     }
+ 
++    bool HandSnapshot = false;
++    uint8_t HandMask = 0;
++    GameId LeftHand{}, RightHand{};
++
+     uint32_t ServerId{};
+     uint32_t OwnershipEpoch{};
+     GameId ItemId{};
+@@ -29,4 +34,5 @@ struct NotifyEquipmentChanges final : ServerMessage
+     bool Unequip = false;
+     bool IsSpell = false;
+     bool IsShout = false;
++    Inventory CurrentInventory{};
+ };
 diff --git a/Code/encoding/Messages/NotifyHealthChangeBroadcast.cpp b/Code/encoding/Messages/NotifyHealthChangeBroadcast.cpp
 index 4ab6f647..877b842a 100644
 --- a/Code/encoding/Messages/NotifyHealthChangeBroadcast.cpp
@@ -3071,6 +3357,48 @@ index 94d746b2..36be327c 100644
 +    glm::vec3 Position{};
 +    bool HasPosition{};
  };
+diff --git a/Code/encoding/Messages/RequestEquipmentChanges.cpp b/Code/encoding/Messages/RequestEquipmentChanges.cpp
+index 36e9ef34..81c7264a 100644
+--- a/Code/encoding/Messages/RequestEquipmentChanges.cpp
++++ b/Code/encoding/Messages/RequestEquipmentChanges.cpp
+@@ -13,6 +13,9 @@ void RequestEquipmentChanges::SerializeRaw(TiltedPhoques::Buffer::Writer& aWrite
+     Serialization::WriteBool(aWriter, IsShout);
+     Serialization::WriteBool(aWriter, IsAmmo);
+     CurrentInventory.Serialize(aWriter);
++    Serialization::WriteBool(aWriter, HandSnapshot);
++    Serialization::WriteVarInt(aWriter, HandMask);
++    LeftHand.Serialize(aWriter); RightHand.Serialize(aWriter);
+ }
+ 
+ void RequestEquipmentChanges::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
+@@ -29,4 +32,7 @@ void RequestEquipmentChanges::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRea
+     IsShout = Serialization::ReadBool(aReader);
+     IsAmmo = Serialization::ReadBool(aReader);
+     CurrentInventory.Deserialize(aReader);
++    HandSnapshot = Serialization::ReadBool(aReader);
++    HandMask = Serialization::ReadVarInt(aReader) & 0xFF;
++    LeftHand.Deserialize(aReader); RightHand.Deserialize(aReader);
+ }
+diff --git a/Code/encoding/Messages/RequestEquipmentChanges.h b/Code/encoding/Messages/RequestEquipmentChanges.h
+index 3b4c5cf9..2fc2576d 100644
+--- a/Code/encoding/Messages/RequestEquipmentChanges.h
++++ b/Code/encoding/Messages/RequestEquipmentChanges.h
+@@ -20,10 +20,14 @@ struct RequestEquipmentChanges final : ClientMessage
+ 
+     bool operator==(const RequestEquipmentChanges& acRhs) const noexcept
+     {
+-        return GetOpcode() == acRhs.GetOpcode() && ServerId == acRhs.ServerId && OwnershipEpoch == acRhs.OwnershipEpoch && ItemId == acRhs.ItemId && EquipSlotId == acRhs.EquipSlotId && Count == acRhs.Count && Unequip == acRhs.Unequip && IsSpell == acRhs.IsSpell && IsShout == acRhs.IsShout && IsAmmo == acRhs.IsAmmo &&
++        return HandSnapshot == acRhs.HandSnapshot && HandMask == acRhs.HandMask && LeftHand == acRhs.LeftHand && RightHand == acRhs.RightHand && GetOpcode() == acRhs.GetOpcode() && ServerId == acRhs.ServerId && OwnershipEpoch == acRhs.OwnershipEpoch && ItemId == acRhs.ItemId && EquipSlotId == acRhs.EquipSlotId && Count == acRhs.Count && Unequip == acRhs.Unequip && IsSpell == acRhs.IsSpell && IsShout == acRhs.IsShout && IsAmmo == acRhs.IsAmmo &&
+                CurrentInventory == acRhs.CurrentInventory;
+     }
+ 
++    bool HandSnapshot = false;
++    uint8_t HandMask = 0;
++    GameId LeftHand{}, RightHand{};
++
+     uint32_t ServerId{};
+     uint32_t OwnershipEpoch{};
+     GameId ItemId{};
 diff --git a/Code/encoding/Messages/RequestHealthChangeBroadcast.cpp b/Code/encoding/Messages/RequestHealthChangeBroadcast.cpp
 index cfa78d65..dc2b243c 100644
 --- a/Code/encoding/Messages/RequestHealthChangeBroadcast.cpp
@@ -3414,6 +3742,54 @@ index 2afe4a34..4e66b0a5 100644
      std::unordered_map<uint32_t, uint32_t> m_tokens;
      entt::scoped_connection m_request, m_leave;
  };
+diff --git a/Code/server/Services/InventoryService.cpp b/Code/server/Services/InventoryService.cpp
+index d79b0008..3ba387e9 100644
+--- a/Code/server/Services/InventoryService.cpp
++++ b/Code/server/Services/InventoryService.cpp
+@@ -13,6 +13,7 @@
+ #include <Messages/DrawWeaponRequest.h>
+ 
+ #include <Setting.h>
++#include <HandEquipmentPolicy.h>
+ namespace
+ {
+ Console::Setting bEnableItemDrops{"Gameplay:bEnableItemDrops", "(Experimental) Syncs dropped items by players", false};
+@@ -130,7 +131,24 @@ void InventoryService::OnEquipmentChanges(const PacketEvent<RequestEquipmentChan
+         return;
+     }
+ 
++    if (message.HandSnapshot && (message.HandMask > 3 || message.CurrentInventory.Entries.size() > 256)) return;
+     auto& inventoryComponent = view.get<InventoryComponent>(*it);
++    if (message.HandSnapshot)
++    {
++        // Keep late join/spawn data complete when an AI-selected hand item was absent
++        // from the old inventory snapshot. Never import unrelated inventory here.
++        for (const auto& entry : message.CurrentInventory.Entries)
++        {
++            if (entry.Count <= 0 || (entry.BaseId != message.LeftHand && entry.BaseId != message.RightHand)) continue;
++            if (std::any_of(inventoryComponent.Content.Entries.begin(), inventoryComponent.Content.Entries.end(),
++                [&](const auto& e) { return e.BaseId == entry.BaseId && e.Count > 0; })) continue;
++            int64_t count = 0;
++            for (const auto& e : message.CurrentInventory.Entries) if (e.BaseId == entry.BaseId && e.Count > 0) count += e.Count;
++            auto missing = entry;
++            missing.Count = HandEquipmentPolicy::Required(message.LeftHand == entry.BaseId && message.RightHand == entry.BaseId, count);
++            inventoryComponent.Content.AddOrRemoveEntry(missing);
++        }
++    }
+     inventoryComponent.Content.UpdateEquipment(message.CurrentInventory);
+ 
+     NotifyEquipmentChanges notify;
+@@ -142,6 +160,10 @@ void InventoryService::OnEquipmentChanges(const PacketEvent<RequestEquipmentChan
+     notify.Unequip = message.Unequip;
+     notify.IsSpell = message.IsSpell;
+     notify.IsShout = message.IsShout;
++    notify.HandSnapshot = message.HandSnapshot;
++    notify.HandMask = message.HandMask;
++    notify.LeftHand = message.LeftHand; notify.RightHand = message.RightHand;
++    if (message.HandSnapshot) notify.CurrentInventory = message.CurrentInventory;
+ 
+     const entt::entity cOrigin = static_cast<entt::entity>(message.ServerId);
+     if (!GameServer::Get()->SendToPlayersInRange(notify, cOrigin, acMessage.GetSender()))
 diff --git a/Code/server/Services/OverlayService.cpp b/Code/server/Services/OverlayService.cpp
 index df534329..1aef41ac 100644
 --- a/Code/server/Services/OverlayService.cpp
@@ -3824,14 +4200,18 @@ index cbc2ce67..d8d3670d 100644
  
    public acceptPartyInvite(inviterId: number) {
 diff --git a/Code/skyrim_ui/src/app/components/root/root.component.html b/Code/skyrim_ui/src/app/components/root/root.component.html
-index 84b59f7e..f61c14bf 100644
+index 84b59f7e..ad3b7f21 100644
 --- a/Code/skyrim_ui/src/app/components/root/root.component.html
 +++ b/Code/skyrim_ui/src/app/components/root/root.component.html
-@@ -9,6 +9,21 @@
+@@ -9,6 +9,25 @@
      </app-window>
    </div>
    <ng-container *ngIf="!(menuOpen$ | async)">
 +    <ng-container *ngIf="coopHud$ | async as hud">
++      <div class="coop-hands" aria-label="Equipped hands">
++        <div><span>Left hand</span><strong>{{ hud.leftHand }}</strong></div>
++        <div><span>Right hand</span><strong>{{ hud.rightHand }}</strong></div>
++      </div>
 +      <div *ngIf="hud.hunger >= 0" class="coop-hunger" role="meter" aria-label="Hunger"
 +        aria-valuemin="0" aria-valuemax="100" [attr.aria-valuenow]="hud.hunger * 100">
 +        <span>Hunger {{ hud.hunger * 100 | number:'1.0-0' }}%</span>
@@ -3849,7 +4229,7 @@ index 84b59f7e..f61c14bf 100644
      <ng-container *ngIf="connected$ | async">
        <ng-container *ngIf="{ seconds: (resyncCountdown$ | async) } as sync">
          <div *ngIf="sync.seconds !== null && sync.seconds >= 0"
-@@ -34,6 +49,11 @@
+@@ -34,6 +53,11 @@
      [class.background-element]="view$ | async"
    >
      <app-window *ngIf="connected$ | async" class="quest-sync-controls">
@@ -3861,7 +4241,7 @@ index 84b59f7e..f61c14bf 100644
        <button data-style-ornament="inverted" (click)="syncQuests()"
          title="Catch up to the party leader's quest journal. Quests ahead of the host are skipped.">
          Sync quests with host
-@@ -41,6 +61,10 @@
+@@ -41,6 +65,10 @@
        <span *ngIf="questSyncStatus$ | async as status" role="status" aria-live="polite">{{ status }}</span>
      </app-window>
      <app-window border="strip" class="app-root-menu">
@@ -3873,10 +4253,10 @@ index 84b59f7e..f61c14bf 100644
          *ngIf="!(connected$ | async) && !(connectionInProgress$ | async)"
          data-style-ornament="inverted"
 diff --git a/Code/skyrim_ui/src/app/components/root/root.component.scss b/Code/skyrim_ui/src/app/components/root/root.component.scss
-index 4b1902d8..15d13c3f 100644
+index 4b1902d8..7b280637 100644
 --- a/Code/skyrim_ui/src/app/components/root/root.component.scss
 +++ b/Code/skyrim_ui/src/app/components/root/root.component.scss
-@@ -176,3 +176,20 @@
+@@ -176,3 +176,29 @@
      background-position: 100%;
    }
  }
@@ -3896,6 +4276,15 @@ index 4b1902d8..15d13c3f 100644
 +.coop-compass {
 +  position: fixed; top: 57px; transform: translateX(-50%); color: #b7e8ff;
 +  text-shadow: 0 1px 3px #000; pointer-events: none; font-size: 12px;
++}
++
++.coop-hands {
++  position: fixed; left: 24px; bottom: 172px; width: 290px;
++  color: #fff; text-shadow: 0 1px 3px #000, 0 0 4px #000;
++  pointer-events: none; font-size: 14px;
++  > div { display: flex; align-items: baseline; gap: 10px; margin-top: 4px; }
++  span { flex: 0 0 72px; color: #b7c9dd; font-size: 12px; }
++  strong { font-weight: 500; overflow-wrap: anywhere; }
 +}
 diff --git a/Code/skyrim_ui/src/app/components/root/root.component.ts b/Code/skyrim_ui/src/app/components/root/root.component.ts
 index 2821dbc3..562d7022 100644
@@ -3938,14 +4327,14 @@ index 5b8453d2..b6300e98 100644
    autoResyncOn(): void { console.info("Auto resync enabled"); }
    autoResyncOff(): void { console.info("Auto resync disabled"); }
 diff --git a/Code/skyrim_ui/src/app/services/client.service.ts b/Code/skyrim_ui/src/app/services/client.service.ts
-index 87ca96dd..f53b48e5 100644
+index 87ca96dd..c773085c 100644
 --- a/Code/skyrim_ui/src/app/services/client.service.ts
 +++ b/Code/skyrim_ui/src/app/services/client.service.ts
 @@ -32,6 +32,7 @@ export class ClientService implements OnDestroy {
    public questSyncStatusChange = new BehaviorSubject('');
    public resyncCountdownChange = new BehaviorSubject(-1);
    public coopChestViewChange = new BehaviorSubject<string | null>(null);
-+  public coopHudChange = new BehaviorSubject<{ hunger: number; players: CoopHudPlayer[] }>({ hunger: -1, players: [] });
++  public coopHudChange = new BehaviorSubject<{ hunger: number; players: CoopHudPlayer[]; leftHand: string; rightHand: string }>({ hunger: -1, players: [], leftHand: 'Empty', rightHand: 'Empty' });
  
    public isConnectionInProgressChange = new BehaviorSubject(false);
  
@@ -3953,8 +4342,8 @@ index 87ca96dd..f53b48e5 100644
      private readonly translocoService: TranslocoService,
      private readonly chatService: ChatService,
    ) {
-+    skyrimtogether.on('coopHud', (hunger, players) => {
-+      this.zone.run(() => this.coopHudChange.next({ hunger, players }));
++    skyrimtogether.on('coopHud', (hunger, players, leftHand, rightHand) => {
++      this.zone.run(() => this.coopHudChange.next({ hunger, players, leftHand: leftHand || 'Empty', rightHand: rightHand || 'Empty' }));
 +    });
      skyrimtogether.on('coopChestView', (contents: string) => {
        this.zone.run(() => this.coopChestViewChange.next(contents));
@@ -3968,7 +4357,7 @@ index 87ca96dd..f53b48e5 100644
  
    public setAutoResync(enabled: boolean): void {
 diff --git a/Code/skyrim_ui/src/typings.d.ts b/Code/skyrim_ui/src/typings.d.ts
-index 52eb4999..9ad554bf 100644
+index 52eb4999..9da636d3 100644
 --- a/Code/skyrim_ui/src/typings.d.ts
 +++ b/Code/skyrim_ui/src/typings.d.ts
 @@ -1,4 +1,5 @@
@@ -3981,7 +4370,7 @@ index 52eb4999..9ad554bf 100644
  interface SkyrimTogether {
    /** Add listener to when the UI is first initialized. */
    on(event: 'init', callback: SkyrimTogetherTypes.InitCallback): void;
-+  on(event: 'coopHud', callback: (hunger: number, players: CoopHudPlayer[]) => void): void;
++  on(event: 'coopHud', callback: (hunger: number, players: CoopHudPlayer[], leftHand: string, rightHand: string) => void): void;
  
    /** Add listener to when the UI is activated. */
    on(event: 'activate', callback: SkyrimTogetherTypes.ActivateCallback): void;
@@ -3995,10 +4384,10 @@ index 52eb4999..9ad554bf 100644
    autoResyncOff(): void;
 diff --git a/Code/tests/coop_fixes.cpp b/Code/tests/coop_fixes.cpp
 new file mode 100644
-index 00000000..05c9aa8e
+index 00000000..dae8ecf3
 --- /dev/null
 +++ b/Code/tests/coop_fixes.cpp
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,116 @@
 +#include <TiltedCore/Stl.hpp>
 +#include <TiltedCore/Allocator.hpp>
 +#include <TiltedCore/Buffer.hpp>
@@ -4103,8 +4492,20 @@ index 00000000..05c9aa8e
 +    REQUIRE_FALSE(CoopTeleport::Arrived(0, 0, 0, 10000, 0, 0));
 +    REQUIRE_FALSE(CoopTeleport::Arrived(NAN, 0, 0, 0, 0, 0));
 +}
++
++#include <HandEquipmentPolicy.h>
++TEST_CASE("Hand repairs add only missing copies and do not duplicate two-handed weapons", "[coop-fixes]")
++{
++    using namespace HandEquipmentPolicy;
++    REQUIRE(Required(true, 1) == 1); // Same two-handed weapon reported by both hands.
++    REQUIRE(Required(true, 2) == 2); // Two actual copies used for dual wield.
++    REQUIRE(Required(false, 100) == 1);
++    REQUIRE(Missing(1, 0) == 1); REQUIRE(Missing(1, 1) == 0);
++    REQUIRE(Missing(2, 1) == 1); REQUIRE(Missing(2, 2) == 0);
++    REQUIRE(Missing(2, 100) == 0); REQUIRE(Missing(100, 0) == 0);
++}
 diff --git a/Code/tests/encoding.cpp b/Code/tests/encoding.cpp
-index 8c828c2a..feef9c23 100644
+index 8c828c2a..a76d3eef 100644
 --- a/Code/tests/encoding.cpp
 +++ b/Code/tests/encoding.cpp
 @@ -12,6 +12,8 @@
@@ -4125,6 +4526,40 @@ index 8c828c2a..feef9c23 100644
      {
          QuestState state;
          state.Action = action; state.Authority = 42; state.Id = GameId(3, 0x12345);
+@@ -898,3 +900,33 @@ TEST_CASE("Shared network chest transfers retain portal and commit identity", "[
+     });
+     REQUIRE(complete == 1);
+ }
++
++#include <Messages/RequestEquipmentChanges.h>
++#include <Messages/NotifyEquipmentChanges.h>
++TEST_CASE("Hand snapshot packets retain both hands, ownership epoch and weapon extras", "[coop-fixes]")
++{
++    for (bool snapshot : {false, true})
++    {
++        RequestEquipmentChanges request;
++        request.ServerId = 100; request.OwnershipEpoch = 7;
++        request.HandSnapshot = snapshot; request.HandMask = 3;
++        request.LeftHand = GameId(0, 0x123); request.RightHand = GameId(2, 0x456);
++        request.ItemId = request.RightHand; request.Count = 1;
++        Inventory::Entry item; item.BaseId = request.RightHand; item.Count = 1;
++        item.ExtraWorn = true; item.ExtraHealth = 1.25f; item.ExtraEnchantId = GameId(0, 99);
++        request.CurrentInventory.Entries.push_back(item);
++        Buffer buffer(16384); Buffer::Writer writer(&buffer); request.Serialize(writer);
++        Buffer::Reader reader(&buffer); ClientMessageFactory factory;
++        auto message = factory.Extract(reader); REQUIRE(message);
++        auto decoded = CastUnique<RequestEquipmentChanges>(std::move(message)); REQUIRE(*decoded == request);
++        NotifyEquipmentChanges notify;
++        notify.ServerId = request.ServerId; notify.OwnershipEpoch = request.OwnershipEpoch;
++        notify.HandSnapshot = snapshot; notify.HandMask = request.HandMask;
++        notify.LeftHand = request.LeftHand; notify.RightHand = request.RightHand;
++        if (snapshot) notify.CurrentInventory = request.CurrentInventory;
++        Buffer result(16384); Buffer::Writer out(&result); notify.Serialize(out);
++        Buffer::Reader in(&result); ServerMessageFactory serverFactory;
++        auto notification = serverFactory.Extract(in); REQUIRE(notification);
++        auto restored = CastUnique<NotifyEquipmentChanges>(std::move(notification)); REQUIRE(*restored == notify);
++    }
++}
 diff --git a/Code/tests/housing_layout.cpp b/Code/tests/housing_layout.cpp
 new file mode 100644
 index 00000000..bee9047b
