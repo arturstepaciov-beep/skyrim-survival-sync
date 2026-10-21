@@ -1678,7 +1678,7 @@ index 00000000..b9fdcefb
 +}
 +}
 diff --git a/Code/client/Services/Generic/DiscoveryService.cpp b/Code/client/Services/Generic/DiscoveryService.cpp
-index cea7919d..d366881f 100644
+index cea7919d..6da364d5 100644
 --- a/Code/client/Services/Generic/DiscoveryService.cpp
 +++ b/Code/client/Services/Generic/DiscoveryService.cpp
 @@ -114,6 +114,7 @@ void DiscoveryService::VisitExteriorCell(bool aForceTrigger) noexcept
@@ -1689,6 +1689,14 @@ index cea7919d..d366881f 100644
          if (!m_world.GetModSystem().GetServerModId(pCell->formID, cellChangeEvent.CellId))
          {
              spdlog::error("Failed to find cell id for form id {:X}", pCell->formID);
+@@ -193,6 +194,7 @@ void DiscoveryService::DetectGridCellChange(TESWorldSpace* aWorldSpace, bool aNe
+     if (!pCell)
+         pCell = ModManager::Get()->GetCellFromCoordinates(pTES->currentGridX, pTES->currentGridY, aWorldSpace, false);
+ 
++    if (!pCell) return; // Destination grid can still be unavailable during relocation.
+     if (!m_world.GetModSystem().GetServerModId(pCell->formID, changeEvent.PlayerCell))
+     {
+         spdlog::error("Failed to find cell id for form id {:X}", pCell->formID);
 diff --git a/Code/client/Services/Generic/HomesteadService.cpp b/Code/client/Services/Generic/HomesteadService.cpp
 index 1edb4dba..f7ca28e6 100644
 --- a/Code/client/Services/Generic/HomesteadService.cpp
