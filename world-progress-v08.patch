@@ -1504,10 +1504,10 @@ index c6232fc4..9340311b 100644
              if (glm::distance(glm::vec3(player->position), position) > 2200.f) continue;
 diff --git a/Code/client/Services/Generic/CoopHud.cpp b/Code/client/Services/Generic/CoopHud.cpp
 new file mode 100644
-index 00000000..ac8c8903
+index 00000000..aca6f709
 --- /dev/null
 +++ b/Code/client/Services/Generic/CoopHud.cpp
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,139 @@
 +#include <TiltedOnlinePCH.h>
 +#include <World.h>
 +#include <Components.h>
@@ -1640,6 +1640,8 @@ index 00000000..ac8c8903
 +{
 +    extern void InstallPersonalCompanions(entt::dispatcher&);
 +    InstallPersonalCompanions(dispatcher);
++    extern void InstallSpellShortcuts(entt::dispatcher&);
++    InstallSpellShortcuts(dispatcher);
 +    static CoopHud hud;
 +    hud.update = dispatcher.sink<UpdateEvent>().connect<&CoopHud::OnUpdate>(&hud);
 +    hud.notify = dispatcher.sink<NotifyPlayerCellChanged>().connect<&CoopHud::OnLocation>(&hud);
@@ -1949,10 +1951,10 @@ index 5b2f79e2..a183f212 100644
 +    }
 +}
 diff --git a/Code/client/Services/Generic/OverlayClient.cpp b/Code/client/Services/Generic/OverlayClient.cpp
-index cfc9d925..8f1b342f 100644
+index cfc9d925..b011d651 100644
 --- a/Code/client/Services/Generic/OverlayClient.cpp
 +++ b/Code/client/Services/Generic/OverlayClient.cpp
-@@ -51,6 +51,11 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
+@@ -51,11 +51,21 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
              World::Get().GetRunner().Queue([] { World::Get().ctx().at<WorldItemService>().SetAutoResync(true); });
          else if (eventName == "autoResyncOff")
              World::Get().GetRunner().Queue([] { World::Get().ctx().at<WorldItemService>().SetAutoResync(false); });
@@ -1964,6 +1966,16 @@ index cfc9d925..8f1b342f 100644
          else if (eventName == "setResyncInterval")
          {
              const int seconds = eventArgs->GetInt(0);
+             World::Get().GetRunner().Queue([seconds] { World::Get().ctx().at<WorldItemService>().SetResyncInterval(seconds); });
+         }
++        else if (eventName == "setSpellShortcuts")
++        {
++            const bool enabled = eventArgs->GetBool(0);
++            World::Get().GetRunner().Queue([enabled] { extern void SetSpellShortcuts(bool); SetSpellShortcuts(enabled); });
++        }
+         else if (eventName == "setResyncHotkey")
+         {
+             const int key = eventArgs->GetInt(0);
 diff --git a/Code/client/Services/Generic/OverlayService.cpp b/Code/client/Services/Generic/OverlayService.cpp
 index 060a5836..9906653e 100644
 --- a/Code/client/Services/Generic/OverlayService.cpp
@@ -2445,6 +2457,134 @@ index c1c68f2c..64cc443e 100644
             || std::find(kNonSyncableQuestIds.begin(), kNonSyncableQuestIds.end(), apQuest->formID) != kNonSyncableQuestIds.end();
  }
  
+diff --git a/Code/client/Services/Generic/SpellShortcuts.cpp b/Code/client/Services/Generic/SpellShortcuts.cpp
+new file mode 100644
+index 00000000..13d53470
+--- /dev/null
++++ b/Code/client/Services/Generic/SpellShortcuts.cpp
+@@ -0,0 +1,122 @@
++#include <TiltedOnlinePCH.h>
++#include <World.h>
++#include <PlayerCharacter.h>
++#include <Forms/TESObjectCELL.h>
++#include <Forms/SpellItem.h>
++#include <EquipManager.h>
++#include <Interface/UI.h>
++#include <AI/Movement/PlayerControls.h>
++#include <Services/HandEquipment.h>
++#include <Services/ScriptStateAccess.h>
++#include <Events/UpdateEvent.h>
++#include <SpellShortcutPolicy.h>
++#include <array>
++#include <algorithm>
++namespace
++{
++// CommonLib/engine layouts: MagicFavorites.hotkeys 0x28, ButtonEvent 0x30.
++struct FavoriteSpells
++{
++    void* vtable;
++    uint8_t pad08[8];
++    GameArray<TESForm*> favorites;
++    GameArray<TESForm*> hotkeys;
++};
++static_assert(offsetof(FavoriteSpells, hotkeys) == 0x28);
++struct ShortcutButton
++{
++    virtual ~ShortcutButton() = default;
++    virtual bool HasIDCode() const { return true; }
++    virtual const BSFixedString& UserEvent() const { return userEvent; }
++    uint32_t device{1}, eventType{}; // Mouse, button.
++    void* next{};
++    BSFixedString userEvent{"Right Attack/Block"};
++    uint32_t idCode{}, padding{};
++    float value{}, heldSeconds{};
++};
++static_assert(sizeof(ShortcutButton) == 0x30);
++static_assert(offsetof(ShortcutButton, value) == 0x28);
++struct ShortcutCasting
++{
++    entt::scoped_connection update;
++    std::array<bool, 8> previous{};
++    bool enabled{true}, nativeDown{};
++    int active{-1}; uint32_t spellId{};
++    uint64_t selectedAt{}, pressedAt{};
++    float minimum{};
++    bool Button(bool down, float duration, bool force = false)
++    {
++        auto* controls = PlayerControls::GetInstance();
++        auto* handler = controls ? controls->attackBlockHandler : nullptr;
++        if (!handler || (!force && (!handler->isEnabled || controls->bBlockPlayerInput))) return false;
++        ShortcutButton event; event.value = down ? 1.f : 0.f; event.heldSeconds = duration;
++        if (!force && !ScriptStateAccess::Call<1, bool, ShortcutButton*>(handler, &event)) return false;
++        ScriptStateAccess::Call<4, void, ShortcutButton*, PlayerControlsData*>(handler, &event, &controls->Data);
++        return true;
++    }
++    void Cancel(PlayerCharacter* player)
++    {
++        if (nativeDown)
++        {
++            // Interrupt before releasing: opening a menu/focus loss must not fire a charged spell.
++            if (player && player->GetNiNode() && player->parentCell && player->parentCell->IsAttached())
++            { player->InterruptCast(false); Button(false, 0.1f, true); }
++        }
++        active = -1; nativeDown = false; spellId = 0;
++    }
++    void OnUpdate(const UpdateEvent&)
++    {
++        std::array<bool, 8> keys{};
++        for (int i = 0; i < 8; ++i) keys[i] = (GetAsyncKeyState('1' + i) & 0x8000) != 0;
++        auto* player = PlayerCharacter::Get(); auto* ui = UI::Get();
++        DWORD foreground{}; GetWindowThreadProcessId(GetForegroundWindow(), &foreground);
++        bool ready = enabled && foreground == GetCurrentProcessId() && player && player->GetNiNode() &&
++            player->parentCell && player->parentCell->IsAttached() && !player->VirtIsDead(false) && ui &&
++            ui->numItemMenus == 0 && ui->numPausesGame == 0 && !ui->modal && !ui->closingAllMenus &&
++            !World::Get().GetOverlayService().GetActive();
++        if (ready)
++            for (const char* menu : {"Loading Menu", "LoadingMenu", "Main Menu", "Console", "Dialogue Menu", "FavoritesMenu", "MapMenu"})
++                if (ui->GetMenuOpen(menu)) { ready = false; break; }
++        if (!ready) { Cancel(player); previous = keys; return; }
++        const auto now = World::Get().GetTick();
++        POINTER_SKYRIMSE(FavoriteSpells*, favorites, 403337);
++        auto* list = *favorites.Get();
++        if (list && list->hotkeys.data && list->hotkeys.length <= 8)
++            for (int i = 0; i < static_cast<int>(list->hotkeys.length); ++i)
++            {
++                if (!keys[i] || previous[i]) continue;
++                auto* spell = Cast<SpellItem>(list->hotkeys[i]);
++                // Powers/shouts and ordinary item shortcuts keep their native behavior.
++                if (!spell || ScriptStateAccess::Call<0x53, uint32_t>(spell) != 0) continue;
++                if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) continue;
++                auto* equip = EquipManager::Get(); if (!equip) continue;
++                Cancel(player); active = i; spellId = spell->formID; selectedAt = now;
++                const bool concentration = ScriptStateAccess::Call<0x55, uint32_t>(spell) == 2;
++                minimum = SpellShortcuts::MinimumHold(ScriptStateAccess::Call<0x64, float>(spell), concentration);
++                if (GetHandEquipment(player, 1) != spell) equip->EquipSpell(player, spell, 1);
++                player->SetWeaponDrawnEx(true);
++                break;
++            }
++        previous = keys;
++        if (active < 0) return;
++        auto* spell = Cast<SpellItem>(TESForm::GetById(spellId));
++        if (!spell || (now - selectedAt > 5000 && !nativeDown)) { Cancel(player); return; }
++        if (!nativeDown)
++        {
++            if (now - selectedAt < 150 || !player->actorState.IsWeaponFullyDrawn() || GetHandEquipment(player, 1) != spell) return;
++            if (!Button(true, 0.f)) return;
++            pressedAt = now; nativeDown = true;
++            return;
++        }
++        if (GetHandEquipment(player, 1) != spell) { Cancel(player); return; }
++        const float elapsed = static_cast<float>(now - pressedAt) / 1000.f;
++        if (SpellShortcuts::Release(keys[active], elapsed, minimum))
++        { Button(false, std::max(0.001f, elapsed), true); nativeDown = false; active = -1; spellId = 0; }
++        else Button(true, std::max(0.001f, elapsed));
++    }
++};
++ShortcutCasting shortcuts;
++}
++void SetSpellShortcuts(bool enabled) { shortcuts.enabled = enabled; }
++void InstallSpellShortcuts(entt::dispatcher& dispatcher)
++{ shortcuts.update = dispatcher.sink<UpdateEvent>().connect<&ShortcutCasting::OnUpdate>(&shortcuts); }
 diff --git a/Code/client/Services/Generic/SurvivalWaitMenu.cpp b/Code/client/Services/Generic/SurvivalWaitMenu.cpp
 new file mode 100644
 index 00000000..a77cafa9
@@ -3787,6 +3927,21 @@ index 00000000..8545b948
 +    return now < deadline && incomingDays < completedTargetDays;
 +}
 +}
+diff --git a/Code/common/SpellShortcutPolicy.h b/Code/common/SpellShortcutPolicy.h
+new file mode 100644
+index 00000000..fbfa5096
+--- /dev/null
++++ b/Code/common/SpellShortcutPolicy.h
+@@ -0,0 +1,9 @@
++#pragma once
++#include <cmath>
++namespace SpellShortcuts
++{
++inline float MinimumHold(float chargeTime, bool concentration) noexcept
++{ return concentration ? 0.05f : std::isfinite(chargeTime) && chargeTime >= 0.f && chargeTime <= 30.f ? chargeTime + 0.10f : 0.60f; }
++inline bool Release(bool keyHeld, float elapsed, float minimum) noexcept
++{ return !keyHeld && elapsed >= minimum; }
++}
 diff --git a/Code/common/SurvivalTimePolicy.h b/Code/common/SurvivalTimePolicy.h
 index 824b2508..427d63c3 100644
 --- a/Code/common/SurvivalTimePolicy.h
@@ -5084,7 +5239,7 @@ index cbc2ce67..d8d3670d 100644
  
    public acceptPartyInvite(inviterId: number) {
 diff --git a/Code/skyrim_ui/src/app/components/root/root.component.html b/Code/skyrim_ui/src/app/components/root/root.component.html
-index 84b59f7e..ad3b7f21 100644
+index 84b59f7e..6012f3ce 100644
 --- a/Code/skyrim_ui/src/app/components/root/root.component.html
 +++ b/Code/skyrim_ui/src/app/components/root/root.component.html
 @@ -9,6 +9,25 @@
@@ -5125,10 +5280,12 @@ index 84b59f7e..ad3b7f21 100644
        <button data-style-ornament="inverted" (click)="syncQuests()"
          title="Catch up to the party leader's quest journal. Quests ahead of the host are skipped.">
          Sync quests with host
-@@ -41,6 +65,10 @@
+@@ -41,6 +65,12 @@
        <span *ngIf="questSyncStatus$ | async as status" role="status" aria-live="polite">{{ status }}</span>
      </app-window>
      <app-window border="strip" class="app-root-menu">
++      <label><input type="checkbox" [checked]="spellShortcuts"
++        (change)="setSpellShortcuts($any($event.target).checked)"> Cast favorite spells with keys 1�8</label>
 +      <label>Wait / sleep speed: {{ waitSpeed }}×
 +        <input type="range" min="1" max="10" step="1" [value]="waitSpeed"
 +          (input)="setWaitSpeed($any($event.target).value)" aria-label="Wait and sleep speed">
@@ -5171,7 +5328,7 @@ index 4b1902d8..7b280637 100644
 +  strong { font-weight: 500; overflow-wrap: anywhere; }
 +}
 diff --git a/Code/skyrim_ui/src/app/components/root/root.component.ts b/Code/skyrim_ui/src/app/components/root/root.component.ts
-index 2821dbc3..562d7022 100644
+index 2821dbc3..7b4af543 100644
 --- a/Code/skyrim_ui/src/app/components/root/root.component.ts
 +++ b/Code/skyrim_ui/src/app/components/root/root.component.ts
 @@ -44,6 +44,9 @@ export class RootComponent implements OnInit {
@@ -5184,10 +5341,15 @@ index 2821dbc3..562d7022 100644
    menuOpen$ = this.client.openingMenuChange.asObservable();
    inGame$ = this.client.inGameStateChange.asObservable();
    active$ = this.client.activationStateChange.asObservable();
-@@ -136,6 +139,13 @@ export class RootComponent implements OnInit {
+@@ -136,6 +139,18 @@ export class RootComponent implements OnInit {
    }
  
    public autoResync = false;
++  public spellShortcuts = true;
++  public setSpellShortcuts(enabled: boolean): void {
++    this.spellShortcuts = enabled;
++    this.client.setSpellShortcuts(enabled);
++  }
 +  public waitSpeed = 3;
 +  public setWaitSpeed(value: string): void {
 +    const speed = Number(value);
@@ -5199,19 +5361,20 @@ index 2821dbc3..562d7022 100644
    public bindingResyncKey = false;
    public resyncKeyLabel = 'Unbound';
 diff --git a/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts b/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts
-index 5b8453d2..b6300e98 100644
+index 5b8453d2..9275750e 100644
 --- a/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts
 +++ b/Code/skyrim_ui/src/app/mock/skyrimtogether.mock.ts
-@@ -102,6 +102,7 @@ export class SkyrimtogetherMock extends EventEmitter implements SkyrimTogether {
+@@ -102,6 +102,8 @@ export class SkyrimtogetherMock extends EventEmitter implements SkyrimTogether {
    }
  
    setResyncInterval(seconds: number): void { console.info("Resync interval", seconds); }
 +  setWaitSpeed(speed: number): void { console.info("Wait speed", speed); }
++  setSpellShortcuts(enabled: boolean): void { console.info("Spell shortcuts", enabled); }
    setResyncHotkey(key: number): void { console.info("Resync hotkey", key); }
    autoResyncOn(): void { console.info("Auto resync enabled"); }
    autoResyncOff(): void { console.info("Auto resync disabled"); }
 diff --git a/Code/skyrim_ui/src/app/services/client.service.ts b/Code/skyrim_ui/src/app/services/client.service.ts
-index 87ca96dd..c773085c 100644
+index 87ca96dd..c7fdb408 100644
 --- a/Code/skyrim_ui/src/app/services/client.service.ts
 +++ b/Code/skyrim_ui/src/app/services/client.service.ts
 @@ -32,6 +32,7 @@ export class ClientService implements OnDestroy {
@@ -5232,16 +5395,17 @@ index 87ca96dd..c773085c 100644
      skyrimtogether.on('coopChestView', (contents: string) => {
        this.zone.run(() => this.coopChestViewChange.next(contents));
      });
-@@ -297,6 +301,7 @@ export class ClientService implements OnDestroy {
+@@ -297,6 +301,8 @@ export class ClientService implements OnDestroy {
     * Reconnect
     */
    public setResyncInterval(seconds: number): void { skyrimtogether.setResyncInterval(seconds); }
 +  public setWaitSpeed(speed: number): void { skyrimtogether.setWaitSpeed(speed); }
++  public setSpellShortcuts(enabled: boolean): void { skyrimtogether.setSpellShortcuts(enabled); }
    public setResyncHotkey(key: number): void { skyrimtogether.setResyncHotkey(key); }
  
    public setAutoResync(enabled: boolean): void {
 diff --git a/Code/skyrim_ui/src/typings.d.ts b/Code/skyrim_ui/src/typings.d.ts
-index 52eb4999..9da636d3 100644
+index 52eb4999..910f6faf 100644
 --- a/Code/skyrim_ui/src/typings.d.ts
 +++ b/Code/skyrim_ui/src/typings.d.ts
 @@ -1,4 +1,5 @@
@@ -5258,20 +5422,21 @@ index 52eb4999..9da636d3 100644
  
    /** Add listener to when the UI is activated. */
    on(event: 'activate', callback: SkyrimTogetherTypes.ActivateCallback): void;
-@@ -415,6 +417,7 @@ interface SkyrimTogether {
+@@ -415,6 +417,8 @@ interface SkyrimTogether {
    syncQuests(): void;
    resync(): void;
    setResyncInterval(seconds: number): void;
 +  setWaitSpeed(speed: number): void;
++  setSpellShortcuts(enabled: boolean): void;
    setResyncHotkey(key: number): void;
    autoResyncOn(): void;
    autoResyncOff(): void;
 diff --git a/Code/tests/coop_fixes.cpp b/Code/tests/coop_fixes.cpp
 new file mode 100644
-index 00000000..2304bc84
+index 00000000..787d274a
 --- /dev/null
 +++ b/Code/tests/coop_fixes.cpp
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,171 @@
 +#include <TiltedCore/Stl.hpp>
 +#include <TiltedCore/Allocator.hpp>
 +#include <TiltedCore/Buffer.hpp>
@@ -5431,6 +5596,17 @@ index 00000000..2304bc84
 +    REQUIRE_FALSE(SharedItems::InventoryForm(28)); // Container is not a dropped inventory item.
 +    REQUIRE_FALSE(SharedItems::InventoryForm(43)); // Actor must stay on actor replication.
 +    REQUIRE_FALSE(SharedItems::InventoryForm(0));
++}
++
++#include <SpellShortcutPolicy.h>
++TEST_CASE("Spell shortcuts charge on press and release only after key-up and required charge", "[coop-fixes]")
++{
++    const float charge = SpellShortcuts::MinimumHold(1.f, false);
++    REQUIRE_FALSE(SpellShortcuts::Release(true, 5.f, charge));
++    REQUIRE_FALSE(SpellShortcuts::Release(false, 0.05f, charge));
++    REQUIRE(SpellShortcuts::Release(false, 1.2f, charge));
++    REQUIRE(SpellShortcuts::Release(false, 0.06f, SpellShortcuts::MinimumHold(5.f, true)));
++    REQUIRE(std::isfinite(SpellShortcuts::MinimumHold(NAN, false)));
 +}
 diff --git a/Code/tests/encoding.cpp b/Code/tests/encoding.cpp
 index 8c828c2a..36a0d4a8 100644
@@ -5747,13 +5923,14 @@ index 00000000..dd85d4dd
 +    REQUIRE(result.Progress[0].Numbers.size() == 128);
 +}
 diff --git a/Code/tp_process/ProcessHandler.cpp b/Code/tp_process/ProcessHandler.cpp
-index 0b1fac0a..983a9454 100644
+index 0b1fac0a..1d44714f 100644
 --- a/Code/tp_process/ProcessHandler.cpp
 +++ b/Code/tp_process/ProcessHandler.cpp
-@@ -16,6 +16,7 @@ void ProcessHandler::OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<C
+@@ -16,6 +16,8 @@ void ProcessHandler::OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<C
      m_pCoreObject->SetValue("connect", CefV8Value::CreateFunction("connect", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
      m_pCoreObject->SetValue("disconnect", CefV8Value::CreateFunction("disconnect", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
      m_pCoreObject->SetValue("syncQuests", CefV8Value::CreateFunction("syncQuests", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
++    m_pCoreObject->SetValue("setSpellShortcuts", CefV8Value::CreateFunction("setSpellShortcuts", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
 +    m_pCoreObject->SetValue("setWaitSpeed", CefV8Value::CreateFunction("setWaitSpeed", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
      m_pCoreObject->SetValue("resync", CefV8Value::CreateFunction("resync", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
      m_pCoreObject->SetValue("setResyncInterval", CefV8Value::CreateFunction("setResyncInterval", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
