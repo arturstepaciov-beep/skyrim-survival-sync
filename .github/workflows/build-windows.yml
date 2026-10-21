@@ -13,7 +13,7 @@ on:
       - '.github/workflows/build-windows.yml'
   workflow_dispatch:
 concurrency:
-  group: survival-windows-${{ github.ref }}
+  group: survival-windows-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 permissions:
   contents: read

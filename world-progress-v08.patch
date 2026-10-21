@@ -1330,7 +1330,7 @@ index 1edb4dba..3cada7b5 100644
          {
              ScopedInventoryOverride guard;
 diff --git a/Code/client/Services/Generic/InventoryService.cpp b/Code/client/Services/Generic/InventoryService.cpp
-index 5b2f79e2..6aa38e59 100644
+index 5b2f79e2..0bb9b101 100644
 --- a/Code/client/Services/Generic/InventoryService.cpp
 +++ b/Code/client/Services/Generic/InventoryService.cpp
 @@ -1,5 +1,9 @@
@@ -1470,7 +1470,7 @@ index 5b2f79e2..6aa38e59 100644
 +            int64_t ownerCount = 0;
 +            for (const auto& entry : remote.HandEquipment.Entries) if (entry.BaseId == id && entry.Count > 0) ownerCount += entry.Count;
 +            const int required = HandEquipmentPolicy::Required(remote.LeftHand == id && remote.RightHand == id, ownerCount);
-+            const int missing = HandEquipmentPolicy::Missing(required, actor->GetItemCountInInventory(desired->formID));
++            const int missing = HandEquipmentPolicy::Missing(required, actor->GetItemCountInInventory(desired));
 +            if (missing)
 +            {
 +                const auto it = std::find_if(remote.HandEquipment.Entries.begin(), remote.HandEquipment.Entries.end(),
