@@ -97,3 +97,5 @@ Run Build-Windows.ps1 on Windows with Visual Studio C++ tools, xmake 3.1, Node a
 
 Teleport crash repair: skip weapon-state polling for absent/unloaded actors during relocation; defer discovery when the destination grid cell is not available. Confirmed v0.8.6 null-actor crash signature from three October 21 dumps.
 
+Expanded shared floor items: books (including Catalogue of Weapon Enchantments), notes, keys, torches and apparatus now use the same type policy as all other inventory items. Item IDs and mod IDs are resolved through the normal shared plugin mapping. Actor trade/pickup/drop hooks also carry generated alchemy definitions. Both PCs must have the source plugins and models installed.
+

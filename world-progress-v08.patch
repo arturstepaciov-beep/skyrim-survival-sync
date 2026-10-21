@@ -181,18 +181,19 @@ index 4eef585e..12642ed4 100644
  
      PapyrusFunctionRegisterEvent event(apFunction->functionName.AsAscii(), apFunction->typeName.AsAscii(), apFunction->functionAddress);
 diff --git a/Code/client/Games/Skyrim/Actor.cpp b/Code/client/Games/Skyrim/Actor.cpp
-index 36e73c9a..aa1626e5 100644
+index 36e73c9a..1de92516 100644
 --- a/Code/client/Games/Skyrim/Actor.cpp
 +++ b/Code/client/Games/Skyrim/Actor.cpp
-@@ -16,6 +16,7 @@
+@@ -16,6 +16,8 @@
  #include <Events/InventoryChangeEvent.h>
  #include <Events/WorldItemDropEvent.h>
  #include <Services/WorldItemService.h>
 +#include <PercentageHealth.h>
++#include <WorldItemPolicy.h>
  #include <Events/MountEvent.h>
  #include <Events/DialogueEvent.h>
  #include <Games/Misc/MenuTopicManager.h>
-@@ -24,6 +25,7 @@
+@@ -24,6 +26,7 @@
  
  #include <Games/TES.h>
  #include <World.h>
@@ -200,7 +201,7 @@ index 36e73c9a..aa1626e5 100644
  #include <Services/PapyrusService.h>
  
  #include <Forms/ActorValueInfo.h>
-@@ -59,6 +61,24 @@
+@@ -59,6 +62,24 @@
  
  namespace
  {
@@ -225,7 +226,7 @@ index 36e73c9a..aa1626e5 100644
  void QueueActorInventoryChange(Actor* apActor, InventoryChangeEvent aEvent, TESObjectREFR* apTransferReference = nullptr)
  {
      auto ownershipToken = Utils::GetLocalOwnershipToken(apActor->formID);
-@@ -739,13 +759,23 @@ void Actor::SetMagicEquipment(const MagicEquipment& acEquipment) noexcept
+@@ -739,13 +760,23 @@ void Actor::SetMagicEquipment(const MagicEquipment& acEquipment) noexcept
  void Actor::SetActorValues(const ActorValues& acActorValues) noexcept
  {
      const bool localRental = HasLocalRentalState();
@@ -251,7 +252,7 @@ index 36e73c9a..aa1626e5 100644
  }
  
  void Actor::SetFactions(const Factions& acFactions) noexcept
-@@ -996,8 +1026,8 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
+@@ -996,8 +1027,8 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
                  return false;
          }
  
@@ -262,7 +263,7 @@ index 36e73c9a..aa1626e5 100644
      }
      else if (pExHittee->IsRemotePlayer())
      {
-@@ -1009,8 +1039,8 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
+@@ -1009,8 +1040,8 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
          const auto* pExHitter = apHitter->GetExtension();
          if (pExHitter->IsLocalPlayer())
          {
@@ -273,7 +274,7 @@ index 36e73c9a..aa1626e5 100644
          }
          if (pExHitter->IsRemotePlayer())
          {
-@@ -1020,8 +1050,8 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
+@@ -1020,8 +1051,8 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
  
      if (pExHittee->IsLocal())
      {
@@ -284,7 +285,7 @@ index 36e73c9a..aa1626e5 100644
      }
      else
      {
-@@ -1045,7 +1075,7 @@ void TP_MAKE_THISCALL(HookApplyActorEffect, ActiveEffect, Actor* apTarget, float
+@@ -1045,7 +1076,7 @@ void TP_MAKE_THISCALL(HookApplyActorEffect, ActiveEffect, Actor* apTarget, float
                  const auto pExTarget = apTarget->GetExtension();
                  if (pExTarget->IsLocal())
                  {
@@ -293,7 +294,7 @@ index 36e73c9a..aa1626e5 100644
                      return TiltedPhoques::ThisCall(RealApplyActorEffect, apThis, apTarget, aEffectValue, unk1);
                  }
                  return;
-@@ -1072,7 +1102,7 @@ void* TP_MAKE_THISCALL(HookRegenAttributes, Actor, int aId, float aRegenValue)
+@@ -1072,7 +1103,7 @@ void* TP_MAKE_THISCALL(HookRegenAttributes, Actor, int aId, float aRegenValue)
          return 0;
      }
  
@@ -302,7 +303,42 @@ index 36e73c9a..aa1626e5 100644
      return TiltedPhoques::ThisCall(RealRegenAttributes, apThis, aId, aRegenValue);
  }
  
-@@ -1168,8 +1198,7 @@ void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLoca
+@@ -1083,7 +1114,7 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, Actor, TESBoundObject* apItem, Extra
+         auto& modSystem = World::Get().GetModSystem();
+ 
+         Inventory::Entry item{};
+-        modSystem.GetServerModId(apItem->formID, item.BaseId);
++        CraftedItems::Capture(item, apItem);
+         item.Count = aCount;
+ 
+         if (apExtraData)
+@@ -1107,7 +1138,7 @@ void* TP_MAKE_THISCALL(HookPickUpObject, Actor, TESObjectREFR* apObject, int32_t
+         auto& modSystem = World::Get().GetModSystem();
+ 
+         Inventory::Entry item{};
+-        modSystem.GetServerModId(apObject->baseForm->formID, item.BaseId);
++        CraftedItems::Capture(item, apObject->baseForm);
+         item.Count = aCount;
+ 
+         if (apObject->GetExtraDataList())
+@@ -1133,14 +1164,14 @@ void* TP_MAKE_THISCALL(HookDropObject, Actor, void* apResult, TESBoundObject* ap
+     auto& modSystem = World::Get().GetModSystem();
+ 
+     Inventory::Entry item{};
+-    modSystem.GetServerModId(apObject->formID, item.BaseId);
++    CraftedItems::Capture(item, apObject);
+     item.Count = -aCount;
+ 
+     if (apExtraData)
+         apThis->GetItemFromExtraData(item, apExtraData);
+ 
+     const auto type = static_cast<uint8_t>(apObject->formType);
+-    const bool shareable = type == 23 || type == 26 || type == 30 || type == 32 || type == 41 || type == 42 || type == 46 || type == 52;
++    const bool shareable = SharedItems::InventoryForm(type);
+     const bool shared = shareable && apThis == PlayerCharacter::Get() && World::Get().GetTransport().IsOnline() && !item.IsQuestItem;
+     if (!shared)
+         QueueActorInventoryChange(apThis, InventoryChangeEvent(apThis->formID, item, true));
+@@ -1168,8 +1199,7 @@ void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLoca
  
      ModSystem& modSystem = World::Get().GetModSystem();
  
@@ -365,18 +401,19 @@ index e0edcf50..85e37f2e 100644
  
  bool NiCamera::WorldPtToScreenPt3(float* matrix, const NiRect<float>* port, const NiPoint3* p_in, float* x_out, float* y_out, float* z_out, float zeroTolerance)
 diff --git a/Code/client/Games/Skyrim/PlayerCharacter.cpp b/Code/client/Games/Skyrim/PlayerCharacter.cpp
-index efe4f697..ca14e3a2 100644
+index efe4f697..9ff63928 100644
 --- a/Code/client/Games/Skyrim/PlayerCharacter.cpp
 +++ b/Code/client/Games/Skyrim/PlayerCharacter.cpp
-@@ -13,6 +13,7 @@
+@@ -13,6 +13,8 @@
  #include <Events/RemoveWaypointEvent.h>
  
  #include <World.h>
++#include <Services/CraftedItems.h>
 +#include <Interface/UI.h>
  
  #include <Games/Skyrim/Forms/ActorValueInfo.h>
  #include <Games/ActorExtension.h>
-@@ -33,6 +34,9 @@ TP_THIS_FUNCTION(TAddSkillExperience, void, PlayerCharacter, int32_t aSkill, flo
+@@ -33,6 +35,9 @@ TP_THIS_FUNCTION(TAddSkillExperience, void, PlayerCharacter, int32_t aSkill, flo
  TP_THIS_FUNCTION(TCalculateExperience, bool, int32_t, float* aFactor, float* aBonus, float* aUnk1, float* aUnk2);
  TP_THIS_FUNCTION(TSetWaypoint, void, PlayerCharacter, NiPoint3* apPosition, TESWorldSpace* apWorldSpace);
  TP_THIS_FUNCTION(TRemoveWaypoint, void, PlayerCharacter);
@@ -386,7 +423,7 @@ index efe4f697..ca14e3a2 100644
  
  static TPickUpObject* RealPickUpObject = nullptr;
  static TSetBeastForm* RealSetBeastForm = nullptr;
-@@ -40,6 +44,8 @@ static TAddSkillExperience* RealAddSkillExperience = nullptr;
+@@ -40,6 +45,8 @@ static TAddSkillExperience* RealAddSkillExperience = nullptr;
  static TCalculateExperience* RealCalculateExperience = nullptr;
  static TSetWaypoint* RealSetWaypoint = nullptr;
  static TRemoveWaypoint* RealRemoveWaypoint = nullptr;
@@ -395,7 +432,7 @@ index efe4f697..ca14e3a2 100644
  
  PlayerCharacter* PlayerCharacter::Get() noexcept
  {
-@@ -86,6 +92,47 @@ void PlayerCharacter::AddSkillExperience(int32_t aSkill, float aExperience) noex
+@@ -86,6 +93,47 @@ void PlayerCharacter::AddSkillExperience(int32_t aSkill, float aExperience) noex
      spdlog::debug("Added {} experience to skill {}", deltaExperience, aSkill);
  }
  
@@ -443,7 +480,16 @@ index efe4f697..ca14e3a2 100644
  NiPoint3 PlayerCharacter::RespawnPlayer() noexcept
  {
      // Make bleedout state recoverable
-@@ -261,6 +308,33 @@ void TP_MAKE_THISCALL(HookRemoveWaypoint, PlayerCharacter)
+@@ -167,7 +215,7 @@ char TP_MAKE_THISCALL(HookPickUpObject, PlayerCharacter, TESObjectREFR* apObject
+     auto& modSystem = World::Get().GetModSystem();
+ 
+     Inventory::Entry item{};
+-    modSystem.GetServerModId(apObject->baseForm->formID, item.BaseId);
++    CraftedItems::Capture(item, apObject->baseForm);
+     item.Count = aCount;
+ 
+     if (apObject->GetExtraDataList() && !ScopedExtraDataOverride::IsOverriden())
+@@ -261,6 +309,33 @@ void TP_MAKE_THISCALL(HookRemoveWaypoint, PlayerCharacter)
      return TiltedPhoques::ThisCall(RealRemoveWaypoint, apThis);
  }
  
@@ -477,7 +523,7 @@ index efe4f697..ca14e3a2 100644
  static TiltedPhoques::Initializer s_playerCharacterHooks(
      []()
      {
-@@ -271,6 +345,15 @@ static TiltedPhoques::Initializer s_playerCharacterHooks(
+@@ -271,6 +346,15 @@ static TiltedPhoques::Initializer s_playerCharacterHooks(
          POINTER_SKYRIMSE(TSetWaypoint, s_setWaypoint, 40535);
          POINTER_SKYRIMSE(TRemoveWaypoint, s_removeWaypoint, 40536);
  
@@ -2454,7 +2500,7 @@ index 00000000..a77cafa9
 +    TiltedPhoques::Jump(site, stub.getCode());
 +});
 diff --git a/Code/client/Services/Generic/WorldItemService.cpp b/Code/client/Services/Generic/WorldItemService.cpp
-index 77b4015a..5b7c52b5 100644
+index 77b4015a..6f29a4d4 100644
 --- a/Code/client/Services/Generic/WorldItemService.cpp
 +++ b/Code/client/Services/Generic/WorldItemService.cpp
 @@ -1,3 +1,4 @@
@@ -2462,7 +2508,27 @@ index 77b4015a..5b7c52b5 100644
  #include <Services/WorldItemService.h>
  #include <Services/OverlayService.h>
  #include <Messages/RequestCurrentWeather.h>
-@@ -74,7 +75,7 @@ WorldItemData WorldItemService::Describe(TESObjectREFR* ref) const
+@@ -23,18 +24,7 @@ bool Eligible(TESObjectREFR* ref)
+ {
+     if (!ref || !ref->baseForm || ref->IsDeleted() || ref->IsDisabled() || ref->extraData.HasQuestObjectAlias())
+         return false;
+-    switch (static_cast<uint8_t>(ref->baseForm->formType))
+-    {
+-    case 23:
+-    case 26:
+-    case 30:
+-    case 32:
+-    case 41:
+-    case 42:
+-    case 46:
+-    case 52: return true;
+-    default: return false;
+-    }
++    return SharedItems::InventoryForm(static_cast<uint8_t>(ref->baseForm->formType));
+ }
+ float Difference(const WorldItemData& a, const WorldItemData& b)
+ {
+@@ -74,7 +64,7 @@ WorldItemData WorldItemService::Describe(TESObjectREFR* ref) const
      auto& mods = m_world.GetModSystem();
      if (!ref->IsTemporary())
          mods.GetServerModId(ref->formID, data.Reference);
@@ -2471,6 +2537,17 @@ index 77b4015a..5b7c52b5 100644
      if (auto* cell = ref->GetParentCellEx())
          mods.GetServerModId(cell->formID, data.Cell);
      if (auto* ws = ref->GetWorldSpace())
+@@ -317,8 +307,8 @@ void WorldItemService::ObservePhysics()
+             if (tes->cells->arr[i])
+                 cells.push_back(tes->cells->arr[i]);
+     Map<uint32_t, WorldItemData> observed;
+-    const Vector<FormType> types{static_cast<FormType>(23), FormType::Armor, FormType::Ingredient,
+-        static_cast<FormType>(32), FormType::Weapon, FormType::Ammo, FormType::Alchemy, static_cast<FormType>(52)};
++    Vector<FormType> types;
++    for (auto type : SharedItems::InventoryFormTypes) types.push_back(static_cast<FormType>(type));
+     for (auto* cell : cells)
+     {
+         if (!cell->IsAttached())
 diff --git a/Code/client/Services/Generic/WorldProgressService.cpp b/Code/client/Services/Generic/WorldProgressService.cpp
 new file mode 100644
 index 00000000..42aeb548
@@ -3754,6 +3831,26 @@ index 00000000..09662e40
 +    return dx * dx + dy * dy + dz * dz <= 256. * 256.;
 +}
 +}
+diff --git a/Code/common/WorldItemPolicy.h b/Code/common/WorldItemPolicy.h
+index cc774ebe..4b55c28b 100644
+--- a/Code/common/WorldItemPolicy.h
++++ b/Code/common/WorldItemPolicy.h
+@@ -2,8 +2,15 @@
+ #include <cstdint>
+ #include <cmath>
+ #include <initializer_list>
++#include <array>
+ namespace SharedItems
+ {
++// Engine inventory record types, independent of plugin/load order or local form ID.
++// Keep drop interception, pickup eligibility and physics discovery on one list.
++inline constexpr std::array<uint8_t, 13> InventoryFormTypes{23, 26, 27, 30, 31, 32, 33, 41, 42, 45, 46, 48, 52};
++inline bool InventoryForm(uint8_t type) noexcept
++{ for (auto itemType : InventoryFormTypes) if (itemType == type) return true; return false; }
++
+ struct Claim
+ {
+     uint32_t Owner{};
 diff --git a/Code/common/WorldProgressPolicy.h b/Code/common/WorldProgressPolicy.h
 new file mode 100644
 index 00000000..78f399b3
@@ -5171,10 +5268,10 @@ index 52eb4999..9da636d3 100644
    autoResyncOff(): void;
 diff --git a/Code/tests/coop_fixes.cpp b/Code/tests/coop_fixes.cpp
 new file mode 100644
-index 00000000..7db77aa3
+index 00000000..2304bc84
 --- /dev/null
 +++ b/Code/tests/coop_fixes.cpp
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,160 @@
 +#include <TiltedCore/Stl.hpp>
 +#include <TiltedCore/Allocator.hpp>
 +#include <TiltedCore/Buffer.hpp>
@@ -5321,6 +5418,19 @@ index 00000000..7db77aa3
 +    REQUIRE_FALSE(PartyRestPolicy::Completed(true, true, false, true));
 +    REQUIRE_FALSE(PartyRestPolicy::Completed(true, false, true, false));
 +    REQUIRE(PartyRestPolicy::Completed(true, true, true, true)); // Interrupted after some actual sleep.
++}
++
++#include <WorldItemPolicy.h>
++TEST_CASE("Dropped books, keys, torches and mod inventory types use the same sharing policy", "[coop-fixes]")
++{
++    REQUIRE(SharedItems::InventoryForm(27)); // Book: Catalogue of Weapon Enchantments.
++    REQUIRE(SharedItems::InventoryForm(31)); // Carryable light/torch.
++    REQUIRE(SharedItems::InventoryForm(33)); // Apparatus.
++    REQUIRE(SharedItems::InventoryForm(45)); // Key.
++    REQUIRE(SharedItems::InventoryForm(48)); // Note.
++    REQUIRE_FALSE(SharedItems::InventoryForm(28)); // Container is not a dropped inventory item.
++    REQUIRE_FALSE(SharedItems::InventoryForm(43)); // Actor must stay on actor replication.
++    REQUIRE_FALSE(SharedItems::InventoryForm(0));
 +}
 diff --git a/Code/tests/encoding.cpp b/Code/tests/encoding.cpp
 index 8c828c2a..36a0d4a8 100644
