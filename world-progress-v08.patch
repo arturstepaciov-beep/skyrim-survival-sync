@@ -5285,7 +5285,7 @@ index 84b59f7e..6012f3ce 100644
      </app-window>
      <app-window border="strip" class="app-root-menu">
 +      <label><input type="checkbox" [checked]="spellShortcuts"
-+        (change)="setSpellShortcuts($any($event.target).checked)"> Cast favorite spells with keys 1ï¿½8</label>
++        (change)="setSpellShortcuts($any($event.target).checked)"> Cast favorite spells with keys 1–8</label>
 +      <label>Wait / sleep speed: {{ waitSpeed }}Ã—
 +        <input type="range" min="1" max="10" step="1" [value]="waitSpeed"
 +          (input)="setWaitSpeed($any($event.target).value)" aria-label="Wait and sleep speed">
@@ -6208,4 +6208,3 @@ index c3bab8eb..c804a14d 100644
      }
    ],
    "goldenhills": "Farming plugin inspected; baseline and upgraded exterior doors verified",
-
