@@ -1,4 +1,4 @@
-# Quest sync v0.8.7 build requested 2026-10-18 (Vilnius).
+# Hand equipment v0.8.7 build requested 2026-10-21 (Vilnius).
 name: Build Survival Sync Windows
 run-name: Survival Sync v0.8.7 · ${{ github.run_number }} · ${{ github.event.head_commit.message || 'manual' }}
 on:
