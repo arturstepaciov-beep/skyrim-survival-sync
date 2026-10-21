@@ -1,6 +1,13 @@
-# SurvivalSync v0.8.5
+# SurvivalSync v0.8.6
 
-Custom Skyrim Together client and server based on upstream commit 9ce0338522277e0ff0a12e8d2aa09ce67ad41a59. Install matching v0.8.5 client files on both PCs and run the included v0.8.5 server. Keep SurvivalSyncCoop.esp enabled. Retains v0.8.1 housing repairs and earlier features. Preserve config/CoopChest.dat when updating.
+Custom Skyrim Together client and server based on upstream commit 9ce0338522277e0ff0a12e8d2aa09ce67ad41a59. Install matching v0.8.6 client files on both PCs and run the included v0.8.6 server. Keep SurvivalSyncCoop.esp enabled. Retains v0.8.1 housing repairs and earlier features. Preserve config/CoopChest.dat when updating.
+
+## Map fast-travel hotfix
+
+- Connected co-op players bypass both native map travel eligibility gates (AE 40443 and 40444). This addresses the world-map message "You cannot fast travel from this location", independently of the F2 teammate teleport.
+- Survival, interior, combat and over-encumbrance origin restrictions no longer reject map travel while connected. The existing map destination selection, confirmation and native travel processing remain in place.
+- The override requires a living local player with loaded 3D and an attached cell, and is inactive during loading/main menus. Offline play uses the original checks.
+- F2 teammate teleport from v0.8.5 is retained. User confirmed this path works; normal map travel still needs two-PC gameplay verification for this hotfix.
 
 ## Direct player teleport hotfix
 
@@ -32,7 +39,7 @@ Two-PC gameplay validation is still required, especially follower recruitment, r
 ## Co-op fixes and HUD
 
 - Shares item/gold grants issued by Papyrus quest and dialogue fragments (QF_/TIF_) with the current party. Tracks source fragment, callsite, item and occurrence to avoid doubling a reward when the same script executes locally and remotely. This does not invent rewards from a completed journal flag or copy unrelated loot. Custom reward systems outside these script paths need separate adapters.
-- Party locations update every second, including distant players. Adds a compass overlay and projected overhead names for loaded party actors. Native world-map markers are temporarily disabled in v0.8.5 while investigating the crash when a party forms; current-location teleport buttons remain available.
+- Party locations update every second, including distant players. Adds a compass overlay and projected overhead names for loaded party actors. Native world-map markers are temporarily disabled in v0.8.6 while investigating the crash when a party forms; current-location teleport buttons remain available.
 - Adds direct "Teleport to <name>" buttons in F2 using the player's current server location.
 - Adds a separate hunger bar driven by the installed official Survival Mode hunger globals, with percentage and stage label. It is hidden when Survival Mode is inactive.
 - Restores the fast-travel control disabled by Survival Mode's watcher while retaining hunger, cold and exhaustion updates. Other normal engine travel checks remain in effect.

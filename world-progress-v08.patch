@@ -279,10 +279,37 @@ index e0edcf50..85e37f2e 100644
  
  bool NiCamera::WorldPtToScreenPt3(float* matrix, const NiRect<float>* port, const NiPoint3* p_in, float* x_out, float* y_out, float* z_out, float zeroTolerance)
 diff --git a/Code/client/Games/Skyrim/PlayerCharacter.cpp b/Code/client/Games/Skyrim/PlayerCharacter.cpp
-index efe4f697..4a13e5ed 100644
+index efe4f697..ca14e3a2 100644
 --- a/Code/client/Games/Skyrim/PlayerCharacter.cpp
 +++ b/Code/client/Games/Skyrim/PlayerCharacter.cpp
-@@ -86,6 +86,47 @@ void PlayerCharacter::AddSkillExperience(int32_t aSkill, float aExperience) noex
+@@ -13,6 +13,7 @@
+ #include <Events/RemoveWaypointEvent.h>
+ 
+ #include <World.h>
++#include <Interface/UI.h>
+ 
+ #include <Games/Skyrim/Forms/ActorValueInfo.h>
+ #include <Games/ActorExtension.h>
+@@ -33,6 +34,9 @@ TP_THIS_FUNCTION(TAddSkillExperience, void, PlayerCharacter, int32_t aSkill, flo
+ TP_THIS_FUNCTION(TCalculateExperience, bool, int32_t, float* aFactor, float* aBonus, float* aUnk1, float* aUnk2);
+ TP_THIS_FUNCTION(TSetWaypoint, void, PlayerCharacter, NiPoint3* apPosition, TESWorldSpace* apWorldSpace);
+ TP_THIS_FUNCTION(TRemoveWaypoint, void, PlayerCharacter);
++// Native map marker eligibility and map-menu origin eligibility, respectively.
++TP_THIS_FUNCTION(TCanFastTravel, bool, PlayerCharacter, TESObjectREFR* apMarker);
++TP_THIS_FUNCTION(TCanFastTravelFromLocation, bool, PlayerCharacter, bool aSilent);
+ 
+ static TPickUpObject* RealPickUpObject = nullptr;
+ static TSetBeastForm* RealSetBeastForm = nullptr;
+@@ -40,6 +44,8 @@ static TAddSkillExperience* RealAddSkillExperience = nullptr;
+ static TCalculateExperience* RealCalculateExperience = nullptr;
+ static TSetWaypoint* RealSetWaypoint = nullptr;
+ static TRemoveWaypoint* RealRemoveWaypoint = nullptr;
++static TCanFastTravel* RealCanFastTravel = nullptr;
++static TCanFastTravelFromLocation* RealCanFastTravelFromLocation = nullptr;
+ 
+ PlayerCharacter* PlayerCharacter::Get() noexcept
+ {
+@@ -86,6 +92,47 @@ void PlayerCharacter::AddSkillExperience(int32_t aSkill, float aExperience) noex
      spdlog::debug("Added {} experience to skill {}", deltaExperience, aSkill);
  }
  
@@ -330,6 +357,56 @@ index efe4f697..4a13e5ed 100644
  NiPoint3 PlayerCharacter::RespawnPlayer() noexcept
  {
      // Make bleedout state recoverable
+@@ -261,6 +308,33 @@ void TP_MAKE_THISCALL(HookRemoveWaypoint, PlayerCharacter)
+     return TiltedPhoques::ThisCall(RealRemoveWaypoint, apThis);
+ }
+ 
++namespace
++{
++bool AllowCoopMapTravel(PlayerCharacter* player)
++{
++    // These checks run when clicking a map destination as well as when the map
++    // opens. Enabling the Papyrus fast-travel control alone does not bypass them.
++    if (!player || player != PlayerCharacter::Get() || !player->parentCell ||
++        !player->parentCell->IsAttached() || !player->GetNiNode() || player->VirtIsDead(false)) return false;
++    auto* ui = UI::Get();
++    if (!ui || ui->GetMenuOpen("Loading Menu") || ui->GetMenuOpen("LoadingMenu") ||
++        ui->GetMenuOpen("Main Menu")) return false;
++    return World::Get().GetTransport().IsOnline();
++}
++}
++
++bool TP_MAKE_THISCALL(HookCanFastTravel, PlayerCharacter, TESObjectREFR* apMarker)
++{
++    if (AllowCoopMapTravel(apThis)) return true;
++    return TiltedPhoques::ThisCall(RealCanFastTravel, apThis, apMarker);
++}
++
++bool TP_MAKE_THISCALL(HookCanFastTravelFromLocation, PlayerCharacter, bool aSilent)
++{
++    if (AllowCoopMapTravel(apThis)) return true;
++    return TiltedPhoques::ThisCall(RealCanFastTravelFromLocation, apThis, aSilent);
++}
++
+ static TiltedPhoques::Initializer s_playerCharacterHooks(
+     []()
+     {
+@@ -271,6 +345,15 @@ static TiltedPhoques::Initializer s_playerCharacterHooks(
+         POINTER_SKYRIMSE(TSetWaypoint, s_setWaypoint, 40535);
+         POINTER_SKYRIMSE(TRemoveWaypoint, s_removeWaypoint, 40536);
+ 
++        // AE IDs/signatures verified against installed 1.7.104 map call sites:
++        // 40443 receives a reference in RDX; 40444 receives a bool in DL.
++        POINTER_SKYRIMSE(TCanFastTravel, s_canFastTravel, 40443);
++        POINTER_SKYRIMSE(TCanFastTravelFromLocation, s_canFastTravelFromLocation, 40444);
++        RealCanFastTravel = s_canFastTravel.Get();
++        RealCanFastTravelFromLocation = s_canFastTravelFromLocation.Get();
++        if (RealCanFastTravel) { TP_HOOK(&RealCanFastTravel, HookCanFastTravel); }
++        if (RealCanFastTravelFromLocation) { TP_HOOK(&RealCanFastTravelFromLocation, HookCanFastTravelFromLocation); }
++
+         RealPickUpObject = s_pickUpObject.Get();
+         RealSetBeastForm = s_setBeastForm.Get();
+         RealAddSkillExperience = s_addSkillExperience.Get();
 diff --git a/Code/client/Games/Skyrim/PlayerCharacter.h b/Code/client/Games/Skyrim/PlayerCharacter.h
 index ee9f9876..40b119bc 100644
 --- a/Code/client/Games/Skyrim/PlayerCharacter.h
@@ -2583,7 +2660,7 @@ index 6d60709b..34e1d91f 100644
      ctx().emplace<CalendarService>(*this, m_dispatcher, m_transport);
      ctx().emplace<QuestService>(*this, m_dispatcher);
 diff --git a/Code/common/BuildInfo.h.in b/Code/common/BuildInfo.h.in
-index 33cc05f3..524bb16f 100644
+index 33cc05f3..42de4c8d 100644
 --- a/Code/common/BuildInfo.h.in
 +++ b/Code/common/BuildInfo.h.in
 @@ -1,4 +1,4 @@
@@ -2591,7 +2668,7 @@ index 33cc05f3..524bb16f 100644
  // This file was autogenerated by xmake
  #define BUILD_BRANCH "survival-worlditems"
 -#define BUILD_COMMIT "survival-sync-v07-quest-sync-draft"
-+#define BUILD_COMMIT "survival-sync-v085-direct-teleport-draft"
++#define BUILD_COMMIT "survival-sync-v086-map-travel-draft"
 diff --git a/Code/common/CompanionRolePolicy.h b/Code/common/CompanionRolePolicy.h
 new file mode 100644
 index 00000000..c026d63c
