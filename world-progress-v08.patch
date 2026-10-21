@@ -181,7 +181,7 @@ index 4eef585e..12642ed4 100644
  
      PapyrusFunctionRegisterEvent event(apFunction->functionName.AsAscii(), apFunction->typeName.AsAscii(), apFunction->functionAddress);
 diff --git a/Code/client/Games/Skyrim/Actor.cpp b/Code/client/Games/Skyrim/Actor.cpp
-index 36e73c9a..d4734831 100644
+index 36e73c9a..aa1626e5 100644
 --- a/Code/client/Games/Skyrim/Actor.cpp
 +++ b/Code/client/Games/Skyrim/Actor.cpp
 @@ -16,6 +16,7 @@
@@ -192,7 +192,15 @@ index 36e73c9a..d4734831 100644
  #include <Events/MountEvent.h>
  #include <Events/DialogueEvent.h>
  #include <Games/Misc/MenuTopicManager.h>
-@@ -59,6 +60,24 @@
+@@ -24,6 +25,7 @@
+ 
+ #include <Games/TES.h>
+ #include <World.h>
++#include <Services/CraftedItems.h>
+ #include <Services/PapyrusService.h>
+ 
+ #include <Forms/ActorValueInfo.h>
+@@ -59,6 +61,24 @@
  
  namespace
  {
@@ -217,7 +225,7 @@ index 36e73c9a..d4734831 100644
  void QueueActorInventoryChange(Actor* apActor, InventoryChangeEvent aEvent, TESObjectREFR* apTransferReference = nullptr)
  {
      auto ownershipToken = Utils::GetLocalOwnershipToken(apActor->formID);
-@@ -739,13 +758,23 @@ void Actor::SetMagicEquipment(const MagicEquipment& acEquipment) noexcept
+@@ -739,13 +759,23 @@ void Actor::SetMagicEquipment(const MagicEquipment& acEquipment) noexcept
  void Actor::SetActorValues(const ActorValues& acActorValues) noexcept
  {
      const bool localRental = HasLocalRentalState();
@@ -243,7 +251,7 @@ index 36e73c9a..d4734831 100644
  }
  
  void Actor::SetFactions(const Factions& acFactions) noexcept
-@@ -996,8 +1025,8 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
+@@ -996,8 +1026,8 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
                  return false;
          }
  
@@ -254,7 +262,7 @@ index 36e73c9a..d4734831 100644
      }
      else if (pExHittee->IsRemotePlayer())
      {
-@@ -1009,8 +1038,8 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
+@@ -1009,8 +1039,8 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
          const auto* pExHitter = apHitter->GetExtension();
          if (pExHitter->IsLocalPlayer())
          {
@@ -265,7 +273,7 @@ index 36e73c9a..d4734831 100644
          }
          if (pExHitter->IsRemotePlayer())
          {
-@@ -1020,8 +1049,8 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
+@@ -1020,8 +1050,8 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
  
      if (pExHittee->IsLocal())
      {
@@ -276,7 +284,7 @@ index 36e73c9a..d4734831 100644
      }
      else
      {
-@@ -1045,7 +1074,7 @@ void TP_MAKE_THISCALL(HookApplyActorEffect, ActiveEffect, Actor* apTarget, float
+@@ -1045,7 +1075,7 @@ void TP_MAKE_THISCALL(HookApplyActorEffect, ActiveEffect, Actor* apTarget, float
                  const auto pExTarget = apTarget->GetExtension();
                  if (pExTarget->IsLocal())
                  {
@@ -285,7 +293,7 @@ index 36e73c9a..d4734831 100644
                      return TiltedPhoques::ThisCall(RealApplyActorEffect, apThis, apTarget, aEffectValue, unk1);
                  }
                  return;
-@@ -1072,7 +1101,7 @@ void* TP_MAKE_THISCALL(HookRegenAttributes, Actor, int aId, float aRegenValue)
+@@ -1072,7 +1102,7 @@ void* TP_MAKE_THISCALL(HookRegenAttributes, Actor, int aId, float aRegenValue)
          return 0;
      }
  
@@ -294,6 +302,16 @@ index 36e73c9a..d4734831 100644
      return TiltedPhoques::ThisCall(RealRegenAttributes, apThis, aId, aRegenValue);
  }
  
+@@ -1168,8 +1198,7 @@ void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLoca
+ 
+     ModSystem& modSystem = World::Get().GetModSystem();
+ 
+-    uint32_t objectId = modSystem.GetGameId(arEntry.BaseId);
+-    TESBoundObject* pObject = Cast<TESBoundObject>(TESForm::GetById(objectId));
++    TESBoundObject* pObject = Cast<TESBoundObject>(CraftedItems::Resolve(arEntry));
+     if (!pObject)
+     {
+         spdlog::warn("Object to drop not found, {:X}:{:X}.", arEntry.BaseId.ModId, arEntry.BaseId.BaseId);
 diff --git a/Code/client/Games/Skyrim/Camera/TESCamera.cpp b/Code/client/Games/Skyrim/Camera/TESCamera.cpp
 index 08528f05..b189f517 100644
 --- a/Code/client/Games/Skyrim/Camera/TESCamera.cpp
@@ -308,6 +326,31 @@ index 08528f05..b189f517 100644
      // usually the first child should be the camera
      for (auto* child : cameraNode->children)
      {
+diff --git a/Code/client/Games/Skyrim/Forms/AlchemyItem.h b/Code/client/Games/Skyrim/Forms/AlchemyItem.h
+index 73346a4c..daade061 100644
+--- a/Code/client/Games/Skyrim/Forms/AlchemyItem.h
++++ b/Code/client/Games/Skyrim/Forms/AlchemyItem.h
+@@ -1,7 +1,16 @@
+ #pragma once
+-
+-#include "TESForm.h"
+-
+-struct AlchemyItem : TESForm
++#include "MagicItem.h"
++struct AlchemyItem : MagicItem
+ {
++    static constexpr FormType Type = FormType::Alchemy;
++    uint8_t pad90[0x138 - 0x90];
++    int32_t costOverride;
++    uint32_t alchemyFlags;
++    void* addictionItem;
++    float addictionChance;
++    uint32_t pad14C;
++    void* consumptionSound;
++    uint8_t messageIcon[0x10];
+ };
++static_assert(offsetof(AlchemyItem, costOverride) == 0x138);
++static_assert(sizeof(AlchemyItem) == 0x168);
 diff --git a/Code/client/Games/Skyrim/NetImmerse/NiCamera.cpp b/Code/client/Games/Skyrim/NetImmerse/NiCamera.cpp
 index e0edcf50..85e37f2e 100644
 --- a/Code/client/Games/Skyrim/NetImmerse/NiCamera.cpp
@@ -500,18 +543,110 @@ index 35abd4d9..80d9f9e6 100644
      if (arData.pSpell)
      {
 diff --git a/Code/client/Games/Skyrim/TESObjectREFR.cpp b/Code/client/Games/Skyrim/TESObjectREFR.cpp
-index 2cf6e6b0..3d4710c7 100644
+index 2cf6e6b0..d73471e1 100644
 --- a/Code/client/Games/Skyrim/TESObjectREFR.cpp
 +++ b/Code/client/Games/Skyrim/TESObjectREFR.cpp
-@@ -8,6 +8,7 @@
+@@ -7,7 +7,10 @@
+ #include <Services/PapyrusService.h>
  #include <Events/ActivateEvent.h>
  #include <Services/WorldItemService.h>
++#include <Services/CraftedItems.h>
++#include <CraftedItemPolicy.h>
  #include <Services/HomesteadService.h>
 +#include <Services/WorldProgressService.h>
  #include <Services/CoopChestService.h>
  #include <Events/InventoryChangeEvent.h>
  #include <Events/ScriptAnimationEvent.h>
-@@ -1100,6 +1101,13 @@ bool TP_MAKE_THISCALL(HookPlayAnimation, void, uint32_t auiStackID, TESObjectREF
+@@ -381,7 +384,7 @@ TESObjectREFR* TESObjectREFR::SpawnWorldCopy(const Inventory::Entry& aItem) cons
+     if (!fn)
+         return nullptr;
+     PapyrusFunction<TESObjectREFR*, ObjectReference, TESForm*, int32_t, bool, bool> place(fn);
+-    TESForm* base = TESForm::GetById(World::Get().GetModSystem().GetGameId(aItem.BaseId));
++    TESForm* base = CraftedItems::Resolve(aItem);
+     if (!base)
+         return nullptr;
+     TESObjectREFR* ref = place(this, base, 1, false, false);
+@@ -599,7 +602,7 @@ void TESObjectREFR::GetItemFromExtraData(Inventory::Entry& arEntry, ExtraDataLis
+ 
+         modSystem.GetServerModId(pExtraEnchantment->pEnchantment->formID, arEntry.ExtraEnchantId);
+ 
+-        if (pExtraEnchantment->pEnchantment->formID & 0xFF000000)
++        if (pExtraEnchantment->pEnchantment->IsTemporary())
+         {
+             for (EffectItem* pEffectItem : pExtraEnchantment->pEnchantment->listOfEffects)
+             {
+@@ -660,6 +663,12 @@ void TESObjectREFR::GetItemFromExtraData(Inventory::Entry& arEntry, ExtraDataLis
+     arEntry.ExtraWornLeft = apExtraDataList->Contains(ExtraDataType::WornLeft);
+ 
+     arEntry.IsQuestItem = apExtraDataList->HasQuestObjectAlias();
++    if (arEntry.ExtraPoisonId.ModId == UINT32_MAX)
++    {
++        auto* poison = Cast<ExtraPoison>(apExtraDataList->GetByType(ExtraDataType::Poison));
++        if (poison) CraftedItems::CaptureAlchemy(poison->pPoison, arEntry.CreatedPoison);
++    }
++    CraftedItemPolicy::Normalize(arEntry);
+ }
+ 
+ ExtraDataList* TESObjectREFR::GetExtraDataFromItem(const Inventory::Entry& arEntry) noexcept
+@@ -700,10 +709,10 @@ ExtraDataList* TESObjectREFR::GetExtraDataFromItem(const Inventory::Entry& arEnt
+     {
+         // TODO: does poison have the same temp problem as enchants?
+         // doesn't seem to be the case, there are only like 3 poisons, and no custom ones
+-        TP_ASSERT(arEntry.ExtraPoisonId.ModId != 0xFFFFFFFF, "Poison is sent as temp!");
++
+ 
+         uint32_t poisonId = modSystem.GetGameId(arEntry.ExtraPoisonId);
+-        if (AlchemyItem* pPoison = Cast<AlchemyItem>(TESForm::GetById(poisonId)))
++        if (AlchemyItem* pPoison = Cast<AlchemyItem>(arEntry.ExtraPoisonId.ModId == UINT32_MAX ? CraftedItems::ResolveAlchemy(arEntry.CreatedPoison) : TESForm::GetById(poisonId)))
+         {
+             pExtraDataList->SetPoison(pPoison, arEntry.ExtraPoisonCount);
+         }
+@@ -779,7 +788,7 @@ Inventory TESObjectREFR::GetInventory(std::function<bool(TESForm&)> aFilter) con
+                 continue;
+ 
+             Inventory::Entry entry;
+-            modSystem.GetServerModId(pGameEntry->form->formID, entry.BaseId);
++            CraftedItems::Capture(entry, pGameEntry->form);
+             entry.Count = pGameEntry->count;
+ 
+             inventory.Entries.push_back(std::move(entry));
+@@ -798,7 +807,7 @@ Inventory TESObjectREFR::GetInventory(std::function<bool(TESForm&)> aFilter) con
+             continue;
+ 
+         Inventory::Entry entry{};
+-        modSystem.GetServerModId(pGameEntry->form->formID, entry.BaseId);
++        CraftedItems::Capture(entry, pGameEntry->form);
+         entry.Count = pGameEntry->count;
+ 
+         for (ExtraDataList* pExtraDataList : *pGameEntry->dataList)
+@@ -808,6 +817,7 @@ Inventory TESObjectREFR::GetInventory(std::function<bool(TESForm&)> aFilter) con
+ 
+             Inventory::Entry innerEntry;
+             innerEntry.BaseId = entry.BaseId;
++            innerEntry.CreatedBase = entry.CreatedBase;
+             innerEntry.Count = 1;
+ 
+             GetItemFromExtraData(innerEntry, pExtraDataList);
+@@ -955,8 +965,7 @@ void TESObjectREFR::AddOrRemoveItem(const Inventory::Entry& arEntry, bool aIsSet
+ {
+     ModSystem& modSystem = World::Get().GetModSystem();
+ 
+-    uint32_t objectId = modSystem.GetGameId(arEntry.BaseId);
+-    TESBoundObject* pObject = Cast<TESBoundObject>(TESForm::GetById(objectId));
++    TESBoundObject* pObject = Cast<TESBoundObject>(CraftedItems::Resolve(arEntry));
+     if (!pObject)
+     {
+         spdlog::warn("{}: Object to add not found, {:X}:{:X}.", __FUNCTION__, arEntry.BaseId.ModId, arEntry.BaseId.BaseId);
+@@ -996,7 +1005,7 @@ void TESObjectREFR::AddOrRemoveItem(const Inventory::Entry& arEntry, bool aIsSet
+     {
+         PlayerCharacter* pPlayer = PlayerCharacter::Get();
+ 
+-        if (!pPlayer->IsItemInInventory(objectId))
++        if (!pPlayer->IsItemInInventory(pObject->formID))
+         {
+             Actor* pActor = Cast<Actor>(this);
+             if (pActor && pActor->GetExtension()->IsRemotePlayer())
+@@ -1100,6 +1109,13 @@ bool TP_MAKE_THISCALL(HookPlayAnimation, void, uint32_t auiStackID, TESObjectREF
  
  bool TP_MAKE_THISCALL(HookActivate, TESObjectREFR, TESObjectREFR* apActivator, uint8_t aUnk1, TESBoundObject* apObjectToGet, int32_t aCount, char aDefaultProcessing)
  {
@@ -525,6 +660,24 @@ index 2cf6e6b0..3d4710c7 100644
      auto& coop = World::Get().ctx().at<CoopChestService>();
      if (coop.IsPortal(apThis))
      {
+@@ -1138,7 +1154,7 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, TESObjectREFR, TESBoundObject* apIte
+         auto& modSystem = World::Get().GetModSystem();
+ 
+         Inventory::Entry item{};
+-        modSystem.GetServerModId(apItem->formID, item.BaseId);
++        CraftedItems::Capture(item, apItem);
+         item.Count = aCount;
+ 
+         if (apExtraData)
+@@ -1167,7 +1183,7 @@ BSPointerHandle<TESObjectREFR>* TP_MAKE_THISCALL(
+         auto& modSystem = World::Get().GetModSystem();
+ 
+         Inventory::Entry item{};
+-        modSystem.GetServerModId(apItem->formID, item.BaseId);
++        CraftedItems::Capture(item, apItem);
+ 
+         if (apExtraList)
+         {
 diff --git a/Code/client/Services/ActorValueService.h b/Code/client/Services/ActorValueService.h
 index cab85f22..025c2134 100644
 --- a/Code/client/Services/ActorValueService.h
@@ -568,13 +721,18 @@ index cab85f22..025c2134 100644
      entt::dispatcher& m_dispatcher;
      TransportService& m_transport;
 diff --git a/Code/client/Services/CalendarService.h b/Code/client/Services/CalendarService.h
-index 7e86c133..5c9bc2a1 100644
+index 7e86c133..300a3ece 100644
 --- a/Code/client/Services/CalendarService.h
 +++ b/Code/client/Services/CalendarService.h
-@@ -57,6 +57,7 @@ private:
+@@ -57,6 +57,12 @@ private:
      float m_accountedSkipDays{};
      float m_deferredSkipDays{};
  
++    bool m_sharedSleepStarted = false;
++    float m_sharedSleepStartDay = 0;
++    uint32_t m_lastPartyRest = 0;
++    uint8_t m_partyRestPasses = 0;
++    uint64_t m_nextPartyRest = 0;
 +    uint64_t m_restClockUntil = 0;
      uint64_t m_lastTick = 0;
      uint64_t m_lastLogTick = 0;
@@ -665,6 +823,22 @@ index 1c1cc217..33004fe5 100644
 +    uint64_t m_openDeadline{}, m_nextScan{}, m_nextPoll{}, m_nextNotice{}, m_cacheSaveAt{};
      entt::scoped_connection m_update, m_notify, m_disconnect, m_mods;
  };
+diff --git a/Code/client/Services/CraftedItems.h b/Code/client/Services/CraftedItems.h
+new file mode 100644
+index 00000000..5fced2ac
+--- /dev/null
++++ b/Code/client/Services/CraftedItems.h
+@@ -0,0 +1,10 @@
++#pragma once
++#include <Structs/Inventory.h>
++struct TESForm;
++namespace CraftedItems
++{
++void Capture(Inventory::Entry&, TESForm*);
++TESForm* Resolve(const Inventory::Entry&);
++void CaptureAlchemy(TESForm*, Inventory::CreatedAlchemy&);
++TESForm* ResolveAlchemy(const Inventory::CreatedAlchemy&);
++}
 diff --git a/Code/client/Services/Generic/ActorValueService.cpp b/Code/client/Services/Generic/ActorValueService.cpp
 index 6df327cd..f3e5f6a7 100644
 --- a/Code/client/Services/Generic/ActorValueService.cpp
@@ -822,18 +996,86 @@ index 6df327cd..f3e5f6a7 100644
 +    }
 +}
 diff --git a/Code/client/Services/Generic/CalendarService.cpp b/Code/client/Services/Generic/CalendarService.cpp
-index ac24ad06..b06eb220 100644
+index ac24ad06..aad774ac 100644
 --- a/Code/client/Services/Generic/CalendarService.cpp
 +++ b/Code/client/Services/Generic/CalendarService.cpp
-@@ -7,6 +7,7 @@
+@@ -7,12 +7,52 @@
  #include <Services/TransportService.h>
  #include <World.h>
  #include <SurvivalTimePolicy.h>
 +#include <RestClockPolicy.h>
  #include <cmath>
++#include <PartyRestPolicy.h>
++#include <Services/ScriptStateAccess.h>
++#include <Forms/TESGlobal.h>
++#include <Interface/UI.h>
  
  #include <Forms/TESObjectCELL.h>
-@@ -79,7 +80,7 @@ void CalendarService::BeginTimeSkip(float aStartTimeInDays, float aDesiredEndTim
+ #include <PlayerCharacter.h>
+ #include <TimeManager.h>
+ 
++namespace
++{
++struct RestArguments : BSScript::IFunctionArguments
++{
++    void Prepare(Statement* s) noexcept override
++    { s->SetSize(2); s->vars[0].Set(1000000.f); s->vars[1].Set(true); }
++};
++bool RestorePartyFatigue()
++{
++    auto* player = PlayerCharacter::Get(); auto* ui = UI::Get();
++    if (!player || !player->GetNiNode() || !player->parentCell || !player->parentCell->IsAttached() || !ui ||
++        ui->GetMenuOpen("Loading Menu") || ui->GetMenuOpen("LoadingMenu")) return false;
++    auto* mod = ModManager::Get()->GetByName("ccqdrsse001-survivalmode.esl");
++    if (!mod || !mod->IsLoaded()) return true;
++    auto* enabled = Cast<TESGlobal>(TESForm::GetById(mod->GetFormId(0x826)));
++    if (!enabled || enabled->f == 0) return true;
++    auto* quest = TESForm::GetById(mod->GetFormId(0x899));
++    ScriptStateAccess::Object object(quest, "Survival_NeedExhaustion");
++    if (!object.Pointer) return false;
++    auto* value = Cast<TESGlobal>(TESForm::GetById(mod->GetFormId(0x816)));
++    if (!value) return false;
++    value->f = 0.f;
++    std::vector<float> clock{TimeData::Get()->GameDaysPassed->f * 24.f};
++    ScriptStateAccess::Numeric(quest, "Survival_NeedExhaustion", "lastTimeInGameHours", clock, true);
++    std::vector<float> sleeping{0};
++    ScriptStateAccess::Numeric(quest, "Survival_NeedExhaustion", "playerSleeping", sleeping, true);
++    // Run the native survival script path so fatigue spells and magicka penalties
++    // agree with the zero-fatigue global. A second pass follows asynchronous OnSleepStop.
++    auto* vm = GameVM::Get()->virtualMachine;
++    BSFixedString function("DecreaseExhaustion"); void* callback = nullptr;
++    return ScriptStateAccess::Call<0x27, bool, BSScript::Object**, const BSFixedString&, BSScript::IFunctionArguments*, void**>(
++        vm, &object.Pointer, function, new RestArguments(), &callback);
++}
++}
++
+ constexpr float kTransitionSpeed = 5.f;
+ 
+ bool CalendarService::s_gameClockLocked = false;
+@@ -49,6 +89,8 @@ CalendarService::~CalendarService()
+ 
+ BSTEventResult CalendarService::OnEvent(const TESSleepStartEvent* apEvent, const EventDispatcher<TESSleepStartEvent>*)
+ {
++    m_sharedSleepStartDay = TimeData::Get()->GameDaysPassed->f;
++    m_sharedSleepStarted = apEvent && m_transport.IsOnline() && apEvent->desiredSleepEndTime > apEvent->sleepStartTime;
+     if (apEvent)
+         BeginTimeSkip(apEvent->sleepStartTime, apEvent->desiredSleepEndTime, "sleep");
+     return BSTEventResult::kOk;
+@@ -56,7 +98,13 @@ BSTEventResult CalendarService::OnEvent(const TESSleepStartEvent* apEvent, const
+ 
+ BSTEventResult CalendarService::OnEvent(const TESSleepStopEvent* apEvent, const EventDispatcher<TESSleepStopEvent>*)
+ {
++    const bool elapsedSleep = TimeData::Get()->GameDaysPassed->f > m_sharedSleepStartDay + 0.00001f;
+     EndTimeSkip(apEvent && apEvent->interrupted, "sleep");
++    if (PartyRestPolicy::Completed(m_sharedSleepStarted, !apEvent || apEvent->interrupted, elapsedSleep, m_transport.IsOnline()))
++    {
++        RequestTimeSkip rest; rest.CompletedSleep = true; m_transport.Send(rest);
++    }
++    m_sharedSleepStarted = false;
+     return BSTEventResult::kOk;
+ }
+ 
+@@ -79,7 +127,7 @@ void CalendarService::BeginTimeSkip(float aStartTimeInDays, float aDesiredEndTim
      if (!s_gameClockLocked || !m_transport.IsOnline() || !m_hasServerTime)
          return;
      const float hours = (aDesiredEndTimeInDays - aStartTimeInDays) * 24.f;
@@ -842,7 +1084,7 @@ index ac24ad06..b06eb220 100644
          return;
      s_localTimeSkip = true;
      m_deferredSkipDays = 0;
-@@ -114,12 +115,23 @@ void CalendarService::EndTimeSkip(bool aInterrupted, const char* apKind) noexcep
+@@ -114,12 +162,23 @@ void CalendarService::EndTimeSkip(bool aInterrupted, const char* apKind) noexcep
      if (!s_gameClockLocked || !m_transport.IsOnline())
          return;
  
@@ -867,7 +1109,20 @@ index ac24ad06..b06eb220 100644
      RequestTimeSkip request{};
      request.TargetTime = m_pendingSkipTarget.m_timeModel;
      m_transport.Send(request);
-@@ -137,7 +149,7 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
+@@ -129,6 +188,12 @@ void CalendarService::EndTimeSkip(bool aInterrupted, const char* apKind) noexcep
+ 
+ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
+ {
++    if (acMessage.RestToken)
++    {
++        if (m_transport.IsOnline() && acMessage.RestToken != m_lastPartyRest)
++        { m_lastPartyRest = acMessage.RestToken; m_partyRestPasses = 2; m_nextPartyRest = m_world.GetTick() + 1000; }
++        return;
++    }
+     // A jump of the shared clock (sleep, wait, /settime) must also move GameDaysPassed, which drives script
+     // timers, the way the game itself does when the player sleeps. Regular ticks are handled in HandleUpdate.
+     // The comparison uses a mirror of the server clock, not m_onlineTime: with bSyncPlayerCalendar off the
+@@ -137,7 +202,7 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
      if (s_gameClockLocked && m_hasServerTime)
      {
          const double skippedDays = SurvivalTime::InDays(newServerTime.m_timeModel) - SurvivalTime::InDays(m_serverTime.m_timeModel);
@@ -876,7 +1131,7 @@ index ac24ad06..b06eb220 100644
          {
              if (s_localTimeSkip)
                  m_deferredSkipDays += static_cast<float>(skippedDays);
-@@ -159,8 +171,11 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
+@@ -159,8 +224,11 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
      if (!s_gameClockLocked)
          ToggleGameClock(false);
      m_onlineTime.m_timeModel.TimeScale = acMessage.timeModel.TimeScale;
@@ -889,7 +1144,14 @@ index ac24ad06..b06eb220 100644
      if (m_world.GetServerSettings().SyncPlayerCalendar)
      {
          m_onlineTime.m_timeModel.Day = acMessage.timeModel.Day;
-@@ -183,6 +198,7 @@ void CalendarService::OnDisconnected(const DisconnectedEvent&) noexcept
+@@ -177,12 +245,14 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
+ 
+ void CalendarService::OnDisconnected(const DisconnectedEvent&) noexcept
+ {
++    m_sharedSleepStarted = false; m_lastPartyRest = 0; m_partyRestPasses = 0; m_nextPartyRest = 0;
+     s_localTimeSkip = false;
+     m_accountedSkipDays = 0;
+     m_deferredSkipDays = 0;
      m_hasServerTime = false;
      m_lastTick = 0;
      m_pendingSkipHours = 0.f;
@@ -897,10 +1159,19 @@ index ac24ad06..b06eb220 100644
      // signal a time transition
      m_fadeTimer = 0.f;
      ToggleGameClock(true);
-@@ -217,6 +233,8 @@ void CalendarService::ToggleGameClock(bool aEnable)
+@@ -217,6 +287,17 @@ void CalendarService::ToggleGameClock(bool aEnable)
  
  void CalendarService::HandleUpdate(const UpdateEvent& aEvent) noexcept
  {
++    if (m_partyRestPasses && m_transport.IsOnline() && m_world.GetTick() >= m_nextPartyRest)
++    {
++        m_nextPartyRest = m_world.GetTick() + 2500;
++        if (RestorePartyFatigue())
++        {
++            if (m_partyRestPasses == 2) m_world.GetOverlayService().SendSystemMessage("Party sleep: everyone is fully rested.");
++            --m_partyRestPasses;
++        }
++    }
 +    extern void ConfigureSurvivalWaitMenu();
 +    ConfigureSurvivalWaitMenu();
      if (s_gameClockLocked)
@@ -1027,10 +1298,15 @@ index ce1f48e3..aad0979c 100644
 +    m_world.GetDispatcher().trigger(destination);
  }
 diff --git a/Code/client/Services/Generic/CoopChestService.cpp b/Code/client/Services/Generic/CoopChestService.cpp
-index c6232fc4..1af8666f 100644
+index c6232fc4..9340311b 100644
 --- a/Code/client/Services/Generic/CoopChestService.cpp
 +++ b/Code/client/Services/Generic/CoopChestService.cpp
-@@ -46,12 +46,14 @@ bool CoopChestService::IsPortal(const TESObjectREFR* ref) const
+@@ -1,3 +1,4 @@
++#include <Services/CraftedItems.h>
+ #include <Services/CoopChestService.h>
+ #include <Services/TransportService.h>
+ #include <Services/OverlayService.h>
+@@ -46,12 +47,14 @@ bool CoopChestService::IsPortal(const TESObjectREFR* ref) const
  uint32_t CoopChestService::PortalIndex(const TESObjectREFR* ref) const
  {
      if (!IsPortal(ref) || !ref->GetWorldSpace() || ref->GetWorldSpace()->formID != Form("Skyrim.esm", 0x3C)) return 0;
@@ -1047,7 +1323,7 @@ index c6232fc4..1af8666f 100644
  }
  void CoopChestService::Send(HomesteadData data)
  {
-@@ -81,11 +83,15 @@ void CoopChestService::SaveCache()
+@@ -81,11 +84,15 @@ void CoopChestService::SaveCache()
  void CoopChestService::Apply(TESObjectREFR* ref)
  {
      if (!m_haveSnapshot || !ref || !ref->GetParentCellEx() || !ref->GetParentCellEx()->IsAttached()) return;
@@ -1065,7 +1341,28 @@ index c6232fc4..1af8666f 100644
  }
  bool CoopChestService::TryOpen(TESObjectREFR* ref)
  {
-@@ -137,15 +143,35 @@ bool CoopChestService::TryTransfer(TESObjectREFR* source, TESObjectREFR* destina
+@@ -101,7 +108,7 @@ bool CoopChestService::TryOpen(TESObjectREFR* ref)
+         else if (m_contents.Entries.empty()) text = "The last synchronized chest was empty.";
+         else for (const auto& item : m_contents.Entries)
+         {
+-            auto* form = TESForm::GetById(m_world.GetModSystem().GetGameId(item.BaseId));
++            auto* form = CraftedItems::Resolve(item);
+             const auto* name = form ? form->GetName() : nullptr;
+             text += std::to_string(item.Count) + " x " + (name && *name ? name : "Unavailable item") + "\n";
+         }
+@@ -127,25 +134,45 @@ bool CoopChestService::TryTransfer(TESObjectREFR* source, TESObjectREFR* destina
+     if ((!deposit && !withdraw) || !base || count <= 0 || count > 32767) return true;
+     auto* chest = deposit ? destination : source; const auto index = PortalIndex(chest); if (!index) return true;
+     HomesteadData q; q.Action = HomesteadAction::CoopTransfer; q.Reference = GameId(CoopChests::VirtualMod, index); q.Token = ++m_token; q.Deposit = deposit;
+-    if (!m_world.GetModSystem().GetServerModId(base->formID, q.Item.BaseId)) return true;
++    CraftedItems::Capture(q.Item, base);
+     if (extra) { ScopedExtraDataOverride guard; source->GetItemFromExtraData(q.Item, extra); }
+     q.Item.Count = count;
+     if (!HomesteadInventory::Supported(q.Item) || q.Item.ExtraWorn || q.Item.ExtraWornLeft)
+-    { m_world.GetOverlayService().SendSystemMessage("Co-op chest: unequip this item; quest and generated items cannot be transferred."); return true; }
++    { m_world.GetOverlayService().SendSystemMessage("Co-op chest: unequip this item; quest items and unsupported generated forms cannot be transferred."); return true; }
+     Send(std::move(q)); return true; // No native mutation before the server's commit.
+ }
  void CoopChestService::OnNotify(const NotifyHomestead& n)
  {
      const auto& data = n.Data;
@@ -1103,7 +1400,7 @@ index c6232fc4..1af8666f 100644
      }
      if (data.Action == HomesteadAction::CoopOpened && completed && data.Token == m_openToken)
      {
-@@ -162,11 +188,12 @@ void CoopChestService::OnNotify(const NotifyHomestead& n)
+@@ -162,11 +189,12 @@ void CoopChestService::OnNotify(const NotifyHomestead& n)
  }
  void CoopChestService::OnDisconnected(const DisconnectedEvent&)
  {
@@ -1117,7 +1414,7 @@ index c6232fc4..1af8666f 100644
      // Resolve the stable on-disk snapshot locally in case a failed reconnect
      // already changed the server mod-ID mapping.
      m_cacheLoaded = false; LoadCache();
-@@ -176,6 +203,7 @@ void CoopChestService::OnUpdate(const UpdateEvent&)
+@@ -176,6 +204,7 @@ void CoopChestService::OnUpdate(const UpdateEvent&)
      auto* player = PlayerCharacter::Get(); if (!player || !player->GetNiNode() || !player->parentCell) return;
      if (auto* ui = UI::Get(); ui && ui->GetMenuOpen(BSFixedString("Loading Menu"))) return;
      const auto now = m_world.GetTick();
@@ -1125,7 +1422,7 @@ index c6232fc4..1af8666f 100644
      if (m_transport.IsOnline())
      {
          if (!m_wasOnline) { m_ready = false; m_wasOnline = true; m_nextPoll = 0; }
-@@ -198,6 +226,19 @@ void CoopChestService::OnUpdate(const UpdateEvent&)
+@@ -198,6 +227,19 @@ void CoopChestService::OnUpdate(const UpdateEvent&)
              if (existing && existing != ref && PortalIndex(existing) == index && !existing->IsDeleted())
              { ref->Disable(); ref->Delete(); continue; }
              const bool adopted = slot != ref->formID; slot = ref->formID;
@@ -1145,7 +1442,7 @@ index c6232fc4..1af8666f 100644
              if (adopted || m_dirty) Apply(ref);
          }
      }
-@@ -210,6 +251,7 @@ void CoopChestService::OnUpdate(const UpdateEvent&)
+@@ -210,6 +252,7 @@ void CoopChestService::OnUpdate(const UpdateEvent&)
          for (size_t i = 0; i < CoopChests::Locations.size(); ++i)
          {
              const auto& location = CoopChests::Locations[i];
@@ -1296,11 +1593,116 @@ index 00000000..ac8c8903
 +    hud.notify = dispatcher.sink<NotifyPlayerCellChanged>().connect<&CoopHud::OnLocation>(&hud);
 +    hud.disconnected = dispatcher.sink<DisconnectedEvent>().connect<&CoopHud::OnDisconnect>(&hud);
 +}
+diff --git a/Code/client/Services/Generic/CraftedItems.cpp b/Code/client/Services/Generic/CraftedItems.cpp
+new file mode 100644
+index 00000000..b9fdcefb
+--- /dev/null
++++ b/Code/client/Services/Generic/CraftedItems.cpp
+@@ -0,0 +1,72 @@
++#include <TiltedOnlinePCH.h>
++#include <Services/CraftedItems.h>
++#include <CraftedItemPolicy.h>
++#include <Forms/AlchemyItem.h>
++#include <Games/BGSCreatedObjectManager.h>
++#include <Games/Memory.h>
++#include <World.h>
++#include <vector>
++namespace CraftedItems
++{
++void CaptureAlchemy(TESForm* form, Inventory::CreatedAlchemy& d)
++{
++    if (!form || !form->IsTemporary() || form->formType != FormType::Alchemy) return;
++    const auto* item = static_cast<AlchemyItem*>(form);
++    d = {}; d.Present = true;
++    const char* name = form->GetName(); if (name) d.Name = name;
++    d.Flags = item->alchemyFlags; d.Value = item->costOverride;
++    d.Weight = *reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(item) + 0xF8);
++    for (auto* effect : item->listOfEffects)
++    {
++        if (!effect || !effect->pEffectSetting) continue;
++        Inventory::EffectItem e;
++        e.Magnitude = effect->data.fMagnitude; e.Area = effect->data.iArea;
++        e.Duration = effect->data.iDuration; e.RawCost = effect->fRawCost;
++        World::Get().GetModSystem().GetServerModId(effect->pEffectSetting->formID, e.EffectId);
++        d.Effects.push_back(e);
++    }
++}
++void Capture(Inventory::Entry& entry, TESForm* form)
++{
++    if (!form) return;
++    World::Get().GetModSystem().GetServerModId(form->formID, entry.BaseId);
++    CaptureAlchemy(form, entry.CreatedBase);
++    CraftedItemPolicy::Normalize(entry);
++}
++TESForm* ResolveAlchemy(const Inventory::CreatedAlchemy& d)
++{
++    if (!CraftedItemPolicy::Valid(d)) return nullptr;
++    static std::vector<std::pair<Inventory::CreatedAlchemy, uint32_t>> cache;
++    for (const auto& c : cache)
++        if (c.first == d)
++        {
++            auto* form = TESForm::GetById(c.second);
++            Inventory::CreatedAlchemy actual; CaptureAlchemy(form, actual);
++            if (actual == d) return form;
++        }
++    GameArray<EffectItem> effects{}; effects.Resize(static_cast<uint32_t>(d.Effects.size()));
++    for (uint32_t i = 0; i < d.Effects.size(); ++i)
++    {
++        const auto& e = d.Effects[i]; EffectItem native{};
++        native.data = {e.Magnitude, e.Area, e.Duration}; native.fRawCost = e.RawCost;
++        native.pEffectSetting = Cast<EffectSetting>(TESForm::GetById(World::Get().GetModSystem().GetGameId(e.EffectId)));
++        if (!native.pEffectSetting) return nullptr;
++        effects[i] = native;
++    }
++    // Native manager deduplicates and registers generated forms for save/load.
++    // AE 36167/36168: void(manager, AlchemyItem** result, GameArray<EffectItem>*).
++    using Add = void(BGSCreatedObjectManager*, AlchemyItem**, GameArray<EffectItem>*);
++    auto* add = reinterpret_cast<Add*>(VersionDb::Get().FindAddressById((d.Flags & (1u << 17)) ? 36168 : 36167));
++    auto* manager = BGSCreatedObjectManager::Get(); if (!add || !manager) return nullptr;
++    AlchemyItem* result{}; add(manager, &result, &effects); if (!result) return nullptr;
++    result->fullName.value.Set(d.Name.c_str()); result->costOverride = d.Value; result->alchemyFlags = d.Flags;
++    *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(result) + 0xF8) = d.Weight;
++    if (cache.size() < 4096) cache.emplace_back(d, result->formID);
++    return result;
++}
++TESForm* Resolve(const Inventory::Entry& entry)
++{
++    if (entry.BaseId.ModId == CraftedItemPolicy::DynamicMod) return ResolveAlchemy(entry.CreatedBase);
++    return TESForm::GetById(World::Get().GetModSystem().GetGameId(entry.BaseId));
++}
++}
+diff --git a/Code/client/Services/Generic/DiscoveryService.cpp b/Code/client/Services/Generic/DiscoveryService.cpp
+index cea7919d..d366881f 100644
+--- a/Code/client/Services/Generic/DiscoveryService.cpp
++++ b/Code/client/Services/Generic/DiscoveryService.cpp
+@@ -114,6 +114,7 @@ void DiscoveryService::VisitExteriorCell(bool aForceTrigger) noexcept
+         if (!pCell)
+             pCell = ModManager::Get()->GetCellFromCoordinates(gameCurrentGrid.X, gameCurrentGrid.Y, pWorldSpace, false);
+ 
++        if (!pCell) return; // Cell relocation can temporarily leave no loaded grid cell.
+         if (!m_world.GetModSystem().GetServerModId(pCell->formID, cellChangeEvent.CellId))
+         {
+             spdlog::error("Failed to find cell id for form id {:X}", pCell->formID);
 diff --git a/Code/client/Services/Generic/HomesteadService.cpp b/Code/client/Services/Generic/HomesteadService.cpp
-index 1edb4dba..3cada7b5 100644
+index 1edb4dba..f7ca28e6 100644
 --- a/Code/client/Services/Generic/HomesteadService.cpp
 +++ b/Code/client/Services/Generic/HomesteadService.cpp
-@@ -130,7 +130,7 @@ void HomesteadService::OnUpdate(const UpdateEvent&)
+@@ -1,3 +1,4 @@
++#include <Services/CraftedItems.h>
+ #include <Services/HomesteadService.h>
+ #include <Services/TransportService.h>
+ #include <World.h>
+@@ -94,7 +95,8 @@ bool HomesteadService::TryTransfer(TESObjectREFR* source, TESObjectREFR* destina
+     auto* chest = deposit ? destination : source;
+     HomesteadData q; q.Action = HomesteadAction::Transfer; q.Deposit = deposit; q.Token = ++m_nextToken;
+     auto& mods = m_world.GetModSystem();
+-    if (!mods.GetServerModId(chest->formID, q.Reference) || !mods.GetServerModId(base->formID, q.Item.BaseId)) return true;
++    if (!mods.GetServerModId(chest->formID, q.Reference)) return true;
++    CraftedItems::Capture(q.Item, base);
+     if (extra) { ScopedExtraDataOverride guard; source->GetItemFromExtraData(q.Item, extra); }
+     q.Item.Count = count;
+     if (!HomesteadInventory::Supported(q.Item))
+@@ -130,7 +132,7 @@ void HomesteadService::OnUpdate(const UpdateEvent&)
      HomesteadData q; q.Action = HomesteadAction::Publish;
      for (uint32_t id : m_ids)
      {
@@ -1309,7 +1711,7 @@ index 1edb4dba..3cada7b5 100644
          const bool disabled = ref->IsDisabled();
          const auto old = m_published.find(id);
          if (old != m_published.end() && old->second == disabled) continue;
-@@ -171,10 +171,6 @@ void HomesteadService::Apply(const HomesteadRecord& record)
+@@ -171,10 +173,6 @@ void HomesteadService::Apply(const HomesteadRecord& record)
          if (record.HasInventory && cell && cell->IsAttached()) { original.HasInventory = true; original.Contents = ref->GetInventory(); }
          m_original.emplace(id, std::move(original));
      }
@@ -1320,7 +1722,7 @@ index 1edb4dba..3cada7b5 100644
      if (record.HasInventory && (!guest || (cell && cell->IsAttached())) && !ref->IsDisabled())
      {
          Inventory current = ref->GetInventory();
-@@ -229,7 +225,7 @@ void HomesteadService::OnDisconnected(const DisconnectedEvent&)
+@@ -229,7 +227,7 @@ void HomesteadService::OnDisconnected(const DisconnectedEvent&)
      for (const auto& [id, original] : m_original)
      {
          auto* ref = Cast<TESObjectREFR>(TESForm::GetById(id)); if (!ref) continue;
@@ -1330,7 +1732,7 @@ index 1edb4dba..3cada7b5 100644
          {
              ScopedInventoryOverride guard;
 diff --git a/Code/client/Services/Generic/InventoryService.cpp b/Code/client/Services/Generic/InventoryService.cpp
-index 5b2f79e2..0bb9b101 100644
+index 5b2f79e2..a183f212 100644
 --- a/Code/client/Services/Generic/InventoryService.cpp
 +++ b/Code/client/Services/Generic/InventoryService.cpp
 @@ -1,5 +1,9 @@
@@ -1380,15 +1782,18 @@ index 5b2f79e2..0bb9b101 100644
      auto& modSystem = World::Get().GetModSystem();
  
      uint32_t itemId = modSystem.GetGameId(acMessage.ItemId);
-@@ -312,6 +330,7 @@ void InventoryService::RunWeaponStateUpdates() noexcept
+@@ -312,6 +330,10 @@ void InventoryService::RunWeaponStateUpdates() noexcept
          Actor* const pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
          auto& localComponent = view.get<LocalComponent>(entity);
  
-+        if (!pActor) continue;
++        // A teleport unloads forms before discovery removes their local components.
++        // The v0.8.6 crash dereferenced a null actor's state at offset 0xCC here.
++        // Keep the previous draw state until the reference is attached again.
++        if (!pActor || !pActor->GetNiNode() || !pActor->parentCell || !pActor->parentCell->IsAttached()) continue;
          bool isWeaponDrawn = pActor->actorState.IsWeaponDrawn();
          if (isWeaponDrawn != localComponent.IsWeaponDrawn)
          {
-@@ -325,3 +344,94 @@ void InventoryService::RunWeaponStateUpdates() noexcept
+@@ -325,3 +347,94 @@ void InventoryService::RunWeaponStateUpdates() noexcept
          }
      }
  }
@@ -2034,6 +2439,24 @@ index 00000000..a77cafa9
 +    } stub(site, &s_secondsPerHour);
 +    TiltedPhoques::Jump(site, stub.getCode());
 +});
+diff --git a/Code/client/Services/Generic/WorldItemService.cpp b/Code/client/Services/Generic/WorldItemService.cpp
+index 77b4015a..5b7c52b5 100644
+--- a/Code/client/Services/Generic/WorldItemService.cpp
++++ b/Code/client/Services/Generic/WorldItemService.cpp
+@@ -1,3 +1,4 @@
++#include <Services/CraftedItems.h>
+ #include <Services/WorldItemService.h>
+ #include <Services/OverlayService.h>
+ #include <Messages/RequestCurrentWeather.h>
+@@ -74,7 +75,7 @@ WorldItemData WorldItemService::Describe(TESObjectREFR* ref) const
+     auto& mods = m_world.GetModSystem();
+     if (!ref->IsTemporary())
+         mods.GetServerModId(ref->formID, data.Reference);
+-    mods.GetServerModId(ref->baseForm->formID, data.Item.BaseId);
++    CraftedItems::Capture(data.Item, ref->baseForm);
+     if (auto* cell = ref->GetParentCellEx())
+         mods.GetServerModId(cell->formID, data.Cell);
+     if (auto* ws = ref->GetWorldSpace())
 diff --git a/Code/client/Services/Generic/WorldProgressService.cpp b/Code/client/Services/Generic/WorldProgressService.cpp
 new file mode 100644
 index 00000000..42aeb548
@@ -2869,7 +3292,7 @@ index 6d60709b..34e1d91f 100644
      ctx().emplace<CalendarService>(*this, m_dispatcher, m_transport);
      ctx().emplace<QuestService>(*this, m_dispatcher);
 diff --git a/Code/common/BuildInfo.h.in b/Code/common/BuildInfo.h.in
-index 33cc05f3..31628fa6 100644
+index 33cc05f3..da4005a4 100644
 --- a/Code/common/BuildInfo.h.in
 +++ b/Code/common/BuildInfo.h.in
 @@ -1,4 +1,4 @@
@@ -2877,7 +3300,7 @@ index 33cc05f3..31628fa6 100644
  // This file was autogenerated by xmake
  #define BUILD_BRANCH "survival-worlditems"
 -#define BUILD_COMMIT "survival-sync-v07-quest-sync-draft"
-+#define BUILD_COMMIT "survival-sync-v087-hand-equipment-draft"
++#define BUILD_COMMIT "survival-sync-v088-crafted-rest-draft"
 diff --git a/Code/common/CompanionRolePolicy.h b/Code/common/CompanionRolePolicy.h
 new file mode 100644
 index 00000000..c026d63c
@@ -2922,6 +3345,138 @@ index ae1a97d0..6be124e8 100644
 +    {"Tundra Homestead", 39062.210f, 145.170f, -4172.343f, 5.912394f, false, "cceejsse001-hstead.esm"},
  }};
  }
+diff --git a/Code/common/CoopChestStore.h b/Code/common/CoopChestStore.h
+index 5d581cda..319a92e8 100644
+--- a/Code/common/CoopChestStore.h
++++ b/Code/common/CoopChestStore.h
+@@ -42,7 +42,7 @@ struct Writer
+     void Id(GameId id, const NameOf& nameOf)
+     {
+         if (!id) { U32(0); U32(0); return; }
+-        const auto name = nameOf(id.ModId);
++        const auto name = id.ModId == UINT32_MAX ? std::optional<std::string>("@SurvivalSyncGenerated") : nameOf(id.ModId);
+         if (!name || name->empty() || name->size() > 260) { Good = false; return; }
+         if (!Good || Data.size() + name->size() + 8 > MaxBytes) { Good = false; return; }
+         U32(static_cast<uint32_t>(name->size())); Data.insert(Data.end(), name->begin(), name->end()); U32(id.BaseId);
+@@ -67,13 +67,40 @@ struct Reader
+         auto base = U32();
+         if (!n && !base) return {};
+         if (!n || name.find('\0') != std::string::npos) { Good = false; return {}; }
++        if (name == "@SurvivalSyncGenerated") return GameId(UINT32_MAX, base);
+         auto id = resolve(name, base); if (!id) { Good = false; return {}; } return *id;
+     }
+ };
++inline void WriteAlchemy(Writer& w, const Inventory::CreatedAlchemy& d, const NameOf& nameOf)
++{
++    w.U32(d.Present ? 1 : 0); if (!d.Present) return;
++    if (!CraftedItemPolicy::Valid(d)) { w.Good = false; return; }
++    w.U32(static_cast<uint32_t>(d.Name.size())); w.Data.insert(w.Data.end(), d.Name.begin(), d.Name.end());
++    w.U32(d.Flags); w.U32(static_cast<uint32_t>(d.Value)); w.Float(d.Weight);
++    w.U32(static_cast<uint32_t>(d.Effects.size()));
++    for (const auto& e : d.Effects) { w.Float(e.Magnitude); w.U32(e.Area); w.U32(e.Duration); w.Float(e.RawCost); w.Id(e.EffectId, nameOf); }
++}
++inline Inventory::CreatedAlchemy ReadAlchemy(Reader& r, const Resolve& resolve)
++{
++    Inventory::CreatedAlchemy d;
++    const auto present = r.U32(); if (present > 1) { r.Good = false; return d; }
++    if (!present) return d; d.Present = true;
++    const auto size = r.U32(); if (size > 512 || r.Position + size > r.Data.size()) { r.Good = false; return d; }
++    d.Name.assign(reinterpret_cast<const char*>(r.Data.data() + r.Position), size); r.Position += size;
++    d.Flags = r.U32(); d.Value = static_cast<int32_t>(r.U32()); d.Weight = r.Float();
++    const auto count = r.U32(); if (count > 64) { r.Good = false; return d; }
++    for (uint32_t i = 0; i < count && r.Good; ++i)
++    {
++        Inventory::EffectItem e; e.Magnitude = r.Float(); e.Area = static_cast<int32_t>(r.U32()); e.Duration = static_cast<int32_t>(r.U32());
++        e.RawCost = r.Float(); e.EffectId = r.Id(resolve); d.Effects.push_back(e);
++    }
++    if (!CraftedItemPolicy::Valid(d)) r.Good = false;
++    return d;
++}
+ inline std::optional<Bytes> Encode(const Inventory& inv, const NameOf& nameOf)
+ {
+     if (inv.Entries.size() > MaxEntries) return {};
+-    Writer w; w.Data.insert(w.Data.end(), {'S','T','C','O','O','P','0','1'}); w.U32(static_cast<uint32_t>(inv.Entries.size()));
++    Writer w; w.Data.insert(w.Data.end(), {'S','T','C','O','O','P','0','2'}); w.U32(static_cast<uint32_t>(inv.Entries.size()));
+     for (const auto& e : inv.Entries)
+     {
+         if (!HomesteadInventory::Supported(e) || e.ExtraWorn || e.ExtraWornLeft || e.Count <= 0 || e.EnchantData.Effects.size() > 64) return {};
+@@ -86,16 +113,18 @@ inline std::optional<Bytes> Encode(const Inventory& inv, const NameOf& nameOf)
+         }
+         w.Float(e.ExtraHealth); w.Id(e.ExtraPoisonId, nameOf); w.U32(e.ExtraPoisonCount); w.U32(static_cast<uint32_t>(e.ExtraSoulLevel));
+         w.U32(e.ExtraEnchantRemoveUnequip ? 1 : 0);
++        WriteAlchemy(w, e.CreatedBase, nameOf); WriteAlchemy(w, e.CreatedPoison, nameOf);
+     }
+     if (!w.Good || w.Data.size() + 8 > MaxBytes) return {};
+     const auto sum = Checksum(w.Data); w.U32(static_cast<uint32_t>(sum)); w.U32(static_cast<uint32_t>(sum >> 32)); return w.Data;
+ }
+ inline bool Decode(const Bytes& bytes, const Resolve& resolve, Inventory& out)
+ {
+-    if (bytes.size() < 20 || bytes.size() > MaxBytes || std::memcmp(bytes.data(), "STCOOP01", 8) != 0) return false;
++    if (bytes.size() < 20 || bytes.size() > MaxBytes || (std::memcmp(bytes.data(), "STCOOP01", 8) != 0 && std::memcmp(bytes.data(), "STCOOP02", 8) != 0)) return false;
+     Bytes body(bytes.begin(), bytes.end() - 8);
+     Reader tail{bytes, bytes.size() - 8}; const uint64_t low = tail.U32(), high = tail.U32();
+     if (Checksum(body) != (low | (high << 32))) return false;
++    const bool createdForms = bytes[7] == '2';
+     Reader r{body, 8}; const auto count = r.U32(); if (count > MaxEntries) return false;
+     Inventory result;
+     for (uint32_t i = 0; i < count && r.Good; ++i)
+@@ -110,6 +139,8 @@ inline bool Decode(const Bytes& bytes, const Resolve& resolve, Inventory& out)
+         }
+         e.ExtraHealth = r.Float(); e.ExtraPoisonId = r.Id(resolve); e.ExtraPoisonCount = r.U32(); e.ExtraSoulLevel = static_cast<int32_t>(r.U32());
+         auto remove = r.U32(); if (remove > 1) return false; e.ExtraEnchantRemoveUnequip = remove != 0;
++        if (createdForms) { e.CreatedBase = ReadAlchemy(r, resolve); e.CreatedPoison = ReadAlchemy(r, resolve); }
++        CraftedItemPolicy::Normalize(e);
+         if (!r.Good || e.Count <= 0 || !HomesteadInventory::Supported(e)) return false;
+         result.Entries.push_back(std::move(e));
+     }
+diff --git a/Code/common/CraftedItemPolicy.h b/Code/common/CraftedItemPolicy.h
+new file mode 100644
+index 00000000..544f0a00
+--- /dev/null
++++ b/Code/common/CraftedItemPolicy.h
+@@ -0,0 +1,42 @@
++#pragma once
++#include <Structs/Inventory.h>
++#include <cmath>
++#include <cstring>
++namespace CraftedItemPolicy
++{
++constexpr uint32_t DynamicMod = UINT32_MAX;
++inline bool EffectsValid(const TiltedPhoques::Vector<Inventory::EffectItem>& effects)
++{
++    if (effects.empty() || effects.size() > 64) return false;
++    for (const auto& e : effects)
++        if (!e.EffectId || e.EffectId.ModId == DynamicMod || !std::isfinite(e.Magnitude) ||
++            !std::isfinite(e.RawCost) || e.Area < 0 || e.Duration < 0) return false;
++    return true;
++}
++inline bool Valid(const Inventory::CreatedAlchemy& d)
++{
++    return d.Present && d.Name.size() <= 512 && std::isfinite(d.Weight) && d.Weight >= 0 && d.Weight <= 10000 && EffectsValid(d.Effects);
++}
++struct Hash
++{
++    uint32_t Value = 2166136261u;
++    void Byte(uint8_t b) { Value = (Value ^ b) * 16777619u; }
++    void Number(uint32_t n) { for (int i = 0; i < 4; ++i) Byte(static_cast<uint8_t>(n >> (i * 8))); }
++    void Float(float f) { uint32_t n; std::memcpy(&n, &f, 4); Number(n); }
++    void Effects(const TiltedPhoques::Vector<Inventory::EffectItem>& effects)
++    { Number(static_cast<uint32_t>(effects.size())); for (const auto& e : effects) { Float(e.Magnitude); Number(e.Area); Number(e.Duration); Float(e.RawCost); Number(e.EffectId.ModId); Number(e.EffectId.BaseId); } }
++};
++inline uint32_t Identity(const Inventory::CreatedAlchemy& d)
++{
++    Hash h; h.Number(d.Flags); h.Number(d.Value); h.Float(d.Weight);
++    for (auto c : d.Name) h.Byte(static_cast<uint8_t>(c)); h.Byte(0); h.Effects(d.Effects); return h.Value ? h.Value : 1;
++}
++inline uint32_t EnchantmentIdentity(const Inventory::EnchantmentData& d)
++{ Hash h; h.Number(d.IsWeapon); h.Effects(d.Effects); return h.Value ? h.Value : 1; }
++inline void Normalize(Inventory::Entry& e)
++{
++    if (Valid(e.CreatedBase)) e.BaseId = GameId(DynamicMod, Identity(e.CreatedBase));
++    if (Valid(e.CreatedPoison)) e.ExtraPoisonId = GameId(DynamicMod, Identity(e.CreatedPoison));
++    if (e.ExtraEnchantId.ModId == DynamicMod && EffectsValid(e.EnchantData.Effects)) e.ExtraEnchantId.BaseId = EnchantmentIdentity(e.EnchantData);
++}
++}
 diff --git a/Code/common/CrosshairAimPolicy.h b/Code/common/CrosshairAimPolicy.h
 new file mode 100644
 index 00000000..8f615734
@@ -2959,6 +3514,28 @@ index 00000000..0d9d6e63
 +    return current >= required ? 0 : required - int(current > 0 ? current : 0);
 +}
 +}
+diff --git a/Code/common/HomesteadInventory.h b/Code/common/HomesteadInventory.h
+index bc876f72..dfefc754 100644
+--- a/Code/common/HomesteadInventory.h
++++ b/Code/common/HomesteadInventory.h
+@@ -1,12 +1,15 @@
+ #pragma once
+ #include <Structs/Inventory.h>
++#include <CraftedItemPolicy.h>
+ #include <cstdint>
+ namespace HomesteadInventory
+ {
+ inline bool Supported(const Inventory::Entry& e)
+ {
+-    return bool(e.BaseId) && e.BaseId.ModId != UINT32_MAX && e.ExtraEnchantId.ModId != UINT32_MAX &&
+-           e.ExtraPoisonId.ModId != UINT32_MAX && !e.IsQuestItem;
++    return bool(e.BaseId) && !e.IsQuestItem &&
++        (e.BaseId.ModId != UINT32_MAX || CraftedItemPolicy::Valid(e.CreatedBase)) &&
++        (e.ExtraEnchantId.ModId != UINT32_MAX || CraftedItemPolicy::EffectsValid(e.EnchantData.Effects)) &&
++        (e.ExtraPoisonId.ModId != UINT32_MAX || CraftedItemPolicy::Valid(e.CreatedPoison));
+ }
+ inline Inventory SharedPart(const Inventory& original)
+ {
 diff --git a/Code/common/HousingLayoutPolicy.h b/Code/common/HousingLayoutPolicy.h
 new file mode 100644
 index 00000000..4013ad70
@@ -2992,6 +3569,18 @@ index 00000000..4013ad70
 +{
 +    return beforeDisabled || replacementEnabled;
 +}
++}
+diff --git a/Code/common/PartyRestPolicy.h b/Code/common/PartyRestPolicy.h
+new file mode 100644
+index 00000000..f5b79ecb
+--- /dev/null
++++ b/Code/common/PartyRestPolicy.h
+@@ -0,0 +1,6 @@
++#pragma once
++namespace PartyRestPolicy
++{
++inline bool Completed(bool startedSleep, bool interrupted, bool elapsedSleep, bool online)
++{ return online && startedSleep && (!interrupted || elapsedSleep); }
 +}
 diff --git a/Code/common/PercentageHealth.h b/Code/common/PercentageHealth.h
 new file mode 100644
@@ -3446,6 +4035,75 @@ index 057595a6..f1da38e0 100644
 +    float HealthFraction{};
 +    float MaximumHealth{};
  };
+diff --git a/Code/encoding/Messages/RequestTimeSkip.cpp b/Code/encoding/Messages/RequestTimeSkip.cpp
+index ea9fbd37..9ff9a789 100644
+--- a/Code/encoding/Messages/RequestTimeSkip.cpp
++++ b/Code/encoding/Messages/RequestTimeSkip.cpp
+@@ -1,10 +1,13 @@
++#include <TiltedCore/Serialization.hpp>
+ #include "RequestTimeSkip.h"
+ void RequestTimeSkip::SerializeRaw(TiltedPhoques::Buffer::Writer& writer) const noexcept
+ {
+     TargetTime.Serialize(writer);
++    TiltedPhoques::Serialization::WriteBool(writer, CompletedSleep);
+ }
+ void RequestTimeSkip::DeserializeRaw(TiltedPhoques::Buffer::Reader& reader) noexcept
+ {
+     ClientMessage::DeserializeRaw(reader);
+     TargetTime.Deserialize(reader);
++    CompletedSleep = TiltedPhoques::Serialization::ReadBool(reader);
+ }
+diff --git a/Code/encoding/Messages/RequestTimeSkip.h b/Code/encoding/Messages/RequestTimeSkip.h
+index 80209bad..408f69cb 100644
+--- a/Code/encoding/Messages/RequestTimeSkip.h
++++ b/Code/encoding/Messages/RequestTimeSkip.h
+@@ -11,6 +11,7 @@ struct RequestTimeSkip final : ClientMessage
+     }
+     void SerializeRaw(TiltedPhoques::Buffer::Writer&) const noexcept override;
+     void DeserializeRaw(TiltedPhoques::Buffer::Reader&) noexcept override;
+-    bool operator==(const RequestTimeSkip& rhs) const noexcept { return GetOpcode() == rhs.GetOpcode() && TargetTime == rhs.TargetTime; }
++    bool operator==(const RequestTimeSkip& rhs) const noexcept { return GetOpcode() == rhs.GetOpcode() && TargetTime == rhs.TargetTime && CompletedSleep == rhs.CompletedSleep; }
+     TimeModel TargetTime;
++    bool CompletedSleep = false;
+ };
+diff --git a/Code/encoding/Messages/ServerTimeSettings.cpp b/Code/encoding/Messages/ServerTimeSettings.cpp
+index d9994039..f4d877bd 100644
+--- a/Code/encoding/Messages/ServerTimeSettings.cpp
++++ b/Code/encoding/Messages/ServerTimeSettings.cpp
+@@ -1,11 +1,14 @@
++#include <TiltedCore/Serialization.hpp>
+ #include <Messages/ServerTimeSettings.h>
+ 
+ void ServerTimeSettings::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
+ {
+     timeModel.Serialize(aWriter);
++    TiltedPhoques::Serialization::WriteVarInt(aWriter, RestToken);
+ }
+ 
+ void ServerTimeSettings::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
+ {
+     timeModel.Deserialize(aReader);
++    RestToken = TiltedPhoques::Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+ }
+diff --git a/Code/encoding/Messages/ServerTimeSettings.h b/Code/encoding/Messages/ServerTimeSettings.h
+index 2ada7b7e..5f647824 100644
+--- a/Code/encoding/Messages/ServerTimeSettings.h
++++ b/Code/encoding/Messages/ServerTimeSettings.h
+@@ -17,7 +17,7 @@ struct ServerTimeSettings final : ServerMessage
+ 
+     bool operator==(const ServerTimeSettings& achRhs) const noexcept
+     {
+-        return GetOpcode() == achRhs.GetOpcode() && timeModel == achRhs.timeModel;
++        return GetOpcode() == achRhs.GetOpcode() && timeModel == achRhs.timeModel && RestToken == achRhs.RestToken;
+     }
+ 
+     bool operator!=(const ServerTimeSettings& achRhs) const noexcept
+@@ -26,4 +26,5 @@ struct ServerTimeSettings final : ServerMessage
+     }
+ 
+     TimeModel timeModel;
++    uint32_t RestToken = 0;
+ };
 diff --git a/Code/encoding/Structs/HomesteadData.cpp b/Code/encoding/Structs/HomesteadData.cpp
 index e1b16966..4e5758b9 100644
 --- a/Code/encoding/Structs/HomesteadData.cpp
@@ -3514,6 +4172,90 @@ index abd6d0e8..56ae6922 100644
      void Serialize(Buffer::Writer& w) const noexcept;
      void Deserialize(Buffer::Reader& r) noexcept;
  };
+diff --git a/Code/encoding/Structs/Inventory.cpp b/Code/encoding/Structs/Inventory.cpp
+index 8221c638..b282f77f 100644
+--- a/Code/encoding/Structs/Inventory.cpp
++++ b/Code/encoding/Structs/Inventory.cpp
+@@ -21,6 +21,26 @@ void Inventory::EffectItem::Deserialize(TiltedPhoques::Buffer::Reader& aReader)
+     EffectId.Deserialize(aReader);
+ }
+ 
++void Inventory::CreatedAlchemy::Serialize(Buffer::Writer& w) const noexcept
++{
++    Serialization::WriteBool(w, Present);
++    if (!Present) return;
++    Serialization::WriteString(w, Name); Serialization::WriteVarInt(w, Flags);
++    Serialization::WriteVarInt(w, Value); Serialization::WriteFloat(w, Weight);
++    Serialization::WriteVarInt(w, Effects.size());
++    for (const auto& effect : Effects) effect.Serialize(w);
++}
++void Inventory::CreatedAlchemy::Deserialize(Buffer::Reader& r) noexcept
++{
++    Present = Serialization::ReadBool(r); if (!Present) return;
++    Name = Serialization::ReadString(r); Flags = Serialization::ReadVarInt(r) & 0xFFFFFFFF;
++    Value = Serialization::ReadVarInt(r) & 0xFFFFFFFF; Weight = Serialization::ReadFloat(r);
++    const auto count = Serialization::ReadVarInt(r);
++    Effects.clear();
++    for (uint64_t i = 0; i < count; ++i) { EffectItem effect; effect.Deserialize(r); if (i < 64) Effects.push_back(effect); }
++    if (count > 64 || Name.size() > 512) Present = false;
++}
++
+ void Inventory::Entry::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
+ {
+     BaseId.Serialize(aWriter);
+@@ -48,6 +68,7 @@ void Inventory::Entry::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const n
+     Serialization::WriteBool(aWriter, ExtraWorn);
+     Serialization::WriteBool(aWriter, ExtraWornLeft);
+     Serialization::WriteBool(aWriter, IsQuestItem);
++    CreatedBase.Serialize(aWriter); CreatedPoison.Serialize(aWriter);
+ }
+ 
+ void Inventory::Entry::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
+@@ -79,6 +100,7 @@ void Inventory::Entry::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexc
+     ExtraWorn = Serialization::ReadBool(aReader);
+     ExtraWornLeft = Serialization::ReadBool(aReader);
+     IsQuestItem = Serialization::ReadBool(aReader);
++    CreatedBase.Deserialize(aReader); CreatedPoison.Deserialize(aReader);
+ }
+ 
+ bool Inventory::operator==(const Inventory& acRhs) const noexcept
+diff --git a/Code/encoding/Structs/Inventory.h b/Code/encoding/Structs/Inventory.h
+index 4fe20cde..6616c821 100644
+--- a/Code/encoding/Structs/Inventory.h
++++ b/Code/encoding/Structs/Inventory.h
+@@ -27,9 +27,23 @@ struct Inventory
+         Vector<EffectItem> Effects{};
+     };
+ 
++    struct CreatedAlchemy
++    {
++        bool Present = false;
++        String Name;
++        uint32_t Flags = 0;
++        int32_t Value = 0;
++        float Weight = 0.5f;
++        Vector<EffectItem> Effects;
++        bool operator==(const CreatedAlchemy&) const noexcept = default;
++        void Serialize(Buffer::Writer&) const noexcept;
++        void Deserialize(Buffer::Reader&) noexcept;
++    };
++
+     struct Entry
+     {
+         GameId BaseId{};
++        CreatedAlchemy CreatedBase{}, CreatedPoison{};
+         int32_t Count{};
+ 
+         float ExtraCharge{};
+@@ -65,7 +79,7 @@ struct Inventory
+             // TODO: the whole server side state thing is very flawed
+             // since many of these things can and will change, like poison id or charge
+             // or the fact that the enchant id can be temp
+-            return EnchantData.IsWeapon == acRhs.EnchantData.IsWeapon && EnchantData.Effects == acRhs.EnchantData.Effects && ExtraCharge == acRhs.ExtraCharge && ExtraEnchantId == acRhs.ExtraEnchantId && ExtraEnchantCharge == acRhs.ExtraEnchantCharge && ExtraEnchantRemoveUnequip == acRhs.ExtraEnchantRemoveUnequip && ExtraHealth == acRhs.ExtraHealth && ExtraPoisonId == acRhs.ExtraPoisonId &&
++            return CreatedBase == acRhs.CreatedBase && CreatedPoison == acRhs.CreatedPoison && EnchantData.IsWeapon == acRhs.EnchantData.IsWeapon && EnchantData.Effects == acRhs.EnchantData.Effects && ExtraCharge == acRhs.ExtraCharge && ExtraEnchantId == acRhs.ExtraEnchantId && ExtraEnchantCharge == acRhs.ExtraEnchantCharge && ExtraEnchantRemoveUnequip == acRhs.ExtraEnchantRemoveUnequip && ExtraHealth == acRhs.ExtraHealth && ExtraPoisonId == acRhs.ExtraPoisonId &&
+                    ExtraPoisonCount == acRhs.ExtraPoisonCount && ExtraSoulLevel == acRhs.ExtraSoulLevel && ExtraWorn == acRhs.ExtraWorn && ExtraWornLeft == acRhs.ExtraWornLeft && IsQuestItem == acRhs.IsQuestItem;
+         }
+ 
 diff --git a/Code/encoding/Structs/QuestState.h b/Code/encoding/Structs/QuestState.h
 index 23005daf..e5fe911f 100644
 --- a/Code/encoding/Structs/QuestState.h
@@ -3659,8 +4401,31 @@ index 88253349..8c0dc27f 100644
      World& m_world;
  
      void OnActorValueChanges(const PacketEvent<RequestActorValueChanges>& acMessage) const noexcept;
+diff --git a/Code/server/Services/CalendarService.cpp b/Code/server/Services/CalendarService.cpp
+index 6d367d94..64142210 100644
+--- a/Code/server/Services/CalendarService.cpp
++++ b/Code/server/Services/CalendarService.cpp
+@@ -110,8 +110,17 @@ bool CalendarService::SetDate(int aDay, int aMonth, float aYear) noexcept
+ 
+ void CalendarService::OnTimeSkip(const PacketEvent<RequestTimeSkip>& event) noexcept
+ {
+-    if (!bEnableSurvivalTimeSync || !event.pPlayer || !event.pPlayer->GetCharacter())
++    if (!event.pPlayer || !event.pPlayer->GetCharacter()) return;
++    if (event.Packet.CompletedSleep)
++    {
++        ServerTimeSettings rest;
++        if (!++m_restSequence) ++m_restSequence;
++        rest.RestToken = m_restSequence;
++        if (event.pPlayer->GetParty().JoinedPartyId) GameServer::Get()->SendToParty(rest, event.pPlayer->GetParty());
++        else event.pPlayer->Send(rest);
+         return;
++    }
++    if (!bEnableSurvivalTimeSync) return;
+     // Account for real time before comparing, preventing a stale server baseline.
+     const auto now = GameServer::Get()->GetTick();
+     if (m_lastTick && now >= m_lastTick)
 diff --git a/Code/server/Services/CalendarService.h b/Code/server/Services/CalendarService.h
-index 41542476..aba75ff2 100644
+index 41542476..b6da0abb 100644
 --- a/Code/server/Services/CalendarService.h
 +++ b/Code/server/Services/CalendarService.h
 @@ -2,6 +2,7 @@
@@ -3679,6 +4444,14 @@ index 41542476..aba75ff2 100644
      bool SetTimeScale(float aScale) noexcept;
  
  private:
+@@ -44,6 +46,7 @@ private:
+ 
+     DateTime m_dateTime;
+     uint64_t m_lastTick = 0;
++    uint32_t m_restSequence = 0;
+     bool m_timeSetFromFirstPlayer = false;
+ 
+     World& m_world;
 diff --git a/Code/server/Services/CharacterService.cpp b/Code/server/Services/CharacterService.cpp
 index 3bc7b80c..00610cf5 100644
 --- a/Code/server/Services/CharacterService.cpp
@@ -4384,10 +5157,10 @@ index 52eb4999..9da636d3 100644
    autoResyncOff(): void;
 diff --git a/Code/tests/coop_fixes.cpp b/Code/tests/coop_fixes.cpp
 new file mode 100644
-index 00000000..dae8ecf3
+index 00000000..7db77aa3
 --- /dev/null
 +++ b/Code/tests/coop_fixes.cpp
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,147 @@
 +#include <TiltedCore/Stl.hpp>
 +#include <TiltedCore/Allocator.hpp>
 +#include <TiltedCore/Buffer.hpp>
@@ -4504,8 +5277,39 @@ index 00000000..dae8ecf3
 +    REQUIRE(Missing(2, 1) == 1); REQUIRE(Missing(2, 2) == 0);
 +    REQUIRE(Missing(2, 100) == 0); REQUIRE(Missing(100, 0) == 0);
 +}
++
++#include <CraftedItemPolicy.h>
++#include <PartyRestPolicy.h>
++TEST_CASE("Created alchemy definitions distinguish skill-adjusted recipes without relying on local form IDs", "[coop-fixes]")
++{
++    Inventory::Entry potion; potion.Count = 1; potion.CreatedBase.Present = true; potion.CreatedBase.Name = "Waterbreathing";
++    Inventory::EffectItem effect; effect.EffectId = GameId(0, 0x123); effect.Duration = 400;
++    potion.CreatedBase.Effects.push_back(effect); CraftedItemPolicy::Normalize(potion);
++    REQUIRE(HomesteadInventory::Supported(potion));
++    auto stronger = potion; stronger.CreatedBase.Effects[0].Duration = 456; CraftedItemPolicy::Normalize(stronger);
++    REQUIRE(stronger.BaseId != potion.BaseId); REQUIRE_FALSE(stronger.CanBeMerged(potion));
++    auto other = stronger; other.CreatedBase.Effects[0].Magnitude = 7.5f; other.CreatedBase.Effects[0].Duration = 777;
++    CraftedItemPolicy::Normalize(other); REQUIRE(other.BaseId != stronger.BaseId);
++    auto same = stronger; same.BaseId = GameId(UINT32_MAX, 0x987654); CraftedItemPolicy::Normalize(same);
++    REQUIRE(same.CanBeMerged(stronger));
++    auto invalid = stronger; invalid.CreatedBase.Effects[0].Magnitude = NAN;
++    REQUIRE_FALSE(HomesteadInventory::Supported(invalid));
++    Inventory::Entry weapon; weapon.BaseId = GameId(0, 0xABC); weapon.ExtraHealth = 1.6f;
++    weapon.ExtraEnchantId = GameId(UINT32_MAX, 123); weapon.EnchantData.Effects.push_back(effect); weapon.EnchantData.IsWeapon = true;
++    CraftedItemPolicy::Normalize(weapon); REQUIRE(HomesteadInventory::Supported(weapon));
++    auto enchant = weapon; enchant.ExtraEnchantId.BaseId = 987; CraftedItemPolicy::Normalize(enchant);
++    REQUIRE(enchant.CanBeMerged(weapon));
++}
++TEST_CASE("Only completed sleep grants shared rest, never waiting or cancelled sleep", "[coop-fixes]")
++{
++    REQUIRE(PartyRestPolicy::Completed(true, false, true, true));
++    REQUIRE_FALSE(PartyRestPolicy::Completed(false, false, false, true));
++    REQUIRE_FALSE(PartyRestPolicy::Completed(true, true, false, true));
++    REQUIRE_FALSE(PartyRestPolicy::Completed(true, false, true, false));
++    REQUIRE(PartyRestPolicy::Completed(true, true, true, true)); // Interrupted after some actual sleep.
++}
 diff --git a/Code/tests/encoding.cpp b/Code/tests/encoding.cpp
-index 8c828c2a..a76d3eef 100644
+index 8c828c2a..36a0d4a8 100644
 --- a/Code/tests/encoding.cpp
 +++ b/Code/tests/encoding.cpp
 @@ -12,6 +12,8 @@
@@ -4526,7 +5330,7 @@ index 8c828c2a..a76d3eef 100644
      {
          QuestState state;
          state.Action = action; state.Authority = 42; state.Id = GameId(3, 0x12345);
-@@ -898,3 +900,33 @@ TEST_CASE("Shared network chest transfers retain portal and commit identity", "[
+@@ -898,3 +900,55 @@ TEST_CASE("Shared network chest transfers retain portal and commit identity", "[
      });
      REQUIRE(complete == 1);
  }
@@ -4559,6 +5363,28 @@ index 8c828c2a..a76d3eef 100644
 +        auto notification = serverFactory.Extract(in); REQUIRE(notification);
 +        auto restored = CastUnique<NotifyEquipmentChanges>(std::move(notification)); REQUIRE(*restored == notify);
 +    }
++}
++
++#include <CraftedItemPolicy.h>
++#include <Messages/RequestTimeSkip.h>
++#include <Messages/ServerTimeSettings.h>
++TEST_CASE("Created potion properties survive inventory and shared floor serialization", "[coop-fixes]")
++{
++    Inventory::Entry item; item.Count = 2; item.CreatedBase.Present = true; item.CreatedBase.Name = "Crafted brew";
++    Inventory::EffectItem effect; effect.EffectId = GameId(0, 0x123); effect.Magnitude = 12.25f; effect.Duration = 456;
++    item.CreatedBase.Effects.push_back(effect); CraftedItemPolicy::Normalize(item);
++    RequestWorldItem request; request.Action = WorldItemAction::Drop; request.Data.Item = item;
++    Buffer buffer(16384); Buffer::Writer writer(&buffer); request.Serialize(writer);
++    Buffer::Reader reader(&buffer); ClientMessageFactory factory; auto message = factory.Extract(reader); REQUIRE(message);
++    auto decoded = CastUnique<RequestWorldItem>(std::move(message)); REQUIRE(decoded->Data.Item == item);
++    REQUIRE(decoded->Data.Item.CreatedBase.Effects[0].Duration == 456);
++    RequestTimeSkip sleep; sleep.CompletedSleep = true;
++    Buffer rest(1024); Buffer::Writer rw(&rest); sleep.Serialize(rw); Buffer::Reader rr(&rest);
++    auto restMessage = factory.Extract(rr); REQUIRE(restMessage);
++    auto restored = CastUnique<RequestTimeSkip>(std::move(restMessage)); REQUIRE(restored->CompletedSleep);
++    ServerTimeSettings grant; grant.RestToken = 77;
++    Buffer reply(1024); Buffer::Writer w(&reply); grant.Serialize(w); Buffer::Reader rd(&reply); ServerMessageFactory sf;
++    auto result = sf.Extract(rd); REQUIRE(result); auto received = CastUnique<ServerTimeSettings>(std::move(result)); REQUIRE(received->RestToken == 77);
 +}
 diff --git a/Code/tests/housing_layout.cpp b/Code/tests/housing_layout.cpp
 new file mode 100644
@@ -4809,10 +5635,35 @@ index 0b1fac0a..983a9454 100644
      m_pCoreObject->SetValue("setResyncInterval", CefV8Value::CreateFunction("setResyncInterval", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
      m_pCoreObject->SetValue("setResyncHotkey", CefV8Value::CreateFunction("setResyncHotkey", m_pOverlayHandler), V8_PROPERTY_ATTRIBUTE_NONE);
 diff --git a/Tests/coop_chest_store.cpp b/Tests/coop_chest_store.cpp
-index 1937c99f..bf505cc4 100644
+index 1937c99f..740f33dd 100644
 --- a/Tests/coop_chest_store.cpp
 +++ b/Tests/coop_chest_store.cpp
-@@ -62,7 +62,7 @@ int main()
+@@ -33,6 +33,24 @@ int main()
+     sword.EnchantData.Effects.push_back(effect); sword.ExtraPoisonId = GameId(4, 0x55); sword.ExtraPoisonCount = 2;
+     sword.ExtraSoulLevel = 4; sword.ExtraEnchantRemoveUnequip = true; source.Entries.push_back(sword);
+     auto bytes = CoopChestStore::Encode(source, names); CHECK(bytes);
++    // Crafted definitions roundtrip using plugin names, including remapped effect IDs.
++    Inventory crafted;
++    Inventory::Entry brew; brew.Count = 3; brew.CreatedBase.Present = true; brew.CreatedBase.Name = "Crafted Waterbreathing";
++    effect.Duration = 456; brew.CreatedBase.Effects.push_back(effect); CraftedItemPolicy::Normalize(brew); crafted.Entries.push_back(brew);
++    auto enchant = sword; enchant.ExtraEnchantId = GameId(UINT32_MAX, 987); CraftedItemPolicy::Normalize(enchant); crafted.Entries.push_back(enchant);
++    auto encodedCrafted = CoopChestStore::Encode(crafted, names); CHECK(encodedCrafted);
++    Inventory loadedCrafted; CHECK(CoopChestStore::Decode(*encodedCrafted, remap, loadedCrafted));
++    CHECK(loadedCrafted.Entries[0].CreatedBase.Effects[0].Duration == 456);
++    CHECK(loadedCrafted.Entries[0].CreatedBase.Effects[0].EffectId.ModId == 3);
++    CHECK(loadedCrafted.Entries[0].BaseId.BaseId == CraftedItemPolicy::Identity(loadedCrafted.Entries[0].CreatedBase));
++    CHECK(loadedCrafted.Entries[1].ExtraHealth == sword.ExtraHealth);
++    CHECK(loadedCrafted.Entries[1].ExtraEnchantId.BaseId == CraftedItemPolicy::EnchantmentIdentity(loadedCrafted.Entries[1].EnchantData));
++    // Migrate the existing disk format without dropping an old shared chest.
++    auto legacy = *bytes; legacy.resize(legacy.size() - 16); legacy[7] = '1';
++    const auto checksum = CoopChestStore::Checksum(legacy);
++    CoopChestStore::Writer tail; tail.Data = legacy; tail.U32(static_cast<uint32_t>(checksum)); tail.U32(static_cast<uint32_t>(checksum >> 32));
++    Inventory oldChest; CHECK(CoopChestStore::Decode(tail.Data, remap, oldChest)); CHECK(oldChest.Entries.size() == source.Entries.size());
++
+     Inventory decoded; CHECK(CoopChestStore::Decode(*bytes, remap, decoded));
+     CHECK(decoded.Entries.size() == 1 && decoded.Entries[0].BaseId == GameId(9, 0x1234));
+     CHECK(decoded.Entries[0].ExtraEnchantId == GameId(3, 0x810));
+@@ -62,7 +80,7 @@ int main()
      std::filesystem::create_directory(path.string() + ".tmp");
      CHECK(!CoopChestStore::Save(path, *bytes)); read = CoopChestStore::Read(path); CHECK(read && *read == *emptyBytes);
      std::filesystem::remove_all(directory);

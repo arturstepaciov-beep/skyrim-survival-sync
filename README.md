@@ -1,6 +1,15 @@
-# SurvivalSync v0.8.7
+# SurvivalSync v0.8.8
 
-Custom Skyrim Together client and server based on upstream commit 9ce0338522277e0ff0a12e8d2aa09ce67ad41a59. Install matching v0.8.7 client files on both PCs and run the included v0.8.7 server. Keep SurvivalSyncCoop.esp enabled. Retains v0.8.1 housing repairs and earlier features. Preserve config/CoopChest.dat when updating.
+Custom Skyrim Together client and server based on upstream commit 9ce0338522277e0ff0a12e8d2aa09ce67ad41a59. Install matching v0.8.8 client files on both PCs and run the included v0.8.8 server. Keep SurvivalSyncCoop.esp enabled. Retains v0.8.1 housing repairs and earlier features. Preserve config/CoopChest.dat when updating.
+
+## Player-crafted items and shared sleep
+
+- Player-created potions and poisons transmit their full effect definitions, magnitudes, areas, durations, names, flags, weight and value. Receiving clients reconstruct the generated alchemy form with the native created-object manager, instead of interpreting another player's local FF form ID.
+- Generated potion and enchantment identities are based on their content, so round trips and stacking do not depend on which PC created the form. Exact crafted duration/strength is preserved, without substituting a vanilla potion or recalculating with the recipient's skills.
+- Shared inventories, ordinary chests, merchant inventory changes, co-op chest transfers and floor copies use the same capture/resolve path. Custom enchantment effects and smithing temper factors are retained.
+- Co-op chest persistence writes version 2 with generated definitions and plugin-name remapping, and continues reading existing version 1 files. Preserve config/CoopChest.dat.
+- Any completed positive-duration sleep grants all current party members full rest. Interrupted sleep also grants rest if some game time actually elapsed; cancelling before sleep or waiting does not. Survival's fatigue global is cleared and its own DecreaseExhaustion script refreshes stages and magicka penalties, with a delayed second pass for asynchronous sleep scripts.
+- Matching v0.8.8 clients/server required. Crafted-item gameplay, merchant buyback, floor pickup and shared rest still need two-PC verification.
 
 ## Hand equipment HUD and enemy weapon repair
 
@@ -8,7 +17,7 @@ Custom Skyrim Together client and server based on upstream commit 9ce0338522277e
 - The current AI owner publishes authoritative hand IDs, equipment and ownership epoch on changes, plus a five-second heartbeat. Receivers retain the snapshot through unloaded 3D and retry only on remote, living, loaded actors. Stale ownership snapshots are ignored.
 - Missing physical hand items are restored from the owner's equipment data before native equip; existing counts are respected, including identical dual-wield copies and single two-handed weapons. Only hand items are repaired, without rebuilding the full inventory.
 - New 3D receives hand equipment again. Missing plugins are left unresolved rather than clearing local hands. Existing animation and weapon draw synchronization remain in place.
-- Matching v0.8.7 client/server required: equipment packets gained hand snapshots. Native gameplay, modded weapon meshes and both players' enemy visuals still need two-PC verification.
+- Matching v0.8.8 client/server required: equipment packets gained hand snapshots. Native gameplay, modded weapon meshes and both players' enemy visuals still need two-PC verification.
 
 ## Map fast-travel hotfix
 
@@ -47,7 +56,7 @@ Two-PC gameplay validation is still required, especially follower recruitment, r
 ## Co-op fixes and HUD
 
 - Shares item/gold grants issued by Papyrus quest and dialogue fragments (QF_/TIF_) with the current party. Tracks source fragment, callsite, item and occurrence to avoid doubling a reward when the same script executes locally and remotely. This does not invent rewards from a completed journal flag or copy unrelated loot. Custom reward systems outside these script paths need separate adapters.
-- Party locations update every second, including distant players. Adds a compass overlay and projected overhead names for loaded party actors. Native world-map markers are temporarily disabled in v0.8.7 while investigating the crash when a party forms; current-location teleport buttons remain available.
+- Party locations update every second, including distant players. Adds a compass overlay and projected overhead names for loaded party actors. Native world-map markers are temporarily disabled in v0.8.8 while investigating the crash when a party forms; current-location teleport buttons remain available.
 - Adds direct "Teleport to <name>" buttons in F2 using the player's current server location.
 - Adds a separate hunger bar driven by the installed official Survival Mode hunger globals, with percentage and stage label. It is hidden when Survival Mode is inactive.
 - Restores the fast-travel control disabled by Survival Mode's watcher while retaining hunger, cold and exhaustion updates. Other normal engine travel checks remain in effect.
@@ -85,4 +94,6 @@ Native compilation and automated tests are separate from game validation. Test w
 ## Build
 
 Run Build-Windows.ps1 on Windows with Visual Studio C++ tools, xmake 3.1, Node and pnpm 9. It applies the retained v0.6 and v0.7 patches, then world-progress-v08.patch, decompresses the generated binding manifest, compiles the client/server, runs tests and packages the UI and game files. The manifest contains identifiers and field bindings derived from installed official plugins; it contains no Bethesda scripts or game assets.
+
+Teleport crash repair: skip weapon-state polling for absent/unloaded actors during relocation; defer discovery when the destination grid cell is not available. Confirmed v0.8.6 null-actor crash signature from three October 21 dumps.
 
