@@ -10,7 +10,7 @@ Install the ZIP with MO2/Vortex, or copy its SKSE folder into Skyrim's Data fold
 - Q / E changes GEAR, Magic, Potions. The last category is remembered between openings and game launches.
 - The empty center cancels. Esc or Tab cancels. A different menu, loading or losing game focus cancels.
 - Mouse wheel / Page Up / Page Down shows more items in a category, ten per ring.
-- F1 while the wheel is open opens settings. Click an option, or press 1 for hold/release, 2 for toggle/click, H for equip hand. F1/Esc returns.
+- F1 while the wheel is open opens settings. Click an option, or press F3 for hold/release, F4 for toggle/click, H for equip hand. F1/Esc returns.
 - Toggle/click mode: middle mouse opens, left click chooses, middle mouse again cancels.
 
 Favorites are read from the game each time the wheel opens. GEAR includes favorited weapons, armor, ammunition and torches. Magic includes favorited spells, powers, shouts and scrolls. Potions includes favorited alchemy consumables and poisons. Gear and spells are equipped; potions use Skyrim's native consume/equip action. Selecting a spell does not cast it. Powers/shouts go to the voice slot. Right hand is default; change it in settings.

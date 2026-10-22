@@ -1,6 +1,9 @@
 #include <RE/Skyrim.h>
 #include <SKSE/SKSE.h>
 #include <Windows.h>
+#ifdef GetObject
+#undef GetObject
+#endif
 #include <d3d11.h>
 #include <dxgi.h>
 #include <imgui.h>
@@ -8,6 +11,7 @@
 #include <spdlog/sinks/basic_file_sink.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -18,14 +22,28 @@
 #include "Policy.h"
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 namespace FW {
+std::atomic<HWND> gameWindow{};
 constexpr float Pi=std::numbers::pi_v<float>, Tau=2*Pi;
-struct Item { RE::FormID id{},uniqueBase{}; std::uint16_t unique{}; int extraIndex{-1}; std::string name,kind; int count{1}; };
+struct Variant {
+ float health{1.f},charge{-1.f};RE::FormID enchantment{},poison{};std::uint16_t maximumCharge{};
+ bool operator==(const Variant&)const=default;
+};
+Variant DescribeVariant(RE::ExtraDataList* extra) {
+ Variant v;
+ if(auto* value=extra->GetByType<RE::ExtraHealth>())v.health=value->health;
+ if(auto* value=extra->GetByType<RE::ExtraCharge>())v.charge=value->charge;
+ if(auto* value=extra->GetByType<RE::ExtraEnchantment>()){v.enchantment=value->enchantment?value->enchantment->GetFormID():0;v.maximumCharge=value->charge;}
+ if(auto* value=extra->GetByType<RE::ExtraPoison>())v.poison=value->poison?value->poison->GetFormID():0;
+ return v;
+}
+struct Item { RE::FormID id{},uniqueBase{}; std::uint16_t unique{}; int extraIndex{-1}; Variant variant; std::string name,kind; int count{1}; };
 struct State {
  std::mutex mutex;
  bool open{},settings{},middle{},captureMiddle{},rendererReady{};
  int mode{},hand{1},category{},page{},radius{250},sensitivity{100};
  float x{},y{},width{1920},height{1080};
  std::array<std::vector<Item>,3> items;
+ std::array<bool,2> capturedMouse{};
 } state;
 std::filesystem::path ConfigPath() {
  wchar_t path[MAX_PATH]{}; GetModuleFileNameW(reinterpret_cast<HMODULE>(&__ImageBase),path,MAX_PATH);
@@ -44,12 +62,14 @@ void Load() {
  state.sensitivity=std::clamp(read(L"SensitivityPercent",100),25,250);
 }
 bool Ready() {
+ if(auto window=gameWindow.load();window && GetForegroundWindow()!=window)return false;
  auto* p=RE::PlayerCharacter::GetSingleton(); auto* ui=RE::UI::GetSingleton();
  if(!p || !p->Get3D() || p->IsDead() || !p->GetParentCell() || !p->GetParentCell()->IsAttached() || !ui || ui->GameIsPaused() || ui->numItemMenus) return false;
  for(auto name:{"Main Menu","Loading Menu","LoadingMenu","Console","Dialogue Menu","FavoritesMenu","MapMenu","TweenMenu","Journal Menu","Sleep/Wait Menu"})
   if(ui->IsMenuOpen(name))return false;
  return true;
 }
+std::string FormName(RE::TESForm* form) {const char* name=form?form->GetName():nullptr;return name&&*name?name:"Unnamed favorite";}
 int Category(RE::TESForm* form) {
  if(form->Is(RE::FormType::Weapon,RE::FormType::Armor,RE::FormType::Ammo,RE::FormType::Light))return 0;
  if(form->Is(RE::FormType::Spell,RE::FormType::Shout,RE::FormType::Scroll))return 1;
@@ -66,9 +86,9 @@ void Snapshot() {
   int index=0;
   if(entry->extraLists)for(auto* extra:*entry->extraLists) {
    const int current=index++; if(!extra || !extra->HasType<RE::ExtraHotkey>())continue;
-   Item item; item.id=object->GetFormID(); item.extraIndex=current;
+   Item item; item.id=object->GetFormID(); item.extraIndex=current;item.variant=DescribeVariant(extra);
    auto* unique=extra->GetByType<RE::ExtraUniqueID>(); if(unique){item.unique=unique->uniqueID;item.uniqueBase=unique->baseID;}
-   const char* name=extra->GetDisplayName(object); item.name=name&&*name?name:object->GetName();
+   const char* name=extra->GetDisplayName(object); item.name=name&&*name?std::string(name):FormName(object);
    item.count=std::min(count,std::max(1,extra->GetCount()));
    item.kind=category==0?(object->Is(RE::FormType::Armor)?"ARMOR":"GEAR"):category==1?"SCROLL":"POTION";
    if(auto* potion=object->As<RE::AlchemyItem>();potion&&potion->IsPoison())item.kind="POISON";
@@ -77,7 +97,7 @@ void Snapshot() {
  }
  if(auto* favorites=RE::MagicFavorites::GetSingleton())for(auto* form:favorites->spells) {
   if(!form || Category(form)!=1)continue;
-  Item item;item.id=form->GetFormID();item.name=form->GetName(); item.kind=form->Is(RE::FormType::Shout)?"SHOUT":"SPELL";
+  Item item;item.id=form->GetFormID();item.name=FormName(form); item.kind=form->Is(RE::FormType::Shout)?"SHOUT":"SPELL";
   if(auto* spell=form->As<RE::SpellItem>();spell && (spell->GetSpellType()==RE::MagicSystem::SpellType::kPower || spell->GetSpellType()==RE::MagicSystem::SpellType::kLesserPower))item.kind="POWER";
   state.items[1].push_back(std::move(item));
  }
@@ -104,7 +124,7 @@ void Equip(Item item,int hand) {
    auto* unique=extra->GetByType<RE::ExtraUniqueID>();
    if(item.unique ? unique && unique->uniqueID==item.unique && unique->baseID==item.uniqueBase : current==item.extraIndex) {
     const char* name=extra->GetDisplayName(object);
-    if(!item.unique && item.name!=(name&&*name?name:object->GetName()))continue;
+    if(!item.unique && (item.name!=(name&&*name?std::string(name):FormName(object)) || !(item.variant==DescribeVariant(extra))))continue;
     selected=extra;break;
    }
   }
@@ -140,12 +160,16 @@ bool Handle(RE::InputEvent* event) {
   if(up) {state.middle=false;if(state.open && state.mode==0 && !state.settings)Close(true);bool consume=state.captureMiddle;state.captureMiddle=false;return consume;}
   return state.captureMiddle;
  }
+ if(button->GetDevice()==RE::INPUT_DEVICE::kMouse && id<2 && state.capturedMouse[id]) {
+  if(up){state.capturedMouse[id]=false;return false;}
+  return true;
+ }
  if(!state.open)return false;
  if(button->GetDevice()==RE::INPUT_DEVICE::kKeyboard) {
   if(id==1 || id==15) {if(down) {if(state.settings){state.settings=false;if(state.mode==0&&!state.middle)Close(false);}else Close(false);}return true;}
   if(id==59) {if(down){state.settings=!state.settings;if(!state.settings && state.mode==0&&!state.middle)Close(false);}return true;}
   if(state.settings) {
-   if(down && (id==2||id==3)){state.mode=id==2?0:1;Save();}
+   if(down && (id==61||id==62)){state.mode=id==61?0:1;Save();}
    if(down && id==35){state.hand=1-state.hand;Save();}
    return true;
   }
@@ -154,6 +178,7 @@ bool Handle(RE::InputEvent* event) {
   return false; // Movement remains available; no time or pause manipulation.
  }
  if(button->GetDevice()==RE::INPUT_DEVICE::kMouse) {
+  if(id<2 && down)state.capturedMouse[id]=true;
   if((id==8||id==9)&&button->IsPressed()&&!state.settings){Page(id==8?-1:1);return true;}
   if(id==0 && down) {
    if(state.settings) {
@@ -188,7 +213,7 @@ void Input(RE::BSTEventSource<RE::InputEvent*>* source,RE::InputEvent** events) 
  for(auto& [event,next]:links)event->next=next;
 }
 using PresentFn=HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*,UINT,UINT);
-PresentFn originalPresent{};
+PresentFn originalPresent{};IDXGISwapChain* gameChain{};
 ID3D11Device* device{};ID3D11DeviceContext* context{};HWND window{};bool initialized{};
 ImVec2 Point(float angle,float radius,ImVec2 center){return {center.x+std::cos(angle)*radius,center.y+std::sin(angle)*radius};}
 void Text(ImDrawList* draw,ImVec2 pos,const char* text,float size,ImU32 color,float wrap=0) {
@@ -205,7 +230,7 @@ void Draw() {
  if(state.settings) {
   d->AddRectFilled({c.x-235,c.y-155},{c.x+235,c.y+190},IM_COL32(17,25,35,248),18);
   Text(d,{c.x-180,c.y-125},"FAVORITES WHEEL / SETTINGS",22,gold);
-  const char* labels[]{"1   Hold, point and release","2   Toggle, then click an item",state.hand?"H   Equip hand: RIGHT":"H   Equip hand: LEFT"};
+  const char* labels[]{"F3   Hold, point and release","F4   Toggle, then click an item",state.hand?"H   Equip hand: RIGHT":"H   Equip hand: LEFT"};
   for(int i=0;i<3;++i){float y=c.y-40+i*58;bool hover=std::abs(state.x)<190&&state.y>y-c.y&&state.y<y-c.y+48;
    d->AddRectFilled({c.x-195,y},{c.x+195,y+48},hover?IM_COL32(82,66,40,255):IM_COL32(31,44,57,255),7);
    Text(d,{c.x-180,y+13},labels[i],18,(i<2&&state.mode==i)?gold:white);
@@ -213,8 +238,8 @@ void Draw() {
   Text(d,{c.x-180,c.y+150},"Click an option  |  F1 / Esc: back",16,muted);
  } else {
   const char* categories[]{"GEAR","Magic","Potions"};
-  Text(d,{c.x-170,c.y-r-98},"Q  <",18,muted);Text(d,{c.x+130,c.y-r-98},">  E",18,muted);
-  for(int i=0;i<3;++i){float x=c.x-105+i*95;Text(d,{x,c.y-r-98},categories[i],18,i==state.category?gold:muted);}
+  Text(d,{c.x-230,c.y-r-98},"Q  <",18,muted);Text(d,{c.x+190,c.y-r-98},">  E",18,muted);
+  for(int i=0;i<3;++i){float x=c.x-135+i*110;Text(d,{x,c.y-r-98},categories[i],18,i==state.category?gold:muted);}
   int n=VisibleCount(),selected=Selected();
   for(int i=0;i<n;++i){float a=Tau*i/n-Pi/2,half=Pi/n-.025f;
    d->PathClear();for(int k=0;k<=20;++k)d->PathLineTo(Point(a-half+(2*half*k/20),r+38,c));
@@ -229,7 +254,8 @@ void Draw() {
    auto pos=Point(a,r*.72f,c);const auto& item=state.items[state.category][state.page*WheelPolicy::Slots+i];
    float textWidth=n>7?104.f:142.f;
    Text(d,{pos.x-textWidth/2,pos.y-30},item.kind.c_str(),12,gold);
-   Text(d,{pos.x-textWidth/2,pos.y-9},item.name.c_str(),16,white,textWidth);
+   d->PushClipRect({pos.x-textWidth/2,pos.y-10},{pos.x+textWidth/2,pos.y+27},true);
+   Text(d,{pos.x-textWidth/2,pos.y-9},item.name.c_str(),16,white,textWidth);d->PopClipRect();
    if(item.count>1){auto count="x"+std::to_string(item.count);Text(d,{pos.x-textWidth/2,pos.y+39},count.c_str(),13,muted);}
   }
   d->AddCircleFilled(c,r*.32f,IM_COL32(11,18,27,248),64);d->AddCircle(c,r*.34f,gold,64,1.5f);
@@ -244,11 +270,13 @@ void Draw() {
  ImVec2 cursor{c.x+state.x,c.y+state.y};d->AddCircleFilled(cursor,5,gold);d->AddCircle(cursor,9,white,24,1);
 }
 HRESULT STDMETHODCALLTYPE Present(IDXGISwapChain* chain,UINT sync,UINT flags) {
+ if(chain!=gameChain)return originalPresent(chain,sync,flags);
  if(!initialized) {
   if(SUCCEEDED(chain->GetDevice(__uuidof(ID3D11Device),reinterpret_cast<void**>(&device)))) {
-   device->GetImmediateContext(&context);DXGI_SWAP_CHAIN_DESC desc{};chain->GetDesc(&desc);window=desc.OutputWindow;
+   device->GetImmediateContext(&context);DXGI_SWAP_CHAIN_DESC desc{};chain->GetDesc(&desc);window=desc.OutputWindow;gameWindow=window;
    ImGui::CreateContext();auto& io=ImGui::GetIO();io.IniFilename=nullptr;io.LogFilename=nullptr;
-   io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/segoeui.ttf",19);if(io.Fonts->Fonts.empty())io.Fonts->AddFontDefault();
+   static const ImWchar ranges[]{0x20,0x24F,0x370,0x52F,0};
+   io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/segoeui.ttf",19,nullptr,ranges);if(io.Fonts->Fonts.empty())io.Fonts->AddFontDefault();
    initialized=ImGui_ImplDX11_Init(device,context);{std::lock_guard lock(state.mutex);state.rendererReady=initialized;}
   }
  }
@@ -278,7 +306,7 @@ void Install() {
  if(*reinterpret_cast<std::uint8_t*>(call)!=0xE8){spdlog::error("Unsupported input layout; wheel left disabled");return;}
  auto** table=*reinterpret_cast<void***>(chain);DWORD old{};
  if(!VirtualProtect(&table[8],sizeof(void*),PAGE_EXECUTE_READWRITE,&old)){spdlog::error("Cannot install Present hook");return;}
- originalPresent=reinterpret_cast<PresentFn>(table[8]);table[8]=reinterpret_cast<void*>(Present);DWORD ignored{};VirtualProtect(&table[8],sizeof(void*),old,&ignored);
+ gameChain=chain;originalPresent=reinterpret_cast<PresentFn>(table[8]);table[8]=reinterpret_cast<void*>(Present);DWORD ignored{};VirtualProtect(&table[8],sizeof(void*),old,&ignored);
  SKSE::AllocTrampoline(32);originalInput=SKSE::GetTrampoline().write_call<5>(call,Input);
  spdlog::info("Favorites Wheel initialized; mode={}, category={}",state.mode,state.category);
 }

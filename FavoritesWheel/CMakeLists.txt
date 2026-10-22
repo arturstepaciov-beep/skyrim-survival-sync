@@ -11,7 +11,7 @@ FetchContent_Declare(imgui GIT_REPOSITORY https://github.com/ocornut/imgui.git G
 FetchContent_MakeAvailable(imgui)
 add_library(wheel_imgui STATIC ${imgui_SOURCE_DIR}/imgui.cpp ${imgui_SOURCE_DIR}/imgui_draw.cpp ${imgui_SOURCE_DIR}/imgui_tables.cpp ${imgui_SOURCE_DIR}/imgui_widgets.cpp ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp)
 target_include_directories(wheel_imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
-target_link_libraries(wheel_imgui PUBLIC d3d11 dxgi)
+target_link_libraries(wheel_imgui PUBLIC d3d11 dxgi d3dcompiler)
 add_library(FavoritesWheel SHARED src/Plugin.cpp)
 target_link_libraries(FavoritesWheel PRIVATE CommonLibSSE::CommonLibSSE wheel_imgui d3d11 dxgi)
 target_compile_definitions(FavoritesWheel PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)

@@ -26,6 +26,12 @@ jobs:
         run: |
           cmake -S FavoritesWheel -B wheel-build -A x64 "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static -DVCPKG_HOST_TRIPLET=x64-windows-static
           if ($LASTEXITCODE) { throw 'Configure failed' }
+      - name: Check plugin compilation first
+        shell: pwsh
+        run: |
+          $msbuild = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' -requires Microsoft.Component.MSBuild -find 'MSBuild/**/Bin/MSBuild.exe' | Select-Object -First 1
+          & $msbuild wheel-build/FavoritesWheel.vcxproj /t:ClCompile /p:Configuration=Release /p:Platform=x64 /p:BuildProjectReferences=false /verbosity:minimal
+          if ($LASTEXITCODE) { throw 'Plugin source check failed' }
       - name: Compile Windows plugin
         shell: pwsh
         run: |
@@ -55,3 +61,10 @@ jobs:
           path: FavoritesWheel-v1.0.0-Windows.zip
           if-no-files-found: error
           retention-days: 30
+
+      - name: Save dependency cache even after a compiler error
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: C:/Users/runneradmin/AppData/Local/vcpkg/archives
+          key: favorites-wheel-native-v1
