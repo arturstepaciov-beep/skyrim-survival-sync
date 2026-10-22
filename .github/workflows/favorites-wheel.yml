@@ -1,0 +1,57 @@
+name: Build Favorites Wheel
+run-name: Favorites Wheel 1.0.0 - ${{ github.run_number }}
+on:
+  push:
+    branches: ['build/favorites-wheel-v100']
+    paths: ['FavoritesWheel/**', '.github/workflows/favorites-wheel.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: favorites-wheel-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache native dependencies
+        uses: actions/cache@v4
+        with:
+          path: C:/Users/runneradmin/AppData/Local/vcpkg/archives
+          key: favorites-wheel-native-v1
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S FavoritesWheel -B wheel-build -A x64 "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static -DVCPKG_HOST_TRIPLET=x64-windows-static
+          if ($LASTEXITCODE) { throw 'Configure failed' }
+      - name: Compile Windows plugin
+        shell: pwsh
+        run: |
+          cmake --build wheel-build --config Release --parallel 3
+          if ($LASTEXITCODE) { throw 'Compile failed' }
+      - name: Test wheel selection policy
+        shell: pwsh
+        run: |
+          ctest --test-dir wheel-build -C Release --output-on-failure
+          if ($LASTEXITCODE) { throw 'Tests failed' }
+      - name: Package standalone mod
+        shell: pwsh
+        run: |
+          $out='wheel-package'
+          New-Item -ItemType Directory -Force "$out/SKSE/Plugins", "$out/Licenses" | Out-Null
+          Copy-Item wheel-build/Release/FavoritesWheel.dll "$out/SKSE/Plugins/"
+          Copy-Item FavoritesWheel/package/SKSE/Plugins/FavoritesWheel.ini "$out/SKSE/Plugins/"
+          Copy-Item FavoritesWheel/README.md "$out/README.md"
+          Copy-Item wheel-build/_deps/commonlibsse-src/LICENSE "$out/Licenses/CommonLibSSE-NG.txt"
+          Copy-Item wheel-build/_deps/imgui-src/LICENSE.txt "$out/Licenses/DearImGui.txt"
+          @{name='FavoritesWheel';version='1.0.0';commit=$env:GITHUB_SHA;builtUtc=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json | Set-Content "$out/BuildInfo.json"
+          Compress-Archive -Path "$out/*" -DestinationPath FavoritesWheel-v1.0.0-Windows.zip
+      - name: Upload install ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: FavoritesWheel-v1.0.0-Windows
+          path: FavoritesWheel-v1.0.0-Windows.zip
+          if-no-files-found: error
+          retention-days: 30
