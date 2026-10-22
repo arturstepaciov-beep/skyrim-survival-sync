@@ -1,6 +1,6 @@
-# Favorites Wheel 1.0.0
+# Favorites Wheel 1.0.1
 
-Separate SKSE plugin for Skyrim Special Edition / Anniversary Edition, Windows, mouse and keyboard. No SurvivalSync installation is required. Requires SKSE64 matching your Skyrim runtime and Address Library for that runtime. VR is not supported.
+Separate SKSE plugin for Skyrim Special Edition / Anniversary Edition, Windows, mouse and keyboard. No SurvivalSync installation is required. Requires SKSE64 matching your Skyrim runtime and Address Library for that runtime. Includes updated CommonLibSSE-NG support for Skyrim 1.7.104 / Address Library format 5. VR is not supported.
 
 Install the ZIP with MO2/Vortex, or copy its SKSE folder into Skyrim's Data folder. Launch through SKSE (or the SKSE-enabled Skyrim Together launcher). Do not replace SurvivalSync files.
 
@@ -25,4 +25,4 @@ Build verification and native two-PC gameplay are separate: this release must be
 
 ## Build
 
-CMake 3.24+, Visual Studio 2022 C++ tools, vcpkg (x64-windows-static). Configure with the vcpkg toolchain, build Release, then run ctest. CommonLibSSE-NG and Dear ImGui sources are pinned in CMakeLists.txt; their MIT licenses ship with the package.
+CMake 3.24+, Visual Studio 2022 C++ tools, vcpkg (x64-windows-static). Configure with the vcpkg toolchain, build Release, then run ctest. CommonLibSSE-NG and Dear ImGui sources are pinned in CMakeLists.txt; their licenses ship with the package. Favorites Wheel is GPL-3.0-or-later; corresponding source and pinned dependency sources are supplied with the source package.

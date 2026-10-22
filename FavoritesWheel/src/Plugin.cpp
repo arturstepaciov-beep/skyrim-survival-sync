@@ -298,7 +298,7 @@ HRESULT STDMETHODCALLTYPE Present(IDXGISwapChain* chain,UINT sync,UINT flags) {
  return originalPresent(chain,sync,flags);
 }
 void Install() {
- auto* data=RE::BSGraphics::Renderer::GetRendererData();if(!data){spdlog::error("Renderer unavailable");return;}
+ auto* data=RE::BSGraphics::Renderer::GetRendererDataSingleton();if(!data){spdlog::error("Renderer unavailable");return;}
  IDXGISwapChain* chain{};for(auto& w:data->renderWindows)if(w.swapChain){chain=reinterpret_cast<IDXGISwapChain*>(w.swapChain);break;}
  if(!chain){spdlog::error("Swap chain unavailable");return;}
  REL::Relocation<std::uintptr_t> input{REL::RelocationID(67315,68617)};
@@ -312,7 +312,7 @@ void Install() {
 }
 }
 extern "C" __declspec(dllexport) constinit SKSE::PluginVersionData SKSEPlugin_Version=[] {
- SKSE::PluginVersionData v;v.PluginVersion({1,0,0,0});v.PluginName("FavoritesWheel");v.AuthorName("Artur / Codex");v.UsesAddressLibrary();v.UsesStructsPost629();return v;
+ SKSE::PluginVersionData v;v.PluginVersion({1,0,1,0});v.PluginName("FavoritesWheel");v.AuthorName("Artur / Codex");v.UsesAddressLibrary();v.UsesUpdatedStructs();return v;
 }();
 extern "C" __declspec(dllexport) bool SKSEPlugin_Query(const SKSE::QueryInterface* skse,SKSE::PluginInfo* info) {
  info->infoVersion=SKSE::PluginInfo::kVersion;info->name="FavoritesWheel";info->version=1;

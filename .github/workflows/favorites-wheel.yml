@@ -1,5 +1,5 @@
 name: Build Favorites Wheel
-run-name: Favorites Wheel 1.0.0 - ${{ github.run_number }}
+run-name: Favorites Wheel 1.0.1 - ${{ github.run_number }}
 on:
   push:
     branches: ['build/favorites-wheel-v100']
@@ -50,15 +50,18 @@ jobs:
           Copy-Item wheel-build/Release/FavoritesWheel.dll "$out/SKSE/Plugins/"
           Copy-Item FavoritesWheel/package/SKSE/Plugins/FavoritesWheel.ini "$out/SKSE/Plugins/"
           Copy-Item FavoritesWheel/README.md "$out/README.md"
-          Copy-Item wheel-build/_deps/commonlibsse-src/LICENSE "$out/Licenses/CommonLibSSE-NG.txt"
+          Copy-Item wheel-build/_deps/commonlibsse-src/COPYING.txt "$out/Licenses/CommonLibSSE-NG-GPL.txt"
+          Copy-Item wheel-build/_deps/commonlibsse-src/EXCEPTIONS.md "$out/Licenses/CommonLibSSE-NG-Exceptions.md"
+          Copy-Item FavoritesWheel/LICENSE.txt "$out/Licenses/FavoritesWheel-GPL.txt"
+          Copy-Item wheel-build/_deps/commonlibsse-src/licenses/* "$out/Licenses/"
           Copy-Item wheel-build/_deps/imgui-src/LICENSE.txt "$out/Licenses/DearImGui.txt"
-          @{name='FavoritesWheel';version='1.0.0';commit=$env:GITHUB_SHA;builtUtc=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json | Set-Content "$out/BuildInfo.json"
-          Compress-Archive -Path "$out/*" -DestinationPath FavoritesWheel-v1.0.0-Windows.zip
+          @{name='FavoritesWheel';version='1.0.1';commit=$env:GITHUB_SHA;builtUtc=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json | Set-Content "$out/BuildInfo.json"
+          Compress-Archive -Path "$out/*" -DestinationPath FavoritesWheel-v1.0.1-Windows.zip
       - name: Upload install ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: FavoritesWheel-v1.0.0-Windows
-          path: FavoritesWheel-v1.0.0-Windows.zip
+          name: FavoritesWheel-v1.0.1-Windows
+          path: FavoritesWheel-v1.0.1-Windows.zip
           if-no-files-found: error
           retention-days: 30
 
